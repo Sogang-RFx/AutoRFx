@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Raw Client Documents & Media (Keep raw RFQs, specs, and recordings out of Git)
+*.doc
+*.docx
+*.pdf
+*.xlsx
+*.pptx
+*.hwp
+*.m4a
+*.mp3
+data/raw/
+!data/.gitkeep
+
+# Vector Stores & Caches
+.chroma/
+vectorstore/
+*.sqlite3
+.DS_Store
