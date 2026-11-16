@@ -1,0 +1,38 @@
+{
+  "$id": "https://autorfx.local/contract/locus.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "source_doc": {
+      "type": "string",
+      "minLength": 1
+    },
+    "page_number": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "section_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "paragraph_index": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "sentence_index": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    }
+  },
+  "required": [
+    "source_doc",
+    "page_number",
+    "section_id",
+    "paragraph_index",
+    "sentence_index"
+  ],
+  "additionalProperties": false
+}

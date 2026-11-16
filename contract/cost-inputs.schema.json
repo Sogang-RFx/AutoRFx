@@ -1,0 +1,245 @@
+{
+  "$id": "https://autorfx.local/contract/cost-inputs.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "data": {
+      "type": "object",
+      "properties": {
+        "item": {
+          "type": "string"
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "field": {
+                "type": "string",
+                "enum": [
+                  "min_quantity",
+                  "fixed_costs",
+                  "variable_cost_per_unit",
+                  "currency"
+                ]
+              },
+              "label": {
+                "type": "string"
+              },
+              "value": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "note": {
+                "type": "string"
+              },
+              "evidence": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "finding": {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "summary",
+                              "priority",
+                              "red_flag",
+                              "answer",
+                              "cost_input"
+                            ]
+                          },
+                          "departments": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "priority": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "must",
+                                  "should",
+                                  "optional",
+                                  "info"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "red_flag_reason": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "citations": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "source_doc": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "page_number": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                },
+                                "section_id": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "paragraph_index": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                },
+                                "sentence_index": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                }
+                              },
+                              "required": [
+                                "source_doc",
+                                "page_number",
+                                "section_id",
+                                "paragraph_index",
+                                "sentence_index"
+                              ],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "departments",
+                          "text",
+                          "priority",
+                          "red_flag_reason",
+                          "citations"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "citation_status": {
+                        "type": "string",
+                        "enum": [
+                          "verified",
+                          "unverified"
+                        ]
+                      },
+                      "failed_citations": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "source_doc": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "page_number": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "section_id": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "paragraph_index": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "sentence_index": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            }
+                          },
+                          "required": [
+                            "source_doc",
+                            "page_number",
+                            "section_id",
+                            "paragraph_index",
+                            "sentence_index"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "finding",
+                      "citation_status",
+                      "failed_citations"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "field",
+              "label",
+              "value",
+              "note",
+              "evidence"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "item",
+        "candidates"
+      ],
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "enum": [
+          "document",
+          "parsing",
+          "analysis",
+          "citation",
+          "translation",
+          "source",
+          "cost_inputs",
+          "precost",
+          "chat",
+          "evaluation"
+        ]
+      },
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "mock",
+          "real"
+        ]
+      }
+    }
+  },
+  "required": [
+    "data",
+    "provenance"
+  ],
+  "additionalProperties": false
+}

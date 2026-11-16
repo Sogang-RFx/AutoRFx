@@ -1,0 +1,108 @@
+{
+  "$id": "https://autorfx.local/contract/precost.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "data": {
+      "type": "object",
+      "properties": {
+        "inputs": {
+          "type": "object",
+          "properties": {
+            "item": {
+              "type": "string",
+              "minLength": 1
+            },
+            "min_quantity": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "fixed_costs": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "variable_cost_per_unit": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "currency": {
+              "type": "string",
+              "pattern": "^[A-Z]{3}$"
+            }
+          },
+          "required": [
+            "item",
+            "min_quantity",
+            "fixed_costs",
+            "variable_cost_per_unit",
+            "currency"
+          ],
+          "additionalProperties": false
+        },
+        "fixed_cost_per_unit": {
+          "type": "string",
+          "pattern": "^\\d+(\\.\\d+)?$"
+        },
+        "unit_cost": {
+          "type": "string",
+          "pattern": "^\\d+(\\.\\d+)?$"
+        },
+        "decision": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "const": "baseline_undefined"
+            },
+            "note": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "status",
+            "note"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "inputs",
+        "fixed_cost_per_unit",
+        "unit_cost",
+        "decision"
+      ],
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "enum": [
+          "document",
+          "parsing",
+          "analysis",
+          "citation",
+          "translation",
+          "source",
+          "cost_inputs",
+          "precost",
+          "chat",
+          "evaluation"
+        ]
+      },
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "mock",
+          "real"
+        ]
+      }
+    }
+  },
+  "required": [
+    "data",
+    "provenance"
+  ],
+  "additionalProperties": false
+}

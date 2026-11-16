@@ -1,0 +1,153 @@
+{
+  "$id": "https://autorfx.local/contract/rtm.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "data": {
+      "type": "object",
+      "properties": {
+        "group": {
+          "type": "string",
+          "enum": [
+            "cost_visible",
+            "cost_restricted"
+          ]
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "clause"
+                  },
+                  "section_id": {
+                    "type": "string"
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "departments": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "priority": {
+                    "type": "string",
+                    "enum": [
+                      "must",
+                      "should",
+                      "optional",
+                      "info"
+                    ]
+                  },
+                  "red_flag": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "forced_cost_reduction",
+                          "unlimited_liquidated_damages",
+                          "ownership_transfer",
+                          "unilateral_termination"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "page_number": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "sentence_index": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "citation_status": {
+                    "type": "string",
+                    "enum": [
+                      "verified",
+                      "unverified"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "section_id",
+                  "title",
+                  "departments",
+                  "priority",
+                  "red_flag",
+                  "page_number",
+                  "sentence_index",
+                  "citation_status"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "masked"
+                  },
+                  "section_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "section_id"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        }
+      },
+      "required": [
+        "group",
+        "rows"
+      ],
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "enum": [
+          "document",
+          "parsing",
+          "analysis",
+          "citation",
+          "translation",
+          "source",
+          "cost_inputs",
+          "precost",
+          "chat",
+          "evaluation"
+        ]
+      },
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "mock",
+          "real"
+        ]
+      }
+    }
+  },
+  "required": [
+    "data",
+    "provenance"
+  ],
+  "additionalProperties": false
+}

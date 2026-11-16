@@ -1,0 +1,358 @@
+/**
+ * Client-only (imported from the client workspace page).
+ * Clause list and clause detail (TASKS S011, S014, SPEC §14). Interpretation
+ * sits on white sans surfaces; original text on the paper-coloured serif
+ * surface. Masked clauses render as fixed-height rows with number + lock only.
+ */
+import { useState } from "react";
+import type { KeyboardEvent } from "react";
+import type { ClauseItem, Locus, ProvenanceMap, VisibleClause } from "@/lib/rfq/contract";
+import { IconClose, IconLock, IconWarn } from "../ui/icons";
+import {
+  CitationChip,
+  EmptyState,
+  ErrorState,
+  MaskedLabel,
+  Panel,
+  PriorityChip,
+  RedFlagChip,
+  Skeleton,
+  cx,
+  formatLocus,
+} from "../ui/primitives";
+
+type Dept = { id: string; label: string };
+
+const MASKED_ROW_H = 56;
+
+// ── List ─────────────────────────────────────────────────────────────────────
+type ListProps = {
+  status: "loading" | "ok" | "error";
+  error: string | null;
+  clauses: ClauseItem[];
+  provenance?: ProvenanceMap;
+  departments: Dept[];
+  department: string | null;
+  onDepartment: (d: string | null) => void;
+  selected: string | null;
+  onSelect: (sectionId: string) => void;
+  className?: string;
+};
+
+export function ClauseList({
+  status,
+  error,
+  clauses,
+  provenance,
+  departments,
+  department,
+  onDepartment,
+  selected,
+  onSelect,
+  className,
+}: ListProps) {
+  const visible = clauses.filter((c): c is VisibleClause => c.kind === "clause");
+  const redFlags = visible.filter((c) => c.red_flag).length;
+  const unverified = visible.filter((c) => c.summary.citation_status === "unverified").length;
+  const masked = clauses.length - visible.length;
+  const deptLabel = (id: string) => departments.find((d) => d.id === id)?.label ?? id;
+
+  function onKeyDown(e: KeyboardEvent<HTMLUListElement>) {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    const ids = clauses.map((c) => c.section_id);
+    const idx = selected ? ids.indexOf(selected) : -1;
+    const next = e.key === "ArrowDown" ? Math.min(ids.length - 1, idx + 1) : Math.max(0, idx - 1);
+    const id = ids[next];
+    if (id) {
+      onSelect(id);
+      document.getElementById(`clause-${id}`)?.focus();
+    }
+  }
+
+  return (
+    <Panel title="부서별 조항" provenance={provenance} labelId="clauses-title" className={className} bodyClassName="flex flex-col">
+      <div className="flex gap-1 overflow-x-auto border-b border-line px-3 py-2" role="group" aria-label="부서 필터">
+        {[{ id: "", label: "전체" }, ...departments].map((d) => {
+          const active = (department ?? "") === d.id;
+          return (
+            <button
+              key={d.id || "all"}
+              type="button"
+              aria-pressed={active}
+              onClick={() => onDepartment(d.id || null)}
+              className={cx(
+                "shrink-0 rounded-full border px-2.5 py-1 text-label font-medium transition-soft",
+                active ? "border-ink bg-ink text-white" : "border-line text-ink-muted hover:border-line-control hover:text-ink",
+              )}
+            >
+              {d.label}
+            </button>
+          );
+        })}
+      </div>
+      {status === "ok" && clauses.length > 0 && (
+        <p
+          className="flex flex-wrap gap-x-3 border-b border-line px-4 py-2 text-label text-ink-muted tabular"
+          data-testid="clause-summary"
+        >
+          <span>
+            <strong className="font-semibold text-ink">{clauses.length}</strong>개 조항
+          </span>
+          {redFlags > 0 && <span className="text-danger">독소조항 {redFlags}</span>}
+          {unverified > 0 && <span className="text-warn">미검증 {unverified}</span>}
+          {masked > 0 && (
+            <span className="inline-flex items-center gap-1">
+              <IconLock size={12} /> 가림 {masked}
+            </span>
+          )}
+        </p>
+      )}
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        {status === "loading" && <Skeleton lines={8} />}
+        {status === "error" && error && <ErrorState message={error} />}
+        {status === "ok" && clauses.length === 0 && (
+          <EmptyState title="표시할 조항이 없습니다">
+            <p>이 부서에 배정된 조항이 없거나, 분석 결과가 비어 있습니다.</p>
+          </EmptyState>
+        )}
+        {status === "ok" && clauses.length > 0 && (
+          <ul aria-label="조항 목록" onKeyDown={onKeyDown} data-testid="clause-list">
+            {clauses.map((c) => {
+              const isSelected = selected === c.section_id;
+              if (c.kind === "masked") {
+                return (
+                  <li key={c.section_id} style={{ height: MASKED_ROW_H }} className="border-b border-line">
+                    <button
+                      id={`clause-${c.section_id}`}
+                      type="button"
+                      data-testid="masked-row"
+                      aria-current={isSelected}
+                      onClick={() => onSelect(c.section_id)}
+                      className={cx(
+                        "flex size-full items-center gap-3 px-4 text-left transition-soft",
+                        isSelected ? "bg-canvas" : "hover:bg-canvas",
+                      )}
+                    >
+                      <span className="w-10 shrink-0 text-dense font-semibold text-ink-muted tabular">{c.section_id}</span>
+                      <MaskedLabel />
+                    </button>
+                  </li>
+                );
+              }
+              const isUnverified = c.summary.citation_status === "unverified";
+              return (
+                <li key={c.section_id} className="border-b border-line">
+                  <button
+                    id={`clause-${c.section_id}`}
+                    type="button"
+                    aria-current={isSelected}
+                    onClick={() => onSelect(c.section_id)}
+                    data-testid="clause-row"
+                    className={cx(
+                      "relative flex w-full gap-3 px-4 py-3 text-left transition-soft",
+                      isSelected ? "bg-accent-tint" : "hover:bg-canvas",
+                    )}
+                  >
+                    {isSelected && <span aria-hidden="true" className="absolute inset-y-0 left-0 w-0.5 bg-accent" />}
+                    <span className="w-10 shrink-0 pt-0.5 text-dense font-semibold text-ink tabular">{c.section_id}</span>
+                    <span className="flex min-w-0 flex-1 flex-col gap-1.5">
+                      <span className="text-dense font-medium text-ink">{c.title}</span>
+                      <span className="flex flex-wrap items-center gap-1">
+                        <PriorityChip priority={c.priority} />
+                        {c.red_flag && <RedFlagChip type={c.red_flag.type} />}
+                        {isUnverified && (
+                          <span className="inline-flex items-center gap-1 rounded-chip border border-warn/40 bg-warn-tint px-1.5 py-0.5 text-label font-medium text-warn">
+                            <IconWarn size={12} /> 미검증
+                          </span>
+                        )}
+                      </span>
+                      <span className="text-label text-ink-muted">{c.departments.map(deptLabel).join(" · ")}</span>
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
+// ── Detail ───────────────────────────────────────────────────────────────────
+type DetailProps = {
+  clause: ClauseItem | null;
+  provenance?: ProvenanceMap;
+  departments: Dept[];
+  target: Locus | null;
+  onCite: (l: Locus) => void;
+  onClose?: () => void;
+  className?: string;
+  /** Unique per mount: the workspace renders this panel twice (docked and floating). */
+  idPrefix?: string;
+};
+
+function sameLocus(a: Locus | null, b: Locus): boolean {
+  return Boolean(a && a.page_number === b.page_number && a.sentence_index === b.sentence_index);
+}
+
+export function ClauseDetail({
+  clause,
+  provenance,
+  departments,
+  target,
+  onCite,
+  onClose,
+  className,
+  idPrefix = "detail",
+}: DetailProps) {
+  const [showTranslation, setShowTranslation] = useState(true);
+  const deptLabel = (id: string) => departments.find((d) => d.id === id)?.label ?? id;
+
+  const closeButton = onClose && (
+    <button
+      type="button"
+      onClick={onClose}
+      aria-label="조항 상세 닫기"
+      className="hidden rounded-control p-1 text-ink-muted hover:bg-canvas hover:text-ink lg:inline-flex xl:hidden"
+    >
+      <IconClose size={16} />
+    </button>
+  );
+
+  if (!clause) {
+    return (
+      <Panel title="조항 상세" labelId={`${idPrefix}-title`} as="aside" className={className} actions={closeButton}>
+        <EmptyState title="조항을 고르세요">
+          <p>목록에서 조항을 고르면 요약, 원문 발췌, 인용이 여기에 나옵니다.</p>
+        </EmptyState>
+      </Panel>
+    );
+  }
+
+  if (clause.kind === "masked") {
+    return (
+      <Panel title={`${clause.section_id} 조항`} labelId={`${idPrefix}-title`} as="aside" className={className} actions={closeButton}>
+        <div className="flex flex-col gap-2 p-4" data-testid="masked-detail">
+          <MaskedLabel />
+          <p className="text-dense text-ink-muted">
+            금액 정보가 들어 있는 조항입니다. 이 팀의 권한으로는 원문, 요약, 수치를 볼 수 없습니다.
+          </p>
+        </div>
+      </Panel>
+    );
+  }
+
+  const s = clause.summary;
+  const verified = s.citation_status === "verified";
+
+  return (
+    <Panel
+      title={`${clause.section_id} ${clause.title}`}
+      labelId={`${idPrefix}-title`}
+      as="aside"
+      provenance={provenance}
+      className={className}
+      bodyClassName="overflow-y-auto"
+      actions={closeButton}
+    >
+      <div className="flex flex-col gap-5 p-4" data-testid="clause-detail">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <PriorityChip priority={clause.priority} />
+          {clause.red_flag && <RedFlagChip type={clause.red_flag.type} />}
+          <span className="text-label text-ink-muted">{clause.departments.map(deptLabel).join(" · ")}</span>
+        </div>
+
+        <section aria-labelledby={`${idPrefix}-summary`} className="flex flex-col gap-2">
+          <h3 id={`${idPrefix}-summary`} className="text-label font-semibold text-ink-muted">
+            요약
+          </h3>
+          <p className="text-body text-ink">{s.finding.text}</p>
+          <div className="flex flex-wrap gap-1.5">
+            {s.finding.citations.map((l) => (
+              <CitationChip
+                key={`${l.page_number}-${l.sentence_index}`}
+                locus={l}
+                verified={verified}
+                onOpen={onCite}
+                isActive={sameLocus(target, l)}
+              />
+            ))}
+          </div>
+          {!verified && (
+            <div
+              role="note"
+              data-testid="unverified-note"
+              className="flex flex-col gap-1 rounded-control border border-warn/40 bg-warn-tint px-3 py-2 text-label text-warn"
+            >
+              <p className="flex items-center gap-1.5 font-semibold">
+                <IconWarn size={14} /> 인용 미검증
+              </p>
+              <p className="text-ink">
+                이 요약의 근거 중 원문에서 확인되지 않은 위치가 있습니다. 결과를 그대로 쓰지 말고 원문을 확인하세요.
+              </p>
+              {s.failed_citations.map((l) => (
+                <span key={`${l.page_number}-${l.sentence_index}`} className="tabular">
+                  확인 실패: {formatLocus(l)}
+                </span>
+              ))}
+            </div>
+          )}
+        </section>
+
+        {clause.red_flag && (
+          <section aria-labelledby={`${idPrefix}-flag`} className="flex flex-col gap-1 border-l-2 border-danger pl-3">
+            <h3 id={`${idPrefix}-flag`} className="text-label font-semibold text-danger">
+              독소조항 사유
+            </h3>
+            <p className="text-dense text-ink">{clause.red_flag.reason}</p>
+          </section>
+        )}
+
+        <section aria-labelledby={`${idPrefix}-excerpt`} className="flex flex-col gap-2">
+          <h3 id={`${idPrefix}-excerpt`} className="text-label font-semibold text-ink-muted">
+            원문 발췌
+          </h3>
+          <ol className="flex flex-col gap-2 rounded-control border border-line bg-surface-source p-3">
+            {clause.excerpt.map((e) => (
+              <li key={`${e.locus.page_number}-${e.locus.sentence_index}`} lang="en" className="flex flex-col gap-1">
+                <p className="font-serif text-source text-ink">{e.text}</p>
+                <button
+                  type="button"
+                  onClick={() => onCite(e.locus)}
+                  className={cx(
+                    "self-start text-label tabular underline-offset-2 transition-soft hover:underline",
+                    sameLocus(target, e.locus) ? "font-semibold text-accent" : "text-ink-muted",
+                  )}
+                >
+                  {formatLocus(e.locus)}
+                </button>
+              </li>
+            ))}
+          </ol>
+        </section>
+
+        {clause.translation_ko && (
+          <section aria-labelledby={`${idPrefix}-tr`} className="flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <h3 id={`${idPrefix}-tr`} className="text-label font-semibold text-ink-muted">
+                국문 참고 번역
+              </h3>
+              <span className="text-label text-ink-muted">구속력 없음</span>
+              <button
+                type="button"
+                aria-expanded={showTranslation}
+                onClick={() => setShowTranslation((v) => !v)}
+                className="ml-auto text-label text-accent hover:underline"
+              >
+                {showTranslation ? "접기" : "펼치기"}
+              </button>
+            </div>
+            {showTranslation && <p className="text-dense text-ink">{clause.translation_ko}</p>}
+          </section>
+        )}
+      </div>
+    </Panel>
+  );
+}

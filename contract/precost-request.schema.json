@@ -1,0 +1,48 @@
+{
+  "$id": "https://autorfx.local/contract/precost-request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "team": {
+      "type": "string"
+    },
+    "inputs": {
+      "type": "object",
+      "properties": {
+        "item": {
+          "type": "string",
+          "minLength": 1
+        },
+        "min_quantity": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "fixed_costs": {
+          "type": "string",
+          "pattern": "^\\d+(\\.\\d+)?$"
+        },
+        "variable_cost_per_unit": {
+          "type": "string",
+          "pattern": "^\\d+(\\.\\d+)?$"
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        }
+      },
+      "required": [
+        "item",
+        "min_quantity",
+        "fixed_costs",
+        "variable_cost_per_unit",
+        "currency"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "inputs"
+  ],
+  "additionalProperties": false
+}
