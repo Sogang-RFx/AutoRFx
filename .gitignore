@@ -26,6 +26,27 @@ venv/
 *.mp3
 data/raw/
 !data/.gitkeep
+# Exception: the synthetic demo RFQ generated from web/src/fixtures/sample/manuscript.yaml
+!web/src/fixtures/sample/*.pdf
+
+# Web
+web/node_modules/
+web/.next/
+web/test-results/
+web/playwright-report/
+web/public/pdf.worker.min.mjs
+*.tsbuildinfo
+
+# SDD documents (kept local; root only, so web/AGENTS.md from Next.js is unaffected)
+/AGENTS.md
+/REQUIREMENTS.md
+/SPEC.md
+/TASKS.md
+/docs/demo-script.md
+
+# Local AI tool state
+.omc/
+.serena/
 
 # Vector Stores & Caches
 .chroma/

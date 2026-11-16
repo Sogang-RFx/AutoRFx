@@ -1,0 +1,103 @@
+{
+  "item": "Front Door Latch Module (FDLM)",
+  "candidates": [
+    {
+      "field": "min_quantity",
+      "label": "상각 기준 최소 수량",
+      "value": "400000",
+      "note": "금형비·개발비 상각에 쓰는 최소 수량",
+      "evidence": {
+        "finding": {
+          "kind": "cost_input",
+          "departments": [
+            "costing"
+          ],
+          "text": "금형비·개발비 상각에 쓰는 최소 수량",
+          "priority": null,
+          "red_flag_reason": null,
+          "citations": [
+            {
+              "source_doc": "sample-nv27-fdlm",
+              "page_number": 2,
+              "section_id": "D.5",
+              "paragraph_index": 10,
+              "sentence_index": 21
+            }
+          ]
+        },
+        "citation_status": "verified",
+        "failed_citations": []
+      }
+    },
+    {
+      "field": "fixed_costs",
+      "label": "고정비 (금형비 + 개발비)",
+      "value": "227000",
+      "note": "금형 예산 185,000 + 개발비 42,000",
+      "evidence": {
+        "finding": {
+          "kind": "cost_input",
+          "departments": [
+            "costing"
+          ],
+          "text": "금형 예산 185,000 + 개발비 42,000",
+          "priority": null,
+          "red_flag_reason": null,
+          "citations": [
+            {
+              "source_doc": "sample-nv27-fdlm",
+              "page_number": 2,
+              "section_id": "D.3",
+              "paragraph_index": 6,
+              "sentence_index": 12
+            },
+            {
+              "source_doc": "sample-nv27-fdlm",
+              "page_number": 2,
+              "section_id": "D.3",
+              "paragraph_index": 6,
+              "sentence_index": 13
+            }
+          ]
+        },
+        "citation_status": "verified",
+        "failed_citations": []
+      }
+    },
+    {
+      "field": "variable_cost_per_unit",
+      "label": "단위당 변동비",
+      "value": null,
+      "note": "RFQ에 없는 값이다. 원가팀이 재료비·가공비를 직접 입력한다.",
+      "evidence": null
+    },
+    {
+      "field": "currency",
+      "label": "통화",
+      "value": "USD",
+      "note": "견적 통화",
+      "evidence": {
+        "finding": {
+          "kind": "cost_input",
+          "departments": [
+            "costing"
+          ],
+          "text": "견적 통화",
+          "priority": null,
+          "red_flag_reason": null,
+          "citations": [
+            {
+              "source_doc": "sample-nv27-fdlm",
+              "page_number": 2,
+              "section_id": "D.1",
+              "paragraph_index": 4,
+              "sentence_index": 7
+            }
+          ]
+        },
+        "citation_status": "verified",
+        "failed_citations": []
+      }
+    }
+  ]
+}

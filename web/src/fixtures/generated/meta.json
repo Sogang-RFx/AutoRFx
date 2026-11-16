@@ -1,0 +1,79 @@
+{
+  "assumption_note": "부서 목록과 금액 열람 그룹은 시연용 가정이다. 확정은 OQ-1(부서), OQ-2(금액 열람 팀)에서 한다.",
+  "departments": [
+    {
+      "id": "rnd",
+      "label": "연구개발"
+    },
+    {
+      "id": "purchasing",
+      "label": "구매"
+    },
+    {
+      "id": "quality",
+      "label": "품질"
+    },
+    {
+      "id": "pm",
+      "label": "PM"
+    },
+    {
+      "id": "sales",
+      "label": "영업"
+    },
+    {
+      "id": "testing",
+      "label": "시험"
+    },
+    {
+      "id": "logistics",
+      "label": "물류"
+    },
+    {
+      "id": "costing",
+      "label": "원가"
+    }
+  ],
+  "teams": [
+    {
+      "id": "rnd",
+      "label": "연구개발팀",
+      "group": "cost_restricted"
+    },
+    {
+      "id": "purchasing",
+      "label": "구매팀",
+      "group": "cost_restricted"
+    },
+    {
+      "id": "quality",
+      "label": "품질팀",
+      "group": "cost_restricted"
+    },
+    {
+      "id": "pm",
+      "label": "PM팀",
+      "group": "cost_visible"
+    },
+    {
+      "id": "sales",
+      "label": "영업팀",
+      "group": "cost_visible"
+    },
+    {
+      "id": "testing",
+      "label": "시험팀",
+      "group": "cost_restricted"
+    },
+    {
+      "id": "logistics",
+      "label": "물류팀",
+      "group": "cost_restricted"
+    },
+    {
+      "id": "costing",
+      "label": "원가팀",
+      "group": "cost_visible"
+    }
+  ]
+}

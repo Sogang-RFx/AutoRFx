@@ -1,0 +1,316 @@
+{
+  "$id": "https://autorfx.local/contract/clause.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "clause"
+        },
+        "section_id": {
+          "type": "string"
+        },
+        "section_path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "title": {
+          "type": "string"
+        },
+        "page_number": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "departments": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "priority": {
+          "type": "string",
+          "enum": [
+            "must",
+            "should",
+            "optional",
+            "info"
+          ]
+        },
+        "red_flag": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "forced_cost_reduction",
+                    "unlimited_liquidated_damages",
+                    "ownership_transfer",
+                    "unilateral_termination"
+                  ]
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "reason"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "excerpt": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "locus": {
+                "type": "object",
+                "properties": {
+                  "source_doc": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "page_number": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "section_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "paragraph_index": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "sentence_index": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "source_doc",
+                  "page_number",
+                  "section_id",
+                  "paragraph_index",
+                  "sentence_index"
+                ],
+                "additionalProperties": false
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "locus",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "summary": {
+          "type": "object",
+          "properties": {
+            "finding": {
+              "type": "object",
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "summary",
+                    "priority",
+                    "red_flag",
+                    "answer",
+                    "cost_input"
+                  ]
+                },
+                "departments": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "text": {
+                  "type": "string"
+                },
+                "priority": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "enum": [
+                        "must",
+                        "should",
+                        "optional",
+                        "info"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "red_flag_reason": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "citations": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "source_doc": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "page_number": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      "section_id": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "paragraph_index": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      },
+                      "sentence_index": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 9007199254740991
+                      }
+                    },
+                    "required": [
+                      "source_doc",
+                      "page_number",
+                      "section_id",
+                      "paragraph_index",
+                      "sentence_index"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "kind",
+                "departments",
+                "text",
+                "priority",
+                "red_flag_reason",
+                "citations"
+              ],
+              "additionalProperties": false
+            },
+            "citation_status": {
+              "type": "string",
+              "enum": [
+                "verified",
+                "unverified"
+              ]
+            },
+            "failed_citations": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "source_doc": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "page_number": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "section_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "paragraph_index": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "sentence_index": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "source_doc",
+                  "page_number",
+                  "section_id",
+                  "paragraph_index",
+                  "sentence_index"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "finding",
+            "citation_status",
+            "failed_citations"
+          ],
+          "additionalProperties": false
+        },
+        "translation_ko": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "kind",
+        "section_id",
+        "section_path",
+        "title",
+        "page_number",
+        "departments",
+        "priority",
+        "red_flag",
+        "excerpt",
+        "summary",
+        "translation_ko"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "masked"
+        },
+        "section_id": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "section_id"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}

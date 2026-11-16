@@ -1,0 +1,230 @@
+"use client";
+/**
+ * Source viewer (TASKS S012, SPEC §14, CITE-03). Renders the canonical PDF the
+ * server chose for this team (restricted teams get the cost-masked PDF) and
+ * draws highlight boxes from the sentence coordinates of the same PDF.
+ * PDF.js is loaded on demand so it stays out of the first-load bundle.
+ */
+import { useEffect, useRef, useState } from "react";
+import type { Locus, SentencesResponse } from "@/lib/rfq/contract";
+import { describeError, rfqApi, type RequestCtx } from "@/lib/rfq/provider";
+import { useResource } from "@/lib/rfq/use-resource";
+import { IconArrowRight, IconLock } from "../ui/icons";
+import { Button, ErrorState, Panel, Skeleton, cx, formatLocus } from "../ui/primitives";
+
+/** In PDF.js 6 the loading task owns `destroy()`; the document proxy does not. */
+type PdfDoc = { numPages: number; getPage: (n: number) => Promise<PdfPage>; destroy: () => Promise<void> };
+type PdfPage = {
+  getViewport: (o: { scale: number }) => { width: number; height: number };
+  render: (o: { canvas: HTMLCanvasElement; viewport: { width: number; height: number } }) => {
+    promise: Promise<void>;
+    cancel: () => void;
+  };
+};
+
+async function loadPdf(url: () => string, signal: AbortSignal): Promise<PdfDoc> {
+  const pdfjs = await import("pdfjs-dist");
+  pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
+  // url() may throw a ConfigError; inside this async function it becomes a rejection.
+  const res = await fetch(url(), { cache: "no-store", signal });
+  if (!res.ok) throw new Error(`원문 PDF를 받지 못했습니다 (${res.status}).`);
+  const data = new Uint8Array(await res.arrayBuffer());
+  const task = pdfjs.getDocument({ data });
+  const proxy = await task.promise;
+  return {
+    numPages: proxy.numPages,
+    getPage: (n) => proxy.getPage(n) as unknown as Promise<PdfPage>,
+    destroy: () => task.destroy(),
+  };
+}
+
+type Props = {
+  rfqId: string;
+  ctx: RequestCtx;
+  restricted: boolean;
+  target: Locus | null;
+  className?: string;
+};
+
+export function SourceViewer({ rfqId, ctx, restricted, target, className }: Props) {
+  const [page, setPage] = useState(1);
+  const [doc, setDoc] = useState<PdfDoc | null>(null);
+  const [docError, setDocError] = useState<string | null>(null);
+  const [size, setSize] = useState<{ w: number; h: number } | null>(null);
+  const [width, setWidth] = useState(0);
+  const holderRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const markRef = useRef<HTMLDivElement>(null);
+
+  // Follow the citation target (state adjusted during render, not in an effect).
+  const [followed, setFollowed] = useState<Locus | null>(null);
+  if (target !== followed) {
+    setFollowed(target);
+    if (target) setPage(target.page_number);
+  }
+
+  // Load the PDF once per mount. The parent remounts this component (key) when
+  // the team changes, because the server decides which file a team receives.
+  const sourceKey = `${rfqId}:${ctx.team ?? "none"}`;
+  useEffect(() => {
+    const controller = new AbortController();
+    let loaded: PdfDoc | null = null;
+    loadPdf(() => rfqApi.sourceUrl(rfqId, ctx), controller.signal).then(
+      (d) => {
+        loaded = d;
+        if (controller.signal.aborted) void d.destroy();
+        else setDoc(d);
+      },
+      (e: unknown) => {
+        if (!controller.signal.aborted) setDocError(describeError(e));
+      },
+    );
+    return () => {
+      controller.abort();
+      if (loaded) void loaded.destroy();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceKey]);
+
+  // Track available width.
+  useEffect(() => {
+    const el = holderRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(([entry]) => setWidth(Math.floor(entry.contentRect.width)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // Render the page.
+  useEffect(() => {
+    if (!doc || !canvasRef.current || width < 50) return;
+    let cancelled = false;
+    let task: { cancel: () => void } | null = null;
+    void doc.getPage(Math.min(page, doc.numPages)).then((p) => {
+      if (cancelled || !canvasRef.current) return;
+      const base = p.getViewport({ scale: 1 });
+      const cssScale = Math.min(width, 900) / base.width;
+      const ratio = window.devicePixelRatio || 1;
+      const viewport = p.getViewport({ scale: cssScale * ratio });
+      const canvas = canvasRef.current;
+      canvas.width = Math.floor(viewport.width);
+      canvas.height = Math.floor(viewport.height);
+      setSize({ w: base.width * cssScale, h: base.height * cssScale });
+      const t = p.render({ canvas, viewport });
+      task = t;
+      t.promise.catch(() => undefined);
+    });
+    return () => {
+      cancelled = true;
+      task?.cancel();
+    };
+  }, [doc, page, width]);
+
+  const sentences = useResource<SentencesResponse>(`sent:${rfqId}:${ctx.team ?? "none"}:${page}`, (s) =>
+    rfqApi.sentences(rfqId, page, ctx, s),
+  );
+  const marked =
+    target && target.page_number === page && sentences.status === "ok"
+      ? (sentences.data.data.sentences.find((s) => s.locus.sentence_index === target.sentence_index) ?? null)
+      : null;
+  const targetMissing = Boolean(target && target.page_number === page && sentences.status === "ok" && !marked);
+
+  useEffect(() => {
+    // Scroll only the viewer, never the page around it.
+    const holder = holderRef.current;
+    const mark = markRef.current;
+    if (!marked || !holder || !mark) return;
+    const delta = mark.getBoundingClientRect().top - holder.getBoundingClientRect().top - holder.clientHeight / 2;
+    holder.scrollBy({ top: delta, behavior: "smooth" });
+  }, [marked]);
+
+  const pageCount = doc?.numPages ?? 0;
+
+  return (
+    <Panel
+      title="원문"
+      labelId="source-title"
+      provenance={sentences.status === "ok" ? sentences.data.provenance : undefined}
+      className={className}
+      bodyClassName="flex flex-col"
+      actions={
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" aria-label="이전 페이지" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
+            <IconArrowRight size={14} className="rotate-180" />
+          </Button>
+          <span className="text-label text-ink-muted tabular" aria-live="polite" data-testid="page-indicator">
+            {page} / {pageCount || "–"}
+          </span>
+          <Button
+            variant="ghost"
+            aria-label="다음 페이지"
+            disabled={!pageCount || page >= pageCount}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            <IconArrowRight size={14} />
+          </Button>
+        </div>
+      }
+    >
+      <div className="flex flex-wrap items-center gap-2 border-b border-line bg-surface-source px-4 py-2 text-label">
+        {target ? (
+          <span className="font-semibold text-ink tabular" data-testid="source-locator">
+            {formatLocus(target)}
+          </span>
+        ) : (
+          <span className="text-ink-muted">인용을 누르면 해당 문장으로 이동합니다.</span>
+        )}
+        {restricted && (
+          <span className="ml-auto inline-flex items-center gap-1 text-ink-muted" data-testid="masked-pdf-note">
+            <IconLock size={12} /> 금액 조항이 가려진 원문
+          </span>
+        )}
+      </div>
+      {targetMissing && (
+        <p role="status" className="border-b border-warn/40 bg-warn-tint px-4 py-2 text-label text-warn">
+          이 위치의 문장을 원문에서 찾지 못했습니다. 인용이 검증되지 않았습니다.
+        </p>
+      )}
+      <div
+        ref={holderRef}
+        tabIndex={0}
+        role="region"
+        aria-label={`원문 ${page}페이지 (방향키로 스크롤)`}
+        className="min-h-0 flex-1 overflow-auto bg-canvas p-3 md:p-4"
+      >
+        {docError && <ErrorState message={docError} />}
+        {!doc && !docError && <Skeleton lines={10} className="mx-auto max-w-xl rounded-panel bg-surface-source" />}
+        <div
+          className={cx("relative mx-auto bg-white shadow-float", !doc && "hidden")}
+          style={size ? { width: size.w, height: size.h } : undefined}
+        >
+          <canvas
+            ref={canvasRef}
+            className="block"
+            role="img"
+            aria-label={`원문 ${page}페이지`}
+            style={size ? { width: size.w, height: size.h } : undefined}
+          />
+          {marked?.rects.map((r, i) => (
+            <div
+              key={i}
+              ref={i === 0 ? markRef : undefined}
+              data-testid="source-mark"
+              aria-hidden="true"
+              className="pointer-events-none absolute rounded-chip bg-mark"
+              style={{
+                left: `${r.x * 100}%`,
+                top: `${r.y * 100}%`,
+                width: `${r.w * 100}%`,
+                height: `${r.h * 100}%`,
+                mixBlendMode: "multiply",
+                boxShadow: "0 0 0 1px rgb(122 74 0 / 0.35)",
+              }}
+            />
+          ))}
+        </div>
+        {marked && <p className="sr-only">강조된 문장: {marked.text}</p>}
+      </div>
+    </Panel>
+  );
+}

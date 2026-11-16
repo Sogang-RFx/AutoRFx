@@ -1,0 +1,22 @@
+{
+  "$id": "https://autorfx.local/contract/upload-request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "file_name": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 255
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "file_name"
+  ],
+  "additionalProperties": false
+}

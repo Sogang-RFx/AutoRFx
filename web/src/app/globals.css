@@ -1,0 +1,166 @@
+@import "tailwindcss";
+
+/*
+ * Design contract — SPEC §15. Every Tailwind default is switched off
+ * (`--*: initial`) so only these tokens can be used. Change SPEC §15 first,
+ * then this file.
+ */
+@theme {
+  --*: initial;
+
+  /* 4px grid: p-1 = 4px, p-2 = 8px, p-3 = 12px, p-4 = 16px, p-6 = 24px … */
+  --spacing: 4px;
+
+  --breakpoint-md: 48rem; /* 768 */
+  --breakpoint-lg: 64rem; /* 1024: 2-pane */
+  --breakpoint-xl: 80rem; /* 1280: 3-pane */
+
+  --color-canvas: #f6f4ef;
+  --color-surface: #ffffff;
+  --color-surface-source: #fbf8f1;
+  --color-ink: #1c1b19;
+  --color-ink-muted: #5e5a52;
+  --color-line: var(--line);
+  --color-line-control: #8a857b;
+  --color-accent: #1f4e8c;
+  --color-accent-tint: #e6eef8;
+  --color-danger: #a1271b;
+  --color-danger-tint: #f9eae7;
+  --color-ok: #1d6a46;
+  --color-ok-tint: #e7f3ec;
+  --color-warn: #7a4a00;
+  --color-warn-tint: #fbf0db;
+  --color-mock: #6b2e8f;
+  --color-mock-tint: #f4eaf9;
+  --color-mark: #ffe9a8;
+  --color-white: #ffffff;
+  --color-transparent: transparent;
+
+  --font-sans: var(--font-pretendard), "Apple SD Gothic Neo", system-ui, sans-serif;
+  --font-serif: var(--font-source-serif), "Times New Roman", serif;
+
+  --text-title: calc(26px + var(--bump));
+  --text-title--line-height: calc(34px + var(--bump));
+  --text-heading: calc(18px + var(--bump));
+  --text-heading--line-height: calc(26px + var(--bump));
+  --text-body: calc(14px + var(--bump));
+  --text-body--line-height: calc(22px + var(--bump));
+  --text-dense: calc(13px + var(--bump));
+  --text-dense--line-height: calc(20px + var(--bump));
+  --text-label: calc(12px + var(--bump));
+  --text-label--line-height: calc(16px + var(--bump));
+  --text-source: calc(15px + var(--bump));
+  --text-source--line-height: calc(24px + var(--bump));
+
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+
+  --radius-chip: 4px;
+  --radius-control: 6px;
+  --radius-panel: 10px;
+  --radius-full: 9999px;
+
+  --shadow-float: 0 8px 24px rgb(28 27 25 / 0.14), 0 1px 2px rgb(28 27 25 / 0.08);
+
+  --ease-soft: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+:root {
+  --bump: 0px;
+  --line: #dedad0;
+  --dur-fast: 180ms;
+  --dur-panel: 280ms;
+  color-scheme: light;
+}
+
+/* Presentation mode: every size +2px, stronger rules (SPEC §15.4). */
+:root[data-present="on"] {
+  --bump: 2px;
+  --line: #8a857b;
+}
+
+@layer base {
+  *,
+  *::before,
+  *::after {
+    border-color: var(--color-line);
+  }
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    background: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: var(--text-body);
+    line-height: var(--text-body--line-height);
+    word-break: keep-all;
+    overflow-wrap: anywhere;
+    -webkit-font-smoothing: antialiased;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 2px;
+  }
+  ::selection {
+    background: var(--color-accent-tint);
+  }
+}
+
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+@utility transition-soft {
+  transition-property: color, background-color, border-color, opacity, transform;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-soft);
+}
+
+@utility skeleton-delay {
+  opacity: 0;
+  animation: skeleton-in 600ms var(--ease-soft) 150ms forwards;
+}
+
+@keyframes skeleton-in {
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes pulse-soft {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@utility spin {
+  animation: spin 900ms linear infinite;
+}
+
+@utility pulse-soft {
+  animation: pulse-soft 1.4s var(--ease-soft) infinite;
+}
+
+/* Mock marker: dashed border + purple, never colour alone (SPEC §15.3). */
+@utility mock-outline {
+  border: 1px dashed var(--color-mock);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
