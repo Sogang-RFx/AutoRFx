@@ -1,0 +1,79 @@
+# 독소조항 체크리스트 (도메인 팀 관리).
+#
+# 출처: 11/02 Golden Dataset 템플릿의 4종. patterns는 대소문자를 구분하지 않는 정규식이다.
+# 짧은 단어에는 \b(단어 경계)를 붙인다. 안 붙이면 "Ratio"가 "operation" 안에서도 맞는다.
+# unless에 맞는 표현이 같은 조항에 있으면 표시하지 않는다 (예: 상한이 명시된 지체상금).
+# 유형을 추가하려면 항목을 더하면 된다. 화면의 이름은 label을 그대로 쓴다.
+
+red_flags:
+  - type: forced_cost_reduction
+    label: CR 강제
+    description: 매년 일정 비율의 단가 인하를 의무로 둔다.
+    departments: [costing, sales]
+    patterns:
+      en:
+        - 'annual (price|cost) reduction'
+        - '(price|cost) reduction of \d'
+        - 'year[- ]over[- ]year (price )?reduction'
+        - 'productivity (improvement|give-?back)'
+        - '\d+(\.\d+)?\s?% (p\.\s?a\.|per (year|annum))'
+      de:
+        - 'jährliche[nr]? Preisreduzierung'
+        - 'Preisreduzierung von'
+        - '\bRatio(nalisierung)?(seffekt|svorgabe)?\b'
+        - '\d+(,\d+)?\s?% p\.\s?a\.'
+
+  - type: unlimited_liquidated_damages
+    label: 무제한 지체상금
+    description: 지체상금이나 위약벌에 상한이 없다.
+    departments: [legal, sales]
+    patterns:
+      en:
+        - 'liquidated damages'
+        - 'penalt(y|ies) (for|of) (late|delay)'
+        - 'delay(ed)? (delivery )?penalt(y|ies)'
+      de:
+        - 'Vertragsstrafe'
+        - 'Verzugsschaden'
+        - 'Pönale'
+    unless:
+      en:
+        - '(shall|will) not exceed'
+        - 'capped at'
+        - 'maximum of'
+        - 'up to a maximum'
+        - 'limited to'
+      de:
+        - 'höchstens'
+        - 'maximal'
+        - 'begrenzt auf'
+        - 'insgesamt nicht mehr als'
+
+  - type: ownership_transfer
+    label: 소유권 귀속
+    description: 공급사의 지식재산이나 금형의 소유권을 발주사에 넘긴다.
+    departments: [legal, production_engineering]
+    patterns:
+      en:
+        - '(shall|will) (become|be|remain) the (sole |exclusive )?property of'
+        - 'ownership .{0,60}(transfer|vest|pass)'
+        - 'assign(s|ment)? .{0,60}intellectual property'
+        - 'work made for hire'
+      de:
+        - 'geht in das Eigentum'
+        - 'Eigentum des (Auftraggebers|Bestellers|Kunden)'
+        - 'Übertragung .{0,60}(Schutzrechte|Nutzungsrechte|Eigentum)'
+
+  - type: unilateral_termination
+    label: 일방적 해지
+    description: 발주사가 사유나 보상 없이 계약을 끝낼 수 있다.
+    departments: [legal, sales]
+    patterns:
+      en:
+        - 'terminat\w* .{0,80}(at any time|for (its )?convenience|without cause)'
+        - 'termination for convenience'
+        - 'terminat\w* .{0,80}without (penalty|liability|compensation)'
+      de:
+        - 'jederzeit .{0,60}kündigen'
+        - 'Kündigung .{0,60}ohne Angabe von Gründen'
+        - 'ohne Entschädigung'

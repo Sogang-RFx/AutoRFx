@@ -43,23 +43,113 @@
               },
               "label": {
                 "type": "string"
+              },
+              "role": {
+                "type": "string"
+              },
+              "receives_all": {
+                "type": "boolean"
               }
             },
             "required": [
               "id",
-              "label"
+              "label",
+              "role",
+              "receives_all"
             ],
             "additionalProperties": false
           }
         },
         "assumption_note": {
           "type": "string"
+        },
+        "engines": {
+          "type": "object",
+          "properties": {
+            "analysis": {
+              "type": "string",
+              "minLength": 1
+            },
+            "translation": {
+              "type": "string",
+              "minLength": 1
+            },
+            "retrieval": {
+              "type": "string",
+              "minLength": 1
+            },
+            "llm_connected": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "analysis",
+            "translation",
+            "retrieval",
+            "llm_connected"
+          ],
+          "additionalProperties": false
+        },
+        "samples": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "file_count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "id",
+              "label",
+              "file_count"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "upload": {
+          "type": "object",
+          "properties": {
+            "max_files": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "max_file_mb": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "accept": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "required": [
+            "max_files",
+            "max_file_mb",
+            "accept"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
         "teams",
         "departments",
-        "assumption_note"
+        "assumption_note",
+        "engines",
+        "samples",
+        "upload"
       ],
       "additionalProperties": false
     },
@@ -74,6 +164,7 @@
           "citation",
           "translation",
           "source",
+          "consistency",
           "cost_inputs",
           "precost",
           "chat",

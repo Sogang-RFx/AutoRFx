@@ -24,13 +24,25 @@
                     "type": "string",
                     "const": "clause"
                   },
+                  "clause_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "source_doc": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "section_id": {
                     "type": "string"
                   },
                   "title": {
                     "type": "string"
                   },
-                  "departments": {
+                  "primary_department": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "reference_departments": {
                     "type": "array",
                     "items": {
                       "type": "string"
@@ -48,13 +60,22 @@
                   "red_flag": {
                     "anyOf": [
                       {
-                        "type": "string",
-                        "enum": [
-                          "forced_cost_reduction",
-                          "unlimited_liquidated_damages",
-                          "ownership_transfer",
-                          "unilateral_termination"
-                        ]
+                        "type": "object",
+                        "properties": {
+                          "type": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "label": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "type",
+                          "label"
+                        ],
+                        "additionalProperties": false
                       },
                       {
                         "type": "null"
@@ -71,6 +92,12 @@
                     "minimum": 1,
                     "maximum": 9007199254740991
                   },
+                  "anchor": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "citation_status": {
                     "type": "string",
                     "enum": [
@@ -81,13 +108,17 @@
                 },
                 "required": [
                   "kind",
+                  "clause_id",
+                  "source_doc",
                   "section_id",
                   "title",
-                  "departments",
+                  "primary_department",
+                  "reference_departments",
                   "priority",
                   "red_flag",
                   "page_number",
                   "sentence_index",
+                  "anchor",
                   "citation_status"
                 ],
                 "additionalProperties": false
@@ -99,12 +130,22 @@
                     "type": "string",
                     "const": "masked"
                   },
+                  "clause_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "source_doc": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "section_id": {
                     "type": "string"
                   }
                 },
                 "required": [
                   "kind",
+                  "clause_id",
+                  "source_doc",
                   "section_id"
                 ],
                 "additionalProperties": false
@@ -130,6 +171,7 @@
           "citation",
           "translation",
           "source",
+          "consistency",
           "cost_inputs",
           "precost",
           "chat",

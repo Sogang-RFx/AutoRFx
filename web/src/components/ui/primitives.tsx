@@ -1,9 +1,11 @@
+"use client";
 /**
  * Base components (TASKS S008, SPEC §15.3). State is never shown by colour
  * alone: every chip also carries a word and/or an icon.
  */
 import type { ButtonHTMLAttributes, ReactNode } from "react";
-import type { Locus, Priority, ProvenanceMap, RedFlagType } from "@/lib/rfq/contract";
+import type { Engines, Locus, Origin, Priority, ProvenanceMap } from "@/lib/rfq/contract";
+import { fileName, fileTag, usePackageFiles } from "@/lib/rfq/package-context";
 import { IconCheck, IconFlag, IconLock, IconWarn } from "./icons";
 
 export function cx(...parts: Array<string | false | null | undefined>): string {
@@ -36,24 +38,69 @@ export function PriorityChip({ priority }: { priority: Priority }) {
   );
 }
 
-export const RED_FLAG_LABEL: Record<RedFlagType, string> = {
-  forced_cost_reduction: "CR 강제",
-  unlimited_liquidated_damages: "무제한 지체상금",
-  ownership_transfer: "소유권 귀속",
-  unilateral_termination: "일방적 해지",
-};
-
-export function RedFlagChip({ type }: { type: RedFlagType }) {
+/** Type labels come from the rule files through the response, never from code. */
+export function RedFlagChip({ label }: { label: string }) {
   return (
     <span className={cx(chipBase, "border border-danger/40 bg-danger-tint text-danger")}>
       <IconFlag size={12} />
-      독소조항 · {RED_FLAG_LABEL[type]}
+      독소조항 · {label}
     </span>
   );
 }
 
-export function formatLocus(l: Pick<Locus, "page_number" | "sentence_index">): string {
-  return `${l.page_number}페이지 ${l.sentence_index}번째 문장`;
+/**
+ * Lead department as an outlined bold chip, reference departments as quiet
+ * text (weight and words, not colour). Up to `maxRefs` references, then "외 n".
+ */
+export function DepartmentChips({
+  primary,
+  refs,
+  label,
+  maxRefs = 3,
+}: {
+  primary: string;
+  refs: string[];
+  label: (id: string) => string;
+  maxRefs?: number;
+}) {
+  const shown = refs.slice(0, maxRefs);
+  const rest = refs.length - shown.length;
+  return (
+    <span className="inline-flex flex-wrap items-center gap-x-2 gap-y-1">
+      <span className={cx(chipBase, "border border-ink font-semibold text-ink")} data-testid="primary-department">
+        주관 {label(primary)}
+      </span>
+      {shown.length > 0 && (
+        <span className="text-label text-ink-muted">
+          참조 {shown.map(label).join(", ")}
+          {rest > 0 && ` 외 ${rest}`}
+        </span>
+      )}
+    </span>
+  );
+}
+
+/** "A · 2페이지 7번째 문장 · Sheet!C6": file tag, page, sentence and the cell when there is one. */
+export function formatLocus(l: Pick<Locus, "page_number" | "sentence_index" | "anchor">, tag?: string): string {
+  const base = `${l.page_number}페이지 ${l.sentence_index}번째 문장`;
+  return [tag, base, l.anchor].filter(Boolean).join(" · ");
+}
+
+/** Same position: file, page and sentence. */
+export function sameLocus(a: Locus | null, b: Locus): boolean {
+  return Boolean(
+    a && a.source_doc === b.source_doc && a.page_number === b.page_number && a.sentence_index === b.sentence_index,
+  );
+}
+
+export function locusKey(l: Locus, index: number): string {
+  return `${l.source_doc}-${l.page_number}-${l.sentence_index}-${index}`;
+}
+
+/** formatLocus with the file tag of the open package. */
+export function useLocusLabel(): (l: Locus) => string {
+  const files = usePackageFiles();
+  return (l) => formatLocus(l, files.length > 1 ? fileTag(files, l.source_doc) : undefined);
 }
 
 type CitationChipProps = {
@@ -63,9 +110,11 @@ type CitationChipProps = {
   isActive?: boolean;
 };
 
-/** Citation colour follows verification state (SPEC §15.1). */
+/** Citation colour follows verification state (SPEC §15.1). The file name is in the tooltip. */
 export function CitationChip({ locus, verified, onOpen, isActive }: CitationChipProps) {
-  const label = formatLocus(locus);
+  const files = usePackageFiles();
+  const label = useLocusLabel()(locus);
+  const file = fileName(files, locus.source_doc);
   const tone = verified
     ? "bg-ok-tint text-ok border border-ok/35 hover:border-ok"
     : "bg-warn-tint text-warn border border-warn/40 hover:border-warn";
@@ -76,28 +125,64 @@ export function CitationChip({ locus, verified, onOpen, isActive }: CitationChip
       {!verified && <span className="font-semibold">· 미검증</span>}
     </>
   );
-  if (!onOpen) return <span className={cx(chipBase, tone)}>{content}</span>;
+  if (!onOpen) {
+    return (
+      <span className={cx(chipBase, tone)} title={file}>
+        {content}
+      </span>
+    );
+  }
   return (
     <button
       type="button"
       onClick={() => onOpen(locus)}
       aria-pressed={isActive}
-      aria-label={`원문 열기: ${label}${verified ? "" : " (미검증)"}`}
-      className={cx(chipBase, tone, "transition-soft cursor-pointer", isActive && "outline-2 outline-accent")}
+      title={file}
+      aria-label={`원문 열기: ${file} ${label}${verified ? "" : " (미검증)"}`}
+      className={cx(chipBase, tone, "max-w-full cursor-pointer truncate transition-soft", isActive && "outline-2 outline-accent")}
     >
       {content}
     </button>
   );
 }
 
-export function MockChip({ title }: { title?: string }) {
+/** How the results were computed: rule files only, or an LLM. */
+export function engineLabel(engines: Engines): string | null {
+  if (engines.analysis === "rule-only" || !engines.llm_connected) return "규칙 기반 · LLM 미연결";
+  return `LLM 분석 · ${engines.analysis.replace(/^openai:/, "")}`;
+}
+
+const TRANSLATION_LABEL: Record<string, string> = { none: "번역 없음", deepl: "DeepL" };
+
+export function EngineBadge({ engines }: { engines: Engines }) {
+  const label = engineLabel(engines);
+  if (!label) return null;
+  const translation = TRANSLATION_LABEL[engines.translation] ?? engines.translation;
+  const title = `분석: ${engines.analysis} · 번역: ${translation} · 검색: ${engines.retrieval}`;
   return (
     <span
-      className={cx(chipBase, "mock-outline bg-mock-tint text-mock")}
-      title={title ?? "목업 데이터입니다. 실제 분석 결과가 아닙니다."}
-      data-testid="mock-chip"
+      data-testid="engine-badge"
+      title={title}
+      className={cx(chipBase, "border border-line-control bg-surface py-1 font-semibold text-ink")}
     >
-      목업
+      <IconWarn size={12} className="text-ink-muted" />
+      {label}
+      <span className="sr-only">. {title}</span>
+    </span>
+  );
+}
+
+const ORIGIN_LABEL: Record<Origin, string> = {
+  fixture: "출처 확인 안 됨",
+  rule: "규칙으로 판정",
+  llm: "LLM으로 판정",
+  rule_fallback: "LLM 응답 실패, 규칙으로 판정",
+};
+
+export function OriginLabel({ origin }: { origin: Origin }) {
+  return (
+    <span className="text-label text-ink-muted" data-testid="clause-origin">
+      {ORIGIN_LABEL[origin]}
     </span>
   );
 }
@@ -110,13 +195,9 @@ export function MaskedLabel() {
   );
 }
 
-/** Shows where a panel's data came from. Mock cannot be hidden (INV-10). */
+/** Shows that a panel's data came from the backend. The provider refuses anything else (INV-10). */
 export function ProvenanceBadge({ provenance }: { provenance: ProvenanceMap | undefined }) {
-  if (!provenance) return null;
-  const entries = Object.entries(provenance);
-  const mockParts = entries.filter(([, v]) => v === "mock").map(([k]) => k);
-  if (mockParts.length > 0) return <MockChip title={`목업 부분: ${mockParts.join(", ")}`} />;
-  if (entries.length === 0) return null;
+  if (!provenance || Object.keys(provenance).length === 0) return null;
   return <span className={cx(chipBase, "border border-line text-ink-muted")}>실제 데이터</span>;
 }
 
@@ -148,8 +229,8 @@ export function Panel({
       aria-labelledby={labelId}
       className={cx("flex min-h-0 min-w-0 flex-col rounded-panel border border-line bg-surface", className)}
     >
-      <header className="flex min-h-11 items-center gap-2 border-b border-line px-4 py-2">
-        <h2 id={labelId} className="text-dense font-semibold text-ink">
+      <header className="flex min-h-11 flex-wrap items-center gap-2 border-b border-line px-4 py-2">
+        <h2 id={labelId} className="min-w-0 truncate text-dense font-semibold text-ink">
           {title}
         </h2>
         <ProvenanceBadge provenance={provenance} />
@@ -199,6 +280,16 @@ export function EmptyState({ title, children }: { title: string; children?: Reac
     <div className="flex flex-col items-start gap-1 p-6 text-dense text-ink-muted" role="status">
       <p className="text-body font-semibold text-ink">{title}</p>
       {children}
+    </div>
+  );
+}
+
+/** A 403: the team may not see this. A lock, not an error. */
+export function ForbiddenState({ message }: { message: string }) {
+  return (
+    <div className="flex items-start gap-2 p-6 text-dense text-ink-muted" role="status" data-testid="forbidden">
+      <IconLock size={16} className="mt-0.5 shrink-0" />
+      <p>{message}</p>
     </div>
   );
 }

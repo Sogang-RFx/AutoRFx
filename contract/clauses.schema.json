@@ -24,6 +24,14 @@
                     "type": "string",
                     "const": "clause"
                   },
+                  "clause_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "source_doc": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "section_id": {
                     "type": "string"
                   },
@@ -41,7 +49,21 @@
                     "minimum": 1,
                     "maximum": 9007199254740991
                   },
-                  "departments": {
+                  "lang": {
+                    "type": "string",
+                    "enum": [
+                      "en",
+                      "de",
+                      "ko",
+                      "mixed",
+                      "unknown"
+                    ]
+                  },
+                  "primary_department": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "reference_departments": {
                     "type": "array",
                     "items": {
                       "type": "string"
@@ -63,12 +85,11 @@
                         "properties": {
                           "type": {
                             "type": "string",
-                            "enum": [
-                              "forced_cost_reduction",
-                              "unlimited_liquidated_damages",
-                              "ownership_transfer",
-                              "unilateral_termination"
-                            ]
+                            "minLength": 1
+                          },
+                          "label": {
+                            "type": "string",
+                            "minLength": 1
                           },
                           "reason": {
                             "type": "string"
@@ -76,6 +97,7 @@
                         },
                         "required": [
                           "type",
+                          "label",
                           "reason"
                         ],
                         "additionalProperties": false
@@ -115,6 +137,12 @@
                               "type": "integer",
                               "minimum": 1,
                               "maximum": 9007199254740991
+                            },
+                            "anchor": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             }
                           },
                           "required": [
@@ -122,7 +150,8 @@
                             "page_number",
                             "section_id",
                             "paragraph_index",
-                            "sentence_index"
+                            "sentence_index",
+                            "anchor"
                           ],
                           "additionalProperties": false
                         },
@@ -150,7 +179,8 @@
                               "priority",
                               "red_flag",
                               "answer",
-                              "cost_input"
+                              "cost_input",
+                              "consistency"
                             ]
                           },
                           "departments": {
@@ -211,6 +241,12 @@
                                   "type": "integer",
                                   "minimum": 1,
                                   "maximum": 9007199254740991
+                                },
+                                "anchor": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
                                 }
                               },
                               "required": [
@@ -218,7 +254,8 @@
                                 "page_number",
                                 "section_id",
                                 "paragraph_index",
-                                "sentence_index"
+                                "sentence_index",
+                                "anchor"
                               ],
                               "additionalProperties": false
                             }
@@ -268,6 +305,12 @@
                               "type": "integer",
                               "minimum": 1,
                               "maximum": 9007199254740991
+                            },
+                            "anchor": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             }
                           },
                           "required": [
@@ -275,7 +318,8 @@
                             "page_number",
                             "section_id",
                             "paragraph_index",
-                            "sentence_index"
+                            "sentence_index",
+                            "anchor"
                           ],
                           "additionalProperties": false
                         }
@@ -293,20 +337,34 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "origin": {
+                    "type": "string",
+                    "enum": [
+                      "fixture",
+                      "rule",
+                      "llm",
+                      "rule_fallback"
+                    ]
                   }
                 },
                 "required": [
                   "kind",
+                  "clause_id",
+                  "source_doc",
                   "section_id",
                   "section_path",
                   "title",
                   "page_number",
-                  "departments",
+                  "lang",
+                  "primary_department",
+                  "reference_departments",
                   "priority",
                   "red_flag",
                   "excerpt",
                   "summary",
-                  "translation_ko"
+                  "translation_ko",
+                  "origin"
                 ],
                 "additionalProperties": false
               },
@@ -317,12 +375,22 @@
                     "type": "string",
                     "const": "masked"
                   },
+                  "clause_id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "source_doc": {
+                    "type": "string",
+                    "minLength": 1
+                  },
                   "section_id": {
                     "type": "string"
                   }
                 },
                 "required": [
                   "kind",
+                  "clause_id",
+                  "source_doc",
                   "section_id"
                 ],
                 "additionalProperties": false
@@ -348,6 +416,7 @@
           "citation",
           "translation",
           "source",
+          "consistency",
           "cost_inputs",
           "precost",
           "chat",

@@ -34,6 +34,9 @@
               "minimum": -9007199254740991,
               "maximum": 9007199254740991
             },
+            "dataset": {
+              "type": "string"
+            },
             "metrics": {
               "type": "array",
               "items": {
@@ -53,13 +56,53 @@
                       "number",
                       "null"
                     ]
+                  },
+                  "support": {
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   }
                 },
                 "required": [
                   "key",
                   "label",
                   "value",
-                  "target"
+                  "target",
+                  "support"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "errors": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "dimension": {
+                    "type": "string"
+                  },
+                  "ref": {
+                    "type": "string"
+                  },
+                  "expected": {
+                    "type": "string"
+                  },
+                  "actual": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "dimension",
+                  "ref",
+                  "expected",
+                  "actual"
                 ],
                 "additionalProperties": false
               }
@@ -68,7 +111,9 @@
           "required": [
             "status",
             "scored_at",
-            "metrics"
+            "dataset",
+            "metrics",
+            "errors"
           ],
           "additionalProperties": false
         }
@@ -85,6 +130,7 @@
           "citation",
           "translation",
           "source",
+          "consistency",
           "cost_inputs",
           "precost",
           "chat",

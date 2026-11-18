@@ -1,47 +1,72 @@
 "use client";
 /**
- * Start screen (TASKS S010, SPEC §14, US7). In the demo shell the chosen file
- * is never transmitted: only its name is sent, and the result is the sample.
+ * Start screen (TASKS S010, SPEC §14, US7). An RFQ is a package of files the
+ * user uploads. Nothing already on the server is listed or offered here.
  */
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import type { DragEvent } from "react";
-import { IconArrowRight, IconLock, IconUpload } from "@/components/ui/icons";
-import { Button, ErrorState, MockChip, cx } from "@/components/ui/primitives";
-import { modeOf } from "@/lib/rfq/config";
-import { describeError, rfqApi } from "@/lib/rfq/provider";
+import { IconArrowRight, IconClose, IconUpload, IconWarn } from "@/components/ui/icons";
+import { Button, EngineBadge, ErrorState, cx } from "@/components/ui/primitives";
+import type { MetaResponse } from "@/lib/rfq/contract";
+import { describeError, rfqApi, type UploadSource } from "@/lib/rfq/provider";
+import { useSession } from "@/lib/rfq/session";
+import { useResource } from "@/lib/rfq/use-resource";
 
 const PRINCIPLES = [
-  { title: "원문은 그대로", body: "원본을 고치지 않고 보관합니다. 모든 판단은 원문 위치로 돌아갑니다." },
-  { title: "인용은 문장 단위", body: "요약마다 몇 페이지 몇 번째 문장인지 붙이고, 확인되지 않은 인용은 따로 표시합니다." },
+  { title: "원문은 그대로", body: "원본을 고치지 않고 보관합니다. 모든 판단은 파일과 원문 위치로 돌아갑니다." },
+  { title: "인용은 문장 단위", body: "결과마다 어느 파일 몇 페이지 몇 번째 문장인지 붙이고, 확인되지 않은 인용은 따로 표시합니다." },
   { title: "금액은 팀별로", body: "가격 조항은 열람 권한이 없는 팀의 화면, 원문, 내보내기에서 모두 빠집니다." },
 ];
 
-/** Upload copy depends on the document part's mode; a config error counts as "not mock". */
-function isDocumentMock(): boolean {
-  try {
-    return modeOf("document") === "mock";
-  } catch {
-    return false;
+type Upload = MetaResponse["data"]["upload"];
+
+/** Problems with the picked files, checked before anything is sent. */
+function checkFiles(files: File[], rules: Upload | null): string[] {
+  if (!rules) return [];
+  const problems: string[] = [];
+  if (files.length > rules.max_files) problems.push(`파일은 ${rules.max_files}개까지 올릴 수 있습니다.`);
+  for (const f of files) {
+    const ext = f.name.includes(".") ? `.${f.name.split(".").pop()?.toLowerCase()}` : "";
+    if (!rules.accept.includes(ext)) problems.push(`'${f.name}': 받지 않는 형식입니다 (${rules.accept.join(", ")}).`);
+    if (f.size > rules.max_file_mb * 1024 * 1024) problems.push(`'${f.name}': 파일당 ${rules.max_file_mb}MB를 넘습니다.`);
   }
+  return problems;
+}
+
+function formatSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 export default function StartPage() {
-  const isMock = isDocumentMock();
   const router = useRouter();
+  const session = useSession();
   const inputRef = useRef<HTMLInputElement>(null);
-  const [fileName, setFileName] = useState<string | null>(null);
+  const [files, setFiles] = useState<File[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function start(name: string | null) {
+  const meta = useResource(session.ready ? "meta" : null, (s) => rfqApi.meta(s));
+  const rules = meta.status === "ok" ? meta.data.data.upload : null;
+  const accept = rules?.accept ?? [".pdf", ".doc", ".docx", ".xlsx"];
+  const problems = checkFiles(files, rules);
+
+  function addFiles(list: FileList | null) {
+    if (!list) return;
+    const incoming = Array.from(list);
+    // Same name twice would collide on the server; the newer pick replaces the older.
+    setFiles((prev) => [...prev.filter((p) => !incoming.some((f) => f.name === p.name)), ...incoming]);
+  }
+
+  async function start(source: UploadSource) {
     setIsBusy(true);
     setError(null);
     try {
-      const res = await rfqApi.upload(name);
+      const res = await rfqApi.upload(source);
       const q = new URLSearchParams(window.location.search);
-      q.set("since", String(res.data.started_at));
       router.push(`/rfq/${encodeURIComponent(res.data.id)}/processing?${q.toString()}`);
     } catch (e) {
       setError(describeError(e));
@@ -52,28 +77,28 @@ export default function StartPage() {
   function onDrop(e: DragEvent<HTMLDivElement>) {
     e.preventDefault();
     setIsDragging(false);
-    const file = e.dataTransfer.files[0];
-    if (file) setFileName(file.name);
+    addFiles(e.dataTransfer.files);
   }
 
   return (
     <main className="mx-auto grid min-h-dvh max-w-6xl content-center gap-12 px-4 py-12 md:px-8 lg:grid-cols-[1.1fr_1fr] lg:gap-16">
       <section aria-labelledby="hero-title" className="flex flex-col justify-center gap-6">
-        <p className="flex items-center gap-2 text-label font-semibold text-ink-muted">
-          AutoRFx · 자동차 부품 RFQ 분석 {isMock && <MockChip title="이 데모 셸은 목업 데이터로 동작합니다." />}
+        <p className="flex flex-wrap items-center gap-2 text-label font-semibold text-ink-muted">
+          AutoRFx · 자동차 부품 RFQ 분석
+          {meta.status === "ok" && <EngineBadge engines={meta.data.data.engines} />}
         </p>
         <h1
           id="hero-title"
           className="font-serif text-ink"
           style={{ fontSize: "calc(clamp(32px, 6vw, 46px) + var(--bump))", lineHeight: 1.12 }}
         >
-          수십 쪽짜리 RFQ를,
+          여러 파일로 온 RFQ를,
           <br />
           <span className="italic">부서별 판단과 원문 근거</span>로.
         </h1>
         <p className="max-w-xl text-body text-ink-muted">
-          조항을 담당 부서로 나누고, 요건 강도와 독소조항을 표시하고, 모든 결과를 원문 문장에 연결합니다. 금액 조항은 열람
-          권한이 있는 팀에만 보입니다.
+          요청서, 사양서, 물량표를 한 패키지로 읽어 조항을 주관·참조 부서로 나누고, 요건 강도와 독소조항을 표시하고, 파일
+          사이에 어긋나는 값을 찾습니다. 모든 결과는 원문 문장에 연결되고, 금액 조항은 열람 권한이 있는 팀에만 보입니다.
         </p>
         <ol className="grid gap-4 border-t border-line pt-6 md:grid-cols-3">
           {PRINCIPLES.map((p, i) => (
@@ -93,12 +118,12 @@ export default function StartPage() {
           <div aria-hidden="true" className="absolute inset-x-3 -top-1.5 h-full rounded-panel border border-line bg-surface-source" />
           <div className="relative flex flex-col gap-5 rounded-panel border border-line bg-surface p-6 shadow-float">
             <h2 id="upload-title" className="text-heading font-semibold text-ink">
-              RFQ 올리기
+              RFQ 패키지 올리기
             </h2>
             <div
               role="button"
               tabIndex={0}
-              aria-describedby={isMock ? "upload-note" : undefined}
+              aria-describedby="upload-rules"
               onClick={() => inputRef.current?.click()}
               onKeyDown={(e) => {
                 if (e.key === "Enter" || e.key === " ") {
@@ -118,36 +143,64 @@ export default function StartPage() {
               )}
             >
               <IconUpload size={22} className="text-ink-muted" />
-              <span className="text-body font-medium text-ink" data-testid="file-name">
-                {fileName ? fileName : "파일을 끌어 놓거나 눌러서 고르기"}
+              <span className="text-body font-medium text-ink">파일을 끌어 놓거나 눌러서 고르기 (여러 개 가능)</span>
+              <span id="upload-rules" className="text-label text-ink-muted">
+                {accept.join(" · ")}
+                {rules && ` · 최대 ${rules.max_files}개, 파일당 ${rules.max_file_mb}MB`}
               </span>
-              <span className="text-label text-ink-muted">.doc · .docx · .pdf</span>
               <input
                 ref={inputRef}
                 type="file"
-                accept=".doc,.docx,.pdf"
+                multiple
+                accept={accept.join(",")}
                 className="hidden"
                 data-testid="file-input"
-                onChange={(e) => setFileName(e.target.files?.[0]?.name ?? null)}
+                onChange={(e) => {
+                  addFiles(e.target.files);
+                  e.target.value = "";
+                }}
               />
             </div>
-            {isMock && (
-              <p
-                id="upload-note"
-                className="flex items-start gap-2 rounded-control bg-mock-tint px-3 py-2 text-label text-mock"
-              >
-                <IconLock size={14} className="mt-0.5 shrink-0" />
-                목업 모드에서는 파일을 전송하거나 저장하지 않습니다. 파일 이름만 표시하고, 결과는 합성 샘플 RFQ의 것입니다.
-              </p>
+            {files.length > 0 && (
+              <ul className="flex flex-col divide-y divide-line rounded-control border border-line" data-testid="picked-files">
+                {files.map((f) => (
+                  <li key={f.name} className="flex items-center gap-2 px-3 py-2 text-dense">
+                    <span className="min-w-0 flex-1 truncate text-ink" data-testid="file-name" title={f.name}>
+                      {f.name}
+                    </span>
+                    <span className="text-label text-ink-muted tabular">{formatSize(f.size)}</span>
+                    <button
+                      type="button"
+                      onClick={() => setFiles((prev) => prev.filter((p) => p !== f))}
+                      aria-label={`${f.name} 빼기`}
+                      className="rounded-control p-1 text-ink-muted hover:bg-canvas hover:text-ink"
+                    >
+                      <IconClose size={14} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {problems.length > 0 && (
+              <ul role="alert" className="flex flex-col gap-1 rounded-control border border-warn/40 bg-warn-tint px-3 py-2 text-label text-warn">
+                {problems.map((p) => (
+                  <li key={p} className="flex items-start gap-1.5">
+                    <IconWarn size={12} className="mt-0.5 shrink-0" /> {p}
+                  </li>
+                ))}
+              </ul>
             )}
             <div className="flex flex-wrap gap-2">
-              <Button variant="primary" disabled={isBusy || !fileName} onClick={() => start(fileName)} data-testid="start-upload">
-                분석 시작 <IconArrowRight size={14} />
-              </Button>
-              <Button variant="secondary" disabled={isBusy} onClick={() => start(null)} data-testid="start-sample">
-                샘플 RFQ로 보기
+              <Button
+                variant="primary"
+                disabled={isBusy || files.length === 0 || problems.length > 0}
+                onClick={() => start({ kind: "files", files })}
+                data-testid="start-upload"
+              >
+                분석 시작{files.length > 1 ? ` (파일 ${files.length}개)` : ""} <IconArrowRight size={14} />
               </Button>
             </div>
+            {meta.status === "error" && <ErrorState message={`서버 정보를 불러오지 못했습니다. ${meta.error}`} />}
             {error && <ErrorState message={error} />}
           </div>
         </div>

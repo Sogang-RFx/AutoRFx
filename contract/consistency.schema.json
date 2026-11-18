@@ -1,0 +1,252 @@
+{
+  "$id": "https://autorfx.local/contract/consistency.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "data": {
+      "type": "object",
+      "properties": {
+        "group": {
+          "type": "string",
+          "enum": [
+            "cost_visible",
+            "cost_restricted"
+          ]
+        },
+        "issues": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "issue"
+                  },
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "category": {
+                    "type": "string",
+                    "enum": [
+                      "conflict",
+                      "missing_attachment",
+                      "broken_reference",
+                      "notation"
+                    ]
+                  },
+                  "severity": {
+                    "type": "string",
+                    "enum": [
+                      "high",
+                      "medium",
+                      "low"
+                    ]
+                  },
+                  "entity": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "title": {
+                    "type": "string"
+                  },
+                  "detail": {
+                    "type": "string"
+                  },
+                  "affects_cost": {
+                    "type": "boolean"
+                  },
+                  "departments": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "evidence": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "locus": {
+                          "type": "object",
+                          "properties": {
+                            "source_doc": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "page_number": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "section_id": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "paragraph_index": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "sentence_index": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "anchor": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "source_doc",
+                            "page_number",
+                            "section_id",
+                            "paragraph_index",
+                            "sentence_index",
+                            "anchor"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "normalized": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "locus",
+                        "text",
+                        "value",
+                        "normalized"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "citation_status": {
+                    "type": "string",
+                    "enum": [
+                      "verified",
+                      "unverified"
+                    ]
+                  }
+                },
+                "required": [
+                  "kind",
+                  "id",
+                  "category",
+                  "severity",
+                  "entity",
+                  "title",
+                  "detail",
+                  "affects_cost",
+                  "departments",
+                  "evidence",
+                  "citation_status"
+                ],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "masked"
+                  },
+                  "id": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "kind",
+                  "id"
+                ],
+                "additionalProperties": false
+              }
+            ]
+          }
+        },
+        "checked": {
+          "type": "object",
+          "properties": {
+            "files": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "entities": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "references": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "files",
+            "entities",
+            "references"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "group",
+        "issues",
+        "checked"
+      ],
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "enum": [
+          "document",
+          "parsing",
+          "analysis",
+          "citation",
+          "translation",
+          "source",
+          "consistency",
+          "cost_inputs",
+          "precost",
+          "chat",
+          "evaluation"
+        ]
+      },
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "mock",
+          "real"
+        ]
+      }
+    }
+  },
+  "required": [
+    "data",
+    "provenance"
+  ],
+  "additionalProperties": false
+}

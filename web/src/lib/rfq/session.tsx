@@ -1,8 +1,8 @@
 "use client";
 /**
- * Client session: selected team (v1 identity = team picker, SPEC §7),
- * presentation mode, and demo parameters (`scenario`, `speed`, SPEC §13.4).
- * URL parameters win over the stored session so a demo link is reproducible.
+ * Client session: selected team (v1 identity = team picker, SPEC §7) and
+ * presentation mode. URL parameters win over the stored session so a link
+ * opens the same team view.
  *
  * Implemented as a tiny external store read with useSyncExternalStore: the
  * server snapshot is the neutral initial state (restricted group), and the
@@ -10,21 +10,21 @@
  */
 import { createContext, useContext, useEffect, useMemo, useSyncExternalStore } from "react";
 import type { ReactNode } from "react";
-import { allHttp } from "./config";
 
-export const DEMO_SCENARIOS = ["default", "unverified", "empty", "error"] as const;
-export type DemoScenario = (typeof DEMO_SCENARIOS)[number];
-
-type Stored = { team: string | null; present: boolean; scenario: DemoScenario; speed: number };
+type Stored = { team: string | null; present: boolean };
 
 const KEY = "autorfx.session";
-const INITIAL: Stored = { team: null, present: false, scenario: "default", speed: 1 };
+const INITIAL: Stored = { team: null, present: false };
 
 function readStored(): Stored {
   try {
     const raw = window.sessionStorage.getItem(KEY);
     if (!raw) return INITIAL;
-    return { ...INITIAL, ...(JSON.parse(raw) as Partial<Stored>) };
+    const parsed = JSON.parse(raw) as Partial<Stored>;
+    return {
+      team: typeof parsed.team === "string" ? parsed.team : null,
+      present: parsed.present === true,
+    };
   } catch {
     return INITIAL;
   }
@@ -34,12 +34,6 @@ function readUrl(base: Stored): Stored {
   const q = new URLSearchParams(window.location.search);
   const next = { ...base };
   if (q.has("team")) next.team = q.get("team") || null;
-  if (!allHttp()) {
-    const scenario = q.get("scenario");
-    if (scenario && (DEMO_SCENARIOS as readonly string[]).includes(scenario)) next.scenario = scenario as DemoScenario;
-    const speed = Number(q.get("speed"));
-    if (q.has("speed") && Number.isFinite(speed) && speed > 0) next.speed = speed;
-  }
   if (q.get("present") === "1") next.present = true;
   return next;
 }
@@ -77,7 +71,6 @@ type SessionValue = Stored & {
   ready: boolean;
   setTeam: (team: string | null) => void;
   setPresent: (on: boolean) => void;
-  setScenario: (s: DemoScenario) => void;
 };
 
 const SessionContext = createContext<SessionValue | null>(null);
@@ -85,7 +78,6 @@ const SessionContext = createContext<SessionValue | null>(null);
 const actions = {
   setTeam: (team: string | null) => update({ team }),
   setPresent: (present: boolean) => update({ present }),
-  setScenario: (scenario: DemoScenario) => update({ scenario }),
 };
 
 export function SessionProvider({ children }: { children: ReactNode }) {

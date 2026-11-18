@@ -17,19 +17,53 @@
               "field": {
                 "type": "string",
                 "enum": [
+                  "currency",
                   "min_quantity",
                   "fixed_costs",
                   "variable_cost_per_unit",
-                  "currency"
+                  "target_price",
+                  "annual_reduction_rate",
+                  "gross_weight",
+                  "net_weight",
+                  "material_price",
+                  "scrap_credit",
+                  "machine_hour_rate",
+                  "strokes_per_minute",
+                  "parts_per_stroke",
+                  "oee",
+                  "surface_cost",
+                  "packaging_cost",
+                  "freight_cost",
+                  "warehousing_cost",
+                  "scrap_rate",
+                  "sga_rate",
+                  "profit_rate",
+                  "thickness",
+                  "incoterm",
+                  "payment_days"
                 ]
               },
               "label": {
                 "type": "string"
               },
+              "unit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "value": {
                 "type": [
                   "string",
                   "null"
+                ]
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "rfq",
+                  "assumption",
+                  "missing"
                 ]
               },
               "note": {
@@ -50,7 +84,8 @@
                               "priority",
                               "red_flag",
                               "answer",
-                              "cost_input"
+                              "cost_input",
+                              "consistency"
                             ]
                           },
                           "departments": {
@@ -111,6 +146,12 @@
                                   "type": "integer",
                                   "minimum": 1,
                                   "maximum": 9007199254740991
+                                },
+                                "anchor": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
                                 }
                               },
                               "required": [
@@ -118,7 +159,8 @@
                                 "page_number",
                                 "section_id",
                                 "paragraph_index",
-                                "sentence_index"
+                                "sentence_index",
+                                "anchor"
                               ],
                               "additionalProperties": false
                             }
@@ -168,6 +210,12 @@
                               "type": "integer",
                               "minimum": 1,
                               "maximum": 9007199254740991
+                            },
+                            "anchor": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
                             }
                           },
                           "required": [
@@ -175,7 +223,8 @@
                             "page_number",
                             "section_id",
                             "paragraph_index",
-                            "sentence_index"
+                            "sentence_index",
+                            "anchor"
                           ],
                           "additionalProperties": false
                         }
@@ -192,14 +241,206 @@
                     "type": "null"
                   }
                 ]
+              },
+              "alternatives": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "string"
+                    },
+                    "evidence": {
+                      "type": "object",
+                      "properties": {
+                        "finding": {
+                          "type": "object",
+                          "properties": {
+                            "kind": {
+                              "type": "string",
+                              "enum": [
+                                "summary",
+                                "priority",
+                                "red_flag",
+                                "answer",
+                                "cost_input",
+                                "consistency"
+                              ]
+                            },
+                            "departments": {
+                              "type": "array",
+                              "items": {
+                                "type": "string"
+                              }
+                            },
+                            "text": {
+                              "type": "string"
+                            },
+                            "priority": {
+                              "anyOf": [
+                                {
+                                  "type": "string",
+                                  "enum": [
+                                    "must",
+                                    "should",
+                                    "optional",
+                                    "info"
+                                  ]
+                                },
+                                {
+                                  "type": "null"
+                                }
+                              ]
+                            },
+                            "red_flag_reason": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "citations": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "source_doc": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "page_number": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "section_id": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "paragraph_index": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "sentence_index": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "anchor": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "source_doc",
+                                  "page_number",
+                                  "section_id",
+                                  "paragraph_index",
+                                  "sentence_index",
+                                  "anchor"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "kind",
+                            "departments",
+                            "text",
+                            "priority",
+                            "red_flag_reason",
+                            "citations"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "citation_status": {
+                          "type": "string",
+                          "enum": [
+                            "verified",
+                            "unverified"
+                          ]
+                        },
+                        "failed_citations": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "source_doc": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "page_number": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              },
+                              "section_id": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "paragraph_index": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              },
+                              "sentence_index": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              },
+                              "anchor": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "source_doc",
+                              "page_number",
+                              "section_id",
+                              "paragraph_index",
+                              "sentence_index",
+                              "anchor"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "finding",
+                        "citation_status",
+                        "failed_citations"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "evidence"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "issue_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
               "field",
               "label",
+              "unit",
               "value",
+              "source",
               "note",
-              "evidence"
+              "evidence",
+              "alternatives",
+              "issue_id"
             ],
             "additionalProperties": false
           }
@@ -222,6 +463,7 @@
           "citation",
           "translation",
           "source",
+          "consistency",
           "cost_inputs",
           "precost",
           "chat",

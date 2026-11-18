@@ -1,16 +1,18 @@
 "use client";
 /**
- * Source viewer (TASKS S012, SPEC §14, CITE-03). Renders the canonical PDF the
- * server chose for this team (restricted teams get the cost-masked PDF) and
- * draws highlight boxes from the sentence coordinates of the same PDF.
- * PDF.js is loaded on demand so it stays out of the first-load bundle.
+ * Source viewer (TASKS S012, SPEC §14, CITE-03). Shows one file of the RFQ
+ * package at a time: its canonical PDF as the server chose it for this team
+ * (restricted teams get the cost-redacted PDF), with highlight boxes from the
+ * sentence coordinates of the same PDF. A citation opens its own file, page and
+ * sentence. PDF.js is loaded on demand so it stays out of the first-load bundle.
  */
 import { useEffect, useRef, useState } from "react";
 import type { Locus, SentencesResponse } from "@/lib/rfq/contract";
+import { fileTag, usePackageFiles } from "@/lib/rfq/package-context";
 import { describeError, rfqApi, type RequestCtx } from "@/lib/rfq/provider";
 import { useResource } from "@/lib/rfq/use-resource";
 import { IconArrowRight, IconLock } from "../ui/icons";
-import { Button, ErrorState, Panel, Skeleton, cx, formatLocus } from "../ui/primitives";
+import { Button, ErrorState, ForbiddenState, Panel, Skeleton, cx, useLocusLabel } from "../ui/primitives";
 
 /** In PDF.js 6 the loading task owns `destroy()`; the document proxy does not. */
 type PdfDoc = { numPages: number; getPage: (n: number) => Promise<PdfPage>; destroy: () => Promise<void> };
@@ -22,11 +24,17 @@ type PdfPage = {
   };
 };
 
+class SourceForbidden extends Error {}
+
 async function loadPdf(url: () => string, signal: AbortSignal): Promise<PdfDoc> {
   const pdfjs = await import("pdfjs-dist");
   pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
   // url() may throw a ConfigError; inside this async function it becomes a rejection.
   const res = await fetch(url(), { cache: "no-store", signal });
+  if (res.status === 403) {
+    const body = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
+    throw new SourceForbidden(body?.error?.message ?? "이 팀에는 이 파일의 원문이 제공되지 않습니다.");
+  }
   if (!res.ok) throw new Error(`원문 PDF를 받지 못했습니다 (${res.status}).`);
   const data = new Uint8Array(await res.arrayBuffer());
   const task = pdfjs.getDocument({ data });
@@ -38,6 +46,8 @@ async function loadPdf(url: () => string, signal: AbortSignal): Promise<PdfDoc> 
   };
 }
 
+type Loaded = { key: string; doc: PdfDoc | null; error: string | null; forbidden: boolean };
+
 type Props = {
   rfqId: string;
   ctx: RequestCtx;
@@ -47,44 +57,55 @@ type Props = {
 };
 
 export function SourceViewer({ rfqId, ctx, restricted, target, className }: Props) {
+  const files = usePackageFiles();
+  const locusLabel = useLocusLabel();
+  const [chosen, setChosen] = useState<string | null>(null);
   const [page, setPage] = useState(1);
-  const [doc, setDoc] = useState<PdfDoc | null>(null);
-  const [docError, setDocError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState<Loaded | null>(null);
   const [size, setSize] = useState<{ w: number; h: number } | null>(null);
   const [width, setWidth] = useState(0);
   const holderRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const markRef = useRef<HTMLDivElement>(null);
 
-  // Follow the citation target (state adjusted during render, not in an effect).
+  // Follow the citation target to its file and page (state adjusted during render, not in an effect).
   const [followed, setFollowed] = useState<Locus | null>(null);
   if (target !== followed) {
     setFollowed(target);
-    if (target) setPage(target.page_number);
+    if (target) {
+      setChosen(target.source_doc);
+      setPage(target.page_number);
+    }
   }
+  const fileId = chosen ?? files[0]?.id ?? null;
+  const current = files.find((f) => f.id === fileId) ?? null;
 
-  // Load the PDF once per mount. The parent remounts this component (key) when
-  // the team changes, because the server decides which file a team receives.
-  const sourceKey = `${rfqId}:${ctx.team ?? "none"}`;
+  // One PDF per file and team: the server decides which file a team receives.
+  const sourceKey = fileId ? `${rfqId}:${fileId}:${ctx.team ?? "none"}` : null;
   useEffect(() => {
+    if (!sourceKey || !fileId) return;
     const controller = new AbortController();
-    let loaded: PdfDoc | null = null;
-    loadPdf(() => rfqApi.sourceUrl(rfqId, ctx), controller.signal).then(
+    let doc: PdfDoc | null = null;
+    loadPdf(() => rfqApi.sourceUrl(rfqId, fileId, ctx), controller.signal).then(
       (d) => {
-        loaded = d;
+        doc = d;
         if (controller.signal.aborted) void d.destroy();
-        else setDoc(d);
+        else setLoaded({ key: sourceKey, doc: d, error: null, forbidden: false });
       },
       (e: unknown) => {
-        if (!controller.signal.aborted) setDocError(describeError(e));
+        if (controller.signal.aborted) return;
+        const forbidden = e instanceof SourceForbidden;
+        setLoaded({ key: sourceKey, doc: null, error: describeError(e), forbidden });
       },
     );
     return () => {
       controller.abort();
-      if (loaded) void loaded.destroy();
+      if (doc) void doc.destroy();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceKey]);
+  const state = loaded?.key === sourceKey ? loaded : null;
+  const doc = state?.doc ?? null;
 
   // Track available width.
   useEffect(() => {
@@ -120,14 +141,16 @@ export function SourceViewer({ rfqId, ctx, restricted, target, className }: Prop
     };
   }, [doc, page, width]);
 
-  const sentences = useResource<SentencesResponse>(`sent:${rfqId}:${ctx.team ?? "none"}:${page}`, (s) =>
-    rfqApi.sentences(rfqId, page, ctx, s),
+  const sentences = useResource<SentencesResponse>(
+    fileId ? `sent:${rfqId}:${fileId}:${ctx.team ?? "none"}:${page}` : null,
+    (s) => rfqApi.sentences(rfqId, fileId ?? "", page, ctx, s),
   );
+  const onTargetPage = Boolean(target && target.source_doc === fileId && target.page_number === page);
   const marked =
-    target && target.page_number === page && sentences.status === "ok"
+    target && onTargetPage && sentences.status === "ok"
       ? (sentences.data.data.sentences.find((s) => s.locus.sentence_index === target.sentence_index) ?? null)
       : null;
-  const targetMissing = Boolean(target && target.page_number === page && sentences.status === "ok" && !marked);
+  const targetMissing = onTargetPage && sentences.status === "ok" && !marked;
 
   useEffect(() => {
     // Scroll only the viewer, never the page around it.
@@ -138,7 +161,12 @@ export function SourceViewer({ rfqId, ctx, restricted, target, className }: Prop
     holder.scrollBy({ top: delta, behavior: "smooth" });
   }, [marked]);
 
-  const pageCount = doc?.numPages ?? 0;
+  const pageCount = doc?.numPages ?? current?.page_count ?? 0;
+
+  function switchFile(id: string) {
+    setChosen(id);
+    setPage(1);
+  }
 
   return (
     <Panel
@@ -148,7 +176,24 @@ export function SourceViewer({ rfqId, ctx, restricted, target, className }: Prop
       className={className}
       bodyClassName="flex flex-col"
       actions={
-        <div className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center gap-1">
+          {files.length > 1 && (
+            <label className="flex items-center gap-1 text-label text-ink-muted">
+              <span className="sr-only">파일</span>
+              <select
+                data-testid="file-select"
+                value={fileId ?? ""}
+                onChange={(e) => switchFile(e.target.value)}
+                className="min-h-8 max-w-48 truncate rounded-control border border-line-control bg-surface px-1.5 text-label text-ink"
+              >
+                {files.map((f) => (
+                  <option key={f.id} value={f.id}>
+                    {fileTag(files, f.id)} · {f.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <Button variant="ghost" aria-label="이전 페이지" disabled={page <= 1} onClick={() => setPage((p) => p - 1)}>
             <IconArrowRight size={14} className="rotate-180" />
           </Button>
@@ -166,13 +211,19 @@ export function SourceViewer({ rfqId, ctx, restricted, target, className }: Prop
         </div>
       }
     >
-      <div className="flex flex-wrap items-center gap-2 border-b border-line bg-surface-source px-4 py-2 text-label">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line bg-surface-source px-4 py-2 text-label">
+        {current && (
+          <span className="min-w-0 truncate text-ink-muted" data-testid="source-file" title={current.name}>
+            {files.length > 1 && <strong className="font-semibold text-ink">{fileTag(files, current.id)} </strong>}
+            {current.name}
+          </span>
+        )}
         {target ? (
           <span className="font-semibold text-ink tabular" data-testid="source-locator">
-            {formatLocus(target)}
+            {locusLabel(target)}
           </span>
         ) : (
-          <span className="text-ink-muted">인용을 누르면 해당 문장으로 이동합니다.</span>
+          <span className="text-ink-muted">인용을 누르면 해당 파일의 문장으로 이동합니다.</span>
         )}
         {restricted && (
           <span className="ml-auto inline-flex items-center gap-1 text-ink-muted" data-testid="masked-pdf-note">
@@ -180,6 +231,13 @@ export function SourceViewer({ rfqId, ctx, restricted, target, className }: Prop
           </span>
         )}
       </div>
+      {current && current.warnings.length > 0 && (
+        <ul className="border-b border-line px-4 py-1.5 text-label text-ink-muted">
+          {current.warnings.map((w) => (
+            <li key={w}>참고: {w}</li>
+          ))}
+        </ul>
+      )}
       {targetMissing && (
         <p role="status" className="border-b border-warn/40 bg-warn-tint px-4 py-2 text-label text-warn">
           이 위치의 문장을 원문에서 찾지 못했습니다. 인용이 검증되지 않았습니다.
@@ -189,11 +247,12 @@ export function SourceViewer({ rfqId, ctx, restricted, target, className }: Prop
         ref={holderRef}
         tabIndex={0}
         role="region"
-        aria-label={`원문 ${page}페이지 (방향키로 스크롤)`}
+        aria-label={`원문 ${current ? `${current.name} ` : ""}${page}페이지 (방향키로 스크롤)`}
         className="min-h-0 flex-1 overflow-auto bg-canvas p-3 md:p-4"
       >
-        {docError && <ErrorState message={docError} />}
-        {!doc && !docError && <Skeleton lines={10} className="mx-auto max-w-xl rounded-panel bg-surface-source" />}
+        {state?.forbidden && state.error && <ForbiddenState message={state.error} />}
+        {state?.error && !state.forbidden && <ErrorState message={state.error} />}
+        {!doc && !state?.error && <Skeleton lines={10} className="mx-auto max-w-xl rounded-panel bg-surface-source" />}
         <div
           className={cx("relative mx-auto bg-white shadow-float", !doc && "hidden")}
           style={size ? { width: size.w, height: size.h } : undefined}

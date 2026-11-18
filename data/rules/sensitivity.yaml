@@ -1,0 +1,41 @@
+# 금액 민감 조항과 상용구 판정 (도메인 팀 관리).
+#
+# 금액 민감 조항은 금액을 볼 수 없는 팀의 화면, 원문 뷰어, 챗봇, 내보내기에서 가려진다.
+# 조항이 아래 셋 중 하나에 해당하면 금액 민감으로 본다.
+#   1. cost_patterns의 정규식이 본문에 맞는다.
+#   2. 조항 제목에 cost_titles의 말이 있다.
+#   3. cost_entities의 값(entities.yaml)이 그 조항에서 추출됐다.
+# 액수가 적혀 있다는 것만으로는 가리지 않는다. 책임 한도 같은 조항을 법무팀이 봐야 하기 때문이다.
+# 어디까지가 금액 민감인지는 도메인 팀이 확정한다 (OQ-2).
+
+cost_patterns:
+  en:
+    - '(target|unit|piece|purchase|quoted) price'
+    - 'price (schedule|list|sheet|adjustment|reduction|increase)'
+    - 'mark-?up'
+    - 'discount (rate|percentage|off)'
+    - 'payment terms?'
+    - 'net \d+ days'
+    - '(EUR|USD|KRW|€|\$)\s?\d[\d.,]*\s?(/|per) ?(pc|piece|unit|each|kg)'
+  de:
+    - 'Zielpreis'
+    - 'Stückpreis'
+    - 'Preisreduzierung'
+    - 'Zahlungsziel'
+    - 'Zahlungsbedingungen'
+    - 'Skonto'
+    - '\d[\d.,]*\s?(EUR|€)\s?(/|pro|je) ?(Stück|Stk|Teil|kg)'
+
+# "상업 조건" 같은 넓은 제목은 넣지 않는다. 그 장에는 인도조건과 금형처럼
+# 물류팀·생산기술팀이 봐야 하는 조항이 함께 있다.
+cost_titles:
+  en: [pricing, price, prices, payment, cost breakdown, price schedule]
+  de: [Preise, Preis, Zahlungsbedingungen, Kostenaufschlüsselung]
+
+cost_entities: [target_price, annual_reduction_rate, payment_days]
+
+# 표준 조항 상용구. 맞으면 규칙만으로 분류하고 LLM에 보내지 않는다.
+#   조항 머리(조항 번호 또는 본문 앞 80자)에 대해 찾는다.
+boilerplate_patterns:
+  - '^(?:[IVX]+\.\d{1,2}\s+)?(?:FAR\s+|HSAR\s+)?\d{2,4}\.\d{3}-\d{1,3}\b'
+boilerplate_department: legal

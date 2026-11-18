@@ -10,8 +10,17 @@
           "type": "string",
           "enum": [
             "answered",
+            "no_evidence",
             "not_prepared",
             "restricted"
+          ]
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "scripted",
+            "extractive",
+            "generative"
           ]
         },
         "answer": {
@@ -29,7 +38,8 @@
                         "priority",
                         "red_flag",
                         "answer",
-                        "cost_input"
+                        "cost_input",
+                        "consistency"
                       ]
                     },
                     "departments": {
@@ -90,6 +100,12 @@
                             "type": "integer",
                             "minimum": 1,
                             "maximum": 9007199254740991
+                          },
+                          "anchor": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
                           }
                         },
                         "required": [
@@ -97,7 +113,8 @@
                           "page_number",
                           "section_id",
                           "paragraph_index",
-                          "sentence_index"
+                          "sentence_index",
+                          "anchor"
                         ],
                         "additionalProperties": false
                       }
@@ -147,6 +164,12 @@
                         "type": "integer",
                         "minimum": 1,
                         "maximum": 9007199254740991
+                      },
+                      "anchor": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
                       }
                     },
                     "required": [
@@ -154,7 +177,8 @@
                       "page_number",
                       "section_id",
                       "paragraph_index",
-                      "sentence_index"
+                      "sentence_index",
+                      "anchor"
                     ],
                     "additionalProperties": false
                   }
@@ -184,6 +208,7 @@
       },
       "required": [
         "status",
+        "mode",
         "answer",
         "message",
         "suggestions"
@@ -201,6 +226,7 @@
           "citation",
           "translation",
           "source",
+          "consistency",
           "cost_inputs",
           "precost",
           "chat",

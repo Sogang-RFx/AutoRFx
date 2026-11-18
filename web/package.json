@@ -12,7 +12,6 @@
     "test:e2e": "playwright test",
     "contract:emit": "tsx scripts/emit-contract.ts",
     "contract:check": "tsx scripts/emit-contract.ts --check",
-    "fixtures": "uv run --no-project --with reportlab==4.4.4 --with pypdf==6.1.1 --with pyyaml==6.0.3 python ../scripts/build_sample_rfq.py",
     "postinstall": "node scripts/copy-pdf-worker.mjs"
   },
   "dependencies": {

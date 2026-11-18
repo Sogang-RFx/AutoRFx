@@ -29,6 +29,17 @@
             "currency": {
               "type": "string",
               "pattern": "^[A-Z]{3}$"
+            },
+            "target_price": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d+(\\.\\d+)?$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
@@ -36,9 +47,60 @@
             "min_quantity",
             "fixed_costs",
             "variable_cost_per_unit",
-            "currency"
+            "currency",
+            "target_price"
           ],
           "additionalProperties": false
+        },
+        "breakdown": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "lines": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "key": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "string",
+                        "pattern": "^\\d+(\\.\\d+)?$"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "label",
+                      "value"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "piece_cost": {
+                  "type": "string",
+                  "pattern": "^\\d+(\\.\\d+)?$"
+                },
+                "piece_price": {
+                  "type": "string",
+                  "pattern": "^\\d+(\\.\\d+)?$"
+                }
+              },
+              "required": [
+                "lines",
+                "piece_cost",
+                "piece_price"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "fixed_cost_per_unit": {
           "type": "string",
@@ -48,28 +110,151 @@
           "type": "string",
           "pattern": "^\\d+(\\.\\d+)?$"
         },
+        "scenarios": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string"
+              },
+              "choices": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "issue_id": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "issue_id",
+                    "value"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "unit_cost": {
+                "type": "string",
+                "pattern": "^\\d+(\\.\\d+)?$"
+              }
+            },
+            "required": [
+              "label",
+              "choices",
+              "unit_cost"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "range": {
+          "type": "object",
+          "properties": {
+            "low": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "high": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            }
+          },
+          "required": [
+            "low",
+            "high"
+          ],
+          "additionalProperties": false
+        },
+        "yearly": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "year": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "price": {
+                "type": "string",
+                "pattern": "^\\d+(\\.\\d+)?$"
+              },
+              "below_cost": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "year",
+              "price",
+              "below_cost"
+            ],
+            "additionalProperties": false
+          }
+        },
         "decision": {
           "type": "object",
           "properties": {
             "status": {
               "type": "string",
-              "const": "baseline_undefined"
+              "enum": [
+                "go",
+                "no_go",
+                "hold",
+                "baseline_undefined"
+              ]
             },
             "note": {
+              "type": "string"
+            },
+            "reasons": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "target_price": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d+(\\.\\d+)?$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "gap": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "rule": {
               "type": "string"
             }
           },
           "required": [
             "status",
-            "note"
+            "note",
+            "reasons",
+            "target_price",
+            "gap",
+            "rule"
           ],
           "additionalProperties": false
         }
       },
       "required": [
         "inputs",
+        "breakdown",
         "fixed_cost_per_unit",
         "unit_cost",
+        "scenarios",
+        "range",
+        "yearly",
         "decision"
       ],
       "additionalProperties": false
@@ -85,6 +270,7 @@
           "citation",
           "translation",
           "source",
+          "consistency",
           "cost_inputs",
           "precost",
           "chat",

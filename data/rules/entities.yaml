@@ -1,0 +1,189 @@
+# 문서 간 정합성 검사가 비교하는 값 (도메인 팀 관리).
+#
+# 같은 값이 묶음의 여러 곳에 적혀 있을 때, 정규화한 값이 다르면 충돌로 보고한다.
+# kind:        number | money | percent | date | code | text
+# unit, units: 기준 단위와 단위 별칭의 배율 (예: "k pcs" → 1000). 배율은 문자열로 적는다.
+# labels:      본문에서 값을 이끄는 말, 또는 표의 열 제목.
+# codes:       kind가 code일 때 허용되는 값.
+# scope:       part = 부품 번호별로 비교, package = 묶음 전체에서 비교.
+# affects_cost, cost_fields: 충돌이 원가 입력을 바꾸면 견적 판정이 보류된다.
+
+entities:
+  - id: thickness
+    label: 판재 두께
+    kind: number
+    unit: mm
+    units: { mm: "1" }
+    labels:
+      en: [thickness, sheet thickness, material thickness, nominal thickness, gauge]
+      de: [Blechdicke, Dicke, Materialstärke, Materialdicke, Nenndicke]
+    scope: part
+    department: development
+    severity: high
+    affects_cost: true
+    cost_fields: [gross_weight, net_weight]
+
+  - id: net_weight
+    label: 순중량
+    kind: number
+    unit: kg
+    units: { kg: "1", g: "0.001" }
+    labels:
+      en: [net weight, part weight]
+      de: [Nettogewicht, Teilegewicht]
+    scope: part
+    department: development
+    severity: medium
+    affects_cost: true
+    cost_fields: [net_weight]
+
+  - id: material
+    label: 소재
+    kind: text
+    labels:
+      en: [material, steel grade, raw material specification]
+      de: [Werkstoff, Material, Stahlsorte]
+    scope: part
+    department: development
+    severity: high
+
+  - id: incoterm
+    label: 인도조건
+    kind: code
+    codes: [EXW, FCA, FAS, FOB, CFR, CIF, CPT, CIP, DAP, DPU, DDP]
+    labels:
+      en: [Incoterms, delivery term, delivery terms, terms of delivery]
+      de: [Incoterms, Lieferbedingung, Lieferbedingungen, Lieferkondition]
+    department: logistics
+    severity: high
+    affects_cost: true
+    cost_fields: [freight_cost]
+
+  - id: sop
+    label: 양산 시작(SOP)
+    kind: date
+    labels:
+      en: [SOP, start of production]
+      de: [SOP, Serienanlauf, Serienstart]
+    department: sales
+    severity: high
+
+  - id: eop
+    label: 양산 종료(EOP)
+    kind: date
+    labels:
+      en: [EOP, end of production]
+      de: [EOP, Serienauslauf, Serienende]
+    department: sales
+    severity: medium
+
+  - id: quote_due
+    label: 견적 제출 마감
+    kind: date
+    labels:
+      en: [quote due, quotation due, offer due, submission deadline, response due, due date for quotation]
+      de: [Angebotsabgabe, Abgabefrist, Abgabetermin, Angebotsfrist]
+    department: sales
+    severity: high
+
+  - id: currency
+    label: 통화
+    kind: code
+    codes: [EUR, USD, KRW, GBP, JPY, CNY]
+    labels:
+      en: [currency]
+      de: [Währung]
+    department: costing
+    severity: medium
+    affects_cost: true
+    cost_fields: [currency]
+
+  - id: target_price
+    label: 목표가
+    kind: money
+    labels:
+      en: [target price]
+      de: [Zielpreis]
+    scope: part
+    department: costing
+    severity: high
+    affects_cost: true
+    cost_fields: [target_price]
+
+  - id: annual_reduction_rate
+    label: 연간 단가 인하율
+    kind: percent
+    labels:
+      en: [annual price reduction, price reduction, productivity]
+      de: [jährliche Preisreduzierung, Preisreduzierung, Ratio]
+    department: costing
+    severity: high
+    affects_cost: true
+    cost_fields: [annual_reduction_rate]
+
+  - id: payment_days
+    label: 결제 기한
+    kind: number
+    unit: days
+    units: { days: "1", day: "1", Tage: "1", Tagen: "1" }
+    labels:
+      en: [payment term, payment terms, payment]
+      de: [Zahlungsziel, Zahlungsbedingungen, Zahlung]
+    department: costing
+    severity: medium
+    affects_cost: true
+    cost_fields: [payment_days]
+
+  - id: warranty_period
+    label: 보증 기간
+    kind: number
+    unit: months
+    units: { months: "1", month: "1", years: "12", year: "12", Monate: "1", Monaten: "1", Jahre: "12", Jahren: "12" }
+    labels:
+      en: [warranty, warranty period]
+      de: [Gewährleistung, Gewährleistungsfrist]
+    department: legal
+    severity: medium
+
+  - id: cpk
+    label: 공정능력(Cpk)
+    kind: number
+    labels:
+      en: [Cpk]
+      de: [Cpk]
+    department: quality
+    severity: medium
+
+  - id: total_volume
+    label: 총 계획 물량
+    kind: number
+    unit: pcs
+    units: { pcs: "1", pieces: "1", "k pcs": "1000", "k units": "1000", Stück: "1", "Tsd. Stück": "1000" }
+    labels:
+      en: [total volume, lifetime volume, total]
+      de: [Gesamtstückzahl, Gesamtvolumen]
+    scope: part
+    department: sales
+    severity: medium
+    affects_cost: true
+    cost_fields: [min_quantity]
+
+  - id: salt_spray_hours
+    label: 염수분무 시험 시간
+    kind: number
+    unit: h
+    units: { h: "1", hours: "1", Stunden: "1" }
+    labels:
+      en: [salt spray, salt spray test, neutral salt spray]
+      de: [Salzsprühnebelprüfung, Salzsprühnebel, Salzsprühtest]
+    department: quality
+    severity: medium
+
+  # 양산 승인 방식. PPAP(AIAG)와 PPF(VDA Band 2)는 서로 다른 절차다.
+  # 제출 수준(Level, Vorlagestufe)은 척도가 달라 숫자로 비교하지 않는다.
+  - id: approval_method
+    label: 양산 승인 방식
+    kind: code
+    codes: [PPAP, PPF]
+    department: quality
+    severity: medium
