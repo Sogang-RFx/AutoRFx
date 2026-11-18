@@ -377,6 +377,9 @@ def test_openai_provider_builds_prompts_from_the_rule_files(ruleset: Ruleset):
             return Translation(text=" 번역 ")
         return Answer(text="답", citations=(1,))
 
+    inherited = make_clause("4.2.1", ["4.2.1 Delivery is FCA supplier plant."], title="Target price EUR 1.20")
+    assert ClauseInput.of(inherited).title == "", "INV-8: an inherited price heading never reaches the LLM"
+
     provider = OpenAIProvider(ruleset, "gpt-test", fake)
     assert provider.id == "openai:gpt-test" and provider.uses_llm and provider.translates
     clause = ClauseInput.of(DELIVERY)

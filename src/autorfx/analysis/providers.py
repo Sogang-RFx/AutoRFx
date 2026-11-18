@@ -36,7 +36,9 @@ class ClauseInput(Model):
     def of(cls, clause: Clause) -> ClauseInput:
         return cls(
             clause_id=clause.clause_id,
-            title=clause.title,
+            # Only the clause's own title: an inherited chapter heading may state a price that a
+            # restricted team must not get back through the summary or translation (INV-8).
+            title=clause.own_title,
             lang=clause.lang,
             sentences=tuple(s.text for s in clause.sentences),
         )

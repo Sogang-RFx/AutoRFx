@@ -61,7 +61,7 @@ def cache_key(clause: Clause, provider_id: str, ruleset_digest: str) -> str:
     """Key of a cached judgement. Positions are not part of it: a clause that moved still hits."""
     payload = {
         "sentences": [" ".join(unicodedata.normalize("NFC", s.text).split()) for s in clause.sentences],
-        "title": clause.title,
+        "title": clause.own_title,  # what the provider is shown (ClauseInput.of)
         "ruleset": ruleset_digest,
         "provider": provider_id,
         "prompt": PROMPT_VERSION,
