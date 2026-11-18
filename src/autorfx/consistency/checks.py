@@ -303,8 +303,10 @@ def check_package(
                 "citation_status": "verified"
                 if all(e.locus.key() in known for e in issue.evidence)
                 else "unverified",
+                # A position in no clause (a heading above its sub-clauses) cannot be shown to be
+                # harmless, so it counts as cost-sensitive (fail closed, INV-8).
                 "is_cost_sensitive": issue.is_cost_sensitive
-                or any(known.get(e.locus.key(), False) for e in issue.evidence),
+                or any(known.get(e.locus.key(), True) for e in issue.evidence),
             }
         )
         for issue in issues

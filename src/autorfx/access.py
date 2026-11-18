@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pymupdf
 
-from autorfx.chunker import matches_cost_pattern
+from autorfx.chunker import matches_cost_pattern, mentions_cost
 from autorfx.ingest.convert import save_deterministic
 from autorfx.models import (
     Clause,
@@ -148,7 +148,7 @@ def clause_items(
                 "source_doc": clause.source_doc,
                 "section_id": clause.section_id,
                 "section_path": list(clause.section_path),
-                "title": clause.title,
+                "title": _title(clause, group, ruleset),
                 "page_number": clause.page_number,
                 "lang": clause.lang,
                 "primary_department": analysis.primary_department,
@@ -187,7 +187,7 @@ def rtm_rows(
                 "clause_id": clause.clause_id,
                 "source_doc": clause.source_doc,
                 "section_id": clause.section_id,
-                "title": clause.title,
+                "title": _title(clause, group, ruleset),
                 "primary_department": analysis.primary_department,
                 "reference_departments": list(analysis.reference_departments),
                 "priority": analysis.priority,
@@ -224,8 +224,25 @@ def sentences_for(
     ]
 
 
-def _issue_secret(issue: ConsistencyIssue, hidden: frozenset[Key]) -> bool:
-    return issue.is_cost_sensitive or any(e.locus.key() in hidden for e in issue.evidence)
+def visible_keys(clauses: Sequence[Clause]) -> frozenset[Key]:
+    """Positions of every sentence of a clause a restricted team may see: the allowlist."""
+    return frozenset(s.locus.key() for c in clauses if not c.is_cost_sensitive for s in c.sentences)
+
+
+def _issue_secret(issue: ConsistencyIssue, visible: frozenset[Key]) -> bool:
+    """Allowlist: an issue is shown only when every piece of its evidence lies in a visible clause.
+
+    Evidence in no clause at all (a heading above its sub-clauses) is not known to be harmless.
+    """
+    return issue.is_cost_sensitive or any(e.locus.key() not in visible for e in issue.evidence)
+
+
+def _title(clause: Clause, group: Group, ruleset: Ruleset) -> str:
+    """The title a group may see. A visible clause can inherit a heading that states a price
+    ("4.2 Target price EUR 1.20" above 4.2.1): such a title is not sent to a restricted team."""
+    if group == "cost_visible" or not mentions_cost(clause.title, ruleset):
+        return clause.title
+    return ""
 
 
 def withheld_ids(
@@ -245,15 +262,16 @@ def withheld_ids(
         for c in clauses
         if c.clause_id in by_id and _is_hidden(c, by_id[c.clause_id], group, hidden)
     }
-    return frozenset(masked | {i.id for i in issues if _issue_secret(i, hidden)})
+    visible = visible_keys(clauses)
+    return frozenset(masked | {i.id for i in issues if _issue_secret(i, visible)})
 
 
 def issue_items(issues: Sequence[ConsistencyIssue], *, group: Group, clauses: Sequence[Clause]) -> list[dict]:
     """Contract ``IssueItem`` dicts; an issue with cost-sensitive evidence shows only that it exists."""
-    hidden = hidden_keys(clauses)
+    visible = visible_keys(clauses)
     items: list[dict] = []
     for issue in issues:
-        if group != "cost_visible" and _issue_secret(issue, hidden):
+        if group != "cost_visible" and _issue_secret(issue, visible):
             items.append({"kind": "masked", "id": masked_issue_id(issue.id)})
             continue
         items.append(

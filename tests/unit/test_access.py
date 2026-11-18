@@ -19,7 +19,7 @@ from autorfx.parser.pdf import parse_pdf
 from autorfx.rules import Ruleset
 from autorfx.workspace import Workspace
 from contract_schema import assert_valid
-from factories import make_clause, make_file, make_manifest, pdf_from_html
+from factories import make_clause, make_file, make_locus, make_manifest, pdf_from_html
 
 SECRET = "1.2345 EUR"
 OPEN = make_clause("2.1", ["2.1 Delivery is FCA supplier plant according to Incoterms 2020."], title="Terms")
@@ -391,6 +391,43 @@ def test_a_heading_that_belongs_to_no_clause_is_not_sent(ruleset: Ruleset):
     assert [s["text"] for s in restricted] == [body.text]
     visible = access.sentences_for(parsed, clauses, group="cost_visible", page_number=1)
     assert len(visible) == 2
+
+
+def test_an_inherited_title_that_states_a_price_is_not_sent(ruleset: Ruleset):
+    """INV-8 (commit review HIGH): a visible clause may inherit "Target price EUR 1.20" from the
+    heading above it; a restricted team gets the clause without that title."""
+    child = make_clause("4.2.1", ["4.2.1 Delivery is FCA supplier plant."], title="Target price EUR 1.20")
+    result = analyze([child], ruleset, RuleOnlyProvider())
+    restricted = access.clause_items(
+        [child], result, group="cost_restricted", department=None, ruleset=ruleset
+    )
+    rtm = access.rtm_rows([child], result, group="cost_restricted", ruleset=ruleset)
+    assert restricted[0]["kind"] == "clause" and restricted[0]["title"] == "" and rtm[0]["title"] == ""
+    visible = access.clause_items([child], result, group="cost_visible", department=None, ruleset=ruleset)
+    assert visible[0]["title"] == "Target price EUR 1.20"
+
+
+def test_an_issue_with_evidence_in_no_clause_is_masked(ruleset: Ruleset):
+    """INV-8 (commit review MEDIUM), allowlist: evidence that belongs to no clause is not known to be
+    harmless, so the issue is masked for a restricted team even when nothing marked it."""
+    from autorfx.models import ConsistencyIssue, IssueEvidence
+
+    stray = make_locus(30, section_id="4.2")
+    issue = ConsistencyIssue(
+        id="c-thickness",
+        category="conflict",
+        severity="high",
+        entity="thickness",
+        title="판재 두께: 문서마다 값이 다릅니다",
+        detail="",
+        evidence=(
+            IssueEvidence(locus=OPEN.sentences[0].locus, text=OPEN.sentences[0].text, value="2.5"),
+            IssueEvidence(locus=stray, text="4.2 Target price EUR 1.20, sheet 2.0 mm", value="2.0"),
+        ),
+    )
+    restricted = access.issue_items([issue], group="cost_restricted", clauses=CLAUSES)
+    assert restricted == [{"kind": "masked", "id": access.masked_issue_id("c-thickness")}]
+    assert access.issue_items([issue], group="cost_visible", clauses=CLAUSES)[0]["kind"] == "issue"
 
 
 def test_a_hidden_sheet_does_not_show_its_name(ruleset: Ruleset, analyses):

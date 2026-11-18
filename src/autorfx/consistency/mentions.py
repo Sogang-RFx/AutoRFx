@@ -163,7 +163,7 @@ def extract_mentions(
                 unit=unit,
                 locus=locus,
                 text=text,
-                is_cost_sensitive=cost.get(locus.key(), False),
+                is_cost_sensitive=cost.get(locus.key(), True),  # in no clause: treated as cost (INV-8)
             )
         )
 
