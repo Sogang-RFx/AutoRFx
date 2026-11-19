@@ -1,13 +1,14 @@
 /**
- * Data provider (SPEC §13.1). Screens call only these functions; they never
- * read fixtures and never branch on mock vs. real. Every response is checked
- * against the contract, whichever mode served it (INV-9).
+ * Data provider (SPEC §13.1). Screens call only these functions. Every
+ * response comes from the backend, is checked against the contract (INV-9),
+ * and must say it is real data: anything else is an error (INV-10).
  */
 import type { z } from "zod";
-import { ConfigError, baseUrlOf, modeOf, type RoutePart } from "./config";
+import { ConfigError, baseUrlOf, type RoutePart } from "./config";
 import {
   ChatResponse,
   ClausesResponse,
+  ConsistencyResponse,
   CostInputsResponse,
   DocumentResponse,
   ErrorResponse,
@@ -18,10 +19,10 @@ import {
   RtmResponse,
   SentencesResponse,
   UploadResponse,
-  type PrecostInputs,
+  type PrecostRequest,
 } from "./contract";
 
-export type RequestCtx = { team: string | null; scenario?: string; speed?: number };
+export type RequestCtx = { team: string | null };
 
 export class ApiError extends Error {
   constructor(
@@ -35,6 +36,11 @@ export class ApiError extends Error {
   }
 }
 
+/** True for a 403: the team may not see this. Screens show a lock, not an error. */
+export function isForbidden(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 403;
+}
+
 function buildUrl(part: RoutePart, path: string, params: Record<string, string | number | null | undefined>): string {
   const base = baseUrlOf(part);
   const q = new URLSearchParams();
@@ -45,10 +51,12 @@ function buildUrl(part: RoutePart, path: string, params: Record<string, string |
   return `${base}${path}${qs ? `?${qs}` : ""}`;
 }
 
-/** Demo-only parameters go to mock parts only; a real backend never sees them. */
-function demoParams(part: RoutePart, ctx: RequestCtx): Record<string, string | undefined> {
-  if (modeOf(part) !== "mock") return {};
-  return { scenario: ctx.scenario && ctx.scenario !== "default" ? ctx.scenario : undefined };
+/** A response whose provenance names anything but real data is refused (INV-10). */
+function isRealData(body: unknown): boolean {
+  if (typeof body !== "object" || body === null || !("provenance" in body)) return true;
+  const provenance = (body as { provenance: unknown }).provenance;
+  if (typeof provenance !== "object" || provenance === null) return true;
+  return Object.values(provenance).every((v) => v === "real");
 }
 
 async function request<T extends z.ZodType>(
@@ -74,6 +82,9 @@ async function request<T extends z.ZodType>(
   if (!checked.success) {
     throw new ApiError(part, res.status, "contract_violation", "응답이 계약(contract/)과 맞지 않습니다.");
   }
+  if (!isRealData(checked.data)) {
+    throw new ApiError(part, res.status, "not_real_data", "백엔드가 실제 데이터가 아닌 응답을 보냈습니다. 보여주지 않습니다.");
+  }
   return checked.data;
 }
 
@@ -84,83 +95,86 @@ const post = (body: unknown, signal?: AbortSignal): RequestInit => ({
   signal,
 });
 
+const rfq = (id: string) => `/rfqs/${encodeURIComponent(id)}`;
+const file = (id: string, fileId: string) => `${rfq(id)}/files/${encodeURIComponent(fileId)}`;
+
+/** What to analyse: files picked by the user. Nothing on the server can be opened by id. */
+export type UploadSource = { kind: "files"; files: File[] };
+
 export const rfqApi = {
   meta: (signal?: AbortSignal) => request("document", MetaResponse, buildUrl("document", "/meta", {}), { signal }),
 
-  /** Sends only the file name. The file itself is never transmitted in the demo shell. */
-  upload: (fileName: string | null) =>
-    request("document", UploadResponse, buildUrl("document", "/rfqs", {}), post({ file_name: fileName })),
+  /**
+   * The backend receives the files as multipart/form-data (field `files`). The
+   * browser sets the multipart boundary, so no content-type is written here.
+   */
+  upload: (source: UploadSource) => {
+    const url = buildUrl("document", "/rfqs", {});
+    const form = new FormData();
+    for (const f of source.files) form.append("files", f, f.name);
+    return request("document", UploadResponse, url, { method: "POST", body: form });
+  },
 
   document: (id: string, signal?: AbortSignal) =>
-    request("document", DocumentResponse, buildUrl("document", `/rfqs/${encodeURIComponent(id)}`, {}), { signal }),
+    request("document", DocumentResponse, buildUrl("document", rfq(id), {}), { signal }),
 
-  job: (id: string, since: number, ctx: RequestCtx, signal?: AbortSignal) =>
-    request(
-      "document",
-      JobResponse,
-      buildUrl("document", `/rfqs/${encodeURIComponent(id)}/job`, {
-        since,
-        ...demoParams("document", ctx),
-        speed: modeOf("document") === "mock" ? ctx.speed : undefined,
-      }),
-      { signal },
-    ),
+  job: (id: string, signal?: AbortSignal) =>
+    request("document", JobResponse, buildUrl("document", `${rfq(id)}/job`, {}), { signal }),
 
   clauses: (id: string, ctx: RequestCtx, department: string | null, signal?: AbortSignal) =>
     request(
       "analysis",
       ClausesResponse,
-      buildUrl("analysis", `/rfqs/${encodeURIComponent(id)}/clauses`, {
-        team: ctx.team,
-        department,
-        ...demoParams("analysis", ctx),
-      }),
+      buildUrl("analysis", `${rfq(id)}/clauses`, { team: ctx.team, department }),
       { signal },
     ),
 
-  sentences: (id: string, page: number, ctx: RequestCtx, signal?: AbortSignal) =>
+  sentences: (id: string, fileId: string, page: number, ctx: RequestCtx, signal?: AbortSignal) =>
     request(
       "source",
       SentencesResponse,
-      buildUrl("source", `/rfqs/${encodeURIComponent(id)}/pages/${page}/sentences`, { team: ctx.team }),
+      buildUrl("source", `${file(id, fileId)}/pages/${page}/sentences`, { team: ctx.team }),
       { signal },
     ),
 
-  /** URL of the canonical PDF for this team (masked for the restricted group). */
-  sourceUrl: (id: string, ctx: RequestCtx) =>
-    buildUrl("source", `/rfqs/${encodeURIComponent(id)}/source`, { team: ctx.team }),
+  /** URL of one file's canonical PDF for this team (cost text redacted for the restricted group). */
+  sourceUrl: (id: string, fileId: string, ctx: RequestCtx) =>
+    buildUrl("source", `${file(id, fileId)}/source`, { team: ctx.team }),
 
   rtm: (id: string, ctx: RequestCtx, signal?: AbortSignal) =>
+    request("analysis", RtmResponse, buildUrl("analysis", `${rfq(id)}/rtm`, { team: ctx.team }), { signal }),
+
+  /** Server-built Excel RTM, filtered for the team. */
+  rtmXlsxUrl: (id: string, ctx: RequestCtx): string =>
+    buildUrl("analysis", `${rfq(id)}/rtm.xlsx`, { team: ctx.team }),
+
+  consistency: (id: string, ctx: RequestCtx, signal?: AbortSignal) =>
     request(
-      "analysis",
-      RtmResponse,
-      buildUrl("analysis", `/rfqs/${encodeURIComponent(id)}/rtm`, { team: ctx.team, ...demoParams("analysis", ctx) }),
+      "consistency",
+      ConsistencyResponse,
+      buildUrl("consistency", `${rfq(id)}/consistency`, { team: ctx.team }),
       { signal },
     ),
 
   costInputs: (id: string, ctx: RequestCtx, signal?: AbortSignal) =>
-    request(
-      "cost_inputs",
-      CostInputsResponse,
-      buildUrl("cost_inputs", `/rfqs/${encodeURIComponent(id)}/cost-inputs`, { team: ctx.team }),
-      { signal },
-    ),
-
-  precost: (inputs: PrecostInputs, ctx: RequestCtx) =>
-    request("precost", PrecostResponse, buildUrl("precost", "/precost", {}), post({ team: ctx.team ?? undefined, inputs })),
-
-  chat: (id: string, question: string, ctx: RequestCtx) =>
-    request(
-      "chat",
-      ChatResponse,
-      buildUrl("chat", `/rfqs/${encodeURIComponent(id)}/chat`, {}),
-      post({ team: ctx.team ?? undefined, question }),
-    ),
-
-  evaluation: (id: string, signal?: AbortSignal) =>
-    request("evaluation", EvaluationResponse, buildUrl("evaluation", `/rfqs/${encodeURIComponent(id)}/evaluation`, {}), {
+    request("cost_inputs", CostInputsResponse, buildUrl("cost_inputs", `${rfq(id)}/cost-inputs`, { team: ctx.team }), {
       signal,
     }),
+
+  precost: (body: Omit<PrecostRequest, "team">, ctx: RequestCtx) =>
+    request("precost", PrecostResponse, buildUrl("precost", "/precost", {}), post({ ...body, team: ctx.team ?? undefined })),
+
+  chat: (id: string, question: string, ctx: RequestCtx) =>
+    request("chat", ChatResponse, buildUrl("chat", `${rfq(id)}/chat`, {}), post({ team: ctx.team ?? undefined, question })),
+
+  /** The team decides which error rows are shown: rows about hidden clauses are left out (INV-8). */
+  evaluation: (id: string, ctx: RequestCtx, signal?: AbortSignal) =>
+    request(
+      "evaluation",
+      EvaluationResponse,
+      buildUrl("evaluation", `${rfq(id)}/evaluation`, { team: ctx.team }),
+      { signal },
+    ),
 };
 
 /** Human-readable message for any failure, including configuration errors. */

@@ -30,8 +30,6 @@
   --color-ok-tint: #e7f3ec;
   --color-warn: #7a4a00;
   --color-warn-tint: #fbf0db;
-  --color-mock: #6b2e8f;
-  --color-mock-tint: #f4eaf9;
   --color-mark: #ffe9a8;
   --color-white: #ffffff;
   --color-transparent: transparent;
@@ -148,11 +146,6 @@
 
 @utility pulse-soft {
   animation: pulse-soft 1.4s var(--ease-soft) infinite;
-}
-
-/* Mock marker: dashed border + purple, never colour alone (SPEC §15.3). */
-@utility mock-outline {
-  border: 1px dashed var(--color-mock);
 }
 
 @media (prefers-reduced-motion: reduce) {

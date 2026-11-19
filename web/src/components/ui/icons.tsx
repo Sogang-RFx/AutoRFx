@@ -107,6 +107,19 @@ export const IconClose = (p: IconProps) => (
     <path d="M6 6l12 12M18 6 6 18" />
   </Svg>
 );
+/** Two documents side by side: cross-document consistency. */
+export const IconCompare = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M3.5 5h7v14h-7ZM13.5 5h7v14h-7Z" />
+    <path d="M6 9.5h2M16 9.5h2M6 13h2M16 13h2" />
+  </Svg>
+);
+export const IconPause = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="12" cy="12" r="8.5" />
+    <path d="M10 9v6M14 9v6" />
+  </Svg>
+);
 export const IconSpinner = (p: IconProps) => (
   <Svg {...p}>
     <path d="M12 3a9 9 0 1 0 9 9" />

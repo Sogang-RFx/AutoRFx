@@ -3,20 +3,24 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
-    "file_name": {
-      "anyOf": [
-        {
-          "type": "string",
-          "maxLength": 255
-        },
-        {
-          "type": "null"
-        }
+    "file_names": {
+      "maxItems": 50,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 255
+      }
+    },
+    "sample_id": {
+      "type": [
+        "string",
+        "null"
       ]
     }
   },
   "required": [
-    "file_name"
+    "file_names",
+    "sample_id"
   ],
   "additionalProperties": false
 }

@@ -1,11 +1,12 @@
 "use client";
 import { useEffect, useState } from "react";
-import { describeError } from "./provider";
+import { describeError, isForbidden } from "./provider";
 
+/** `forbidden` marks a 403: the team may not see this, which is a lock, not a failure. */
 export type Resource<T> =
   | { status: "loading"; data: null; error: null }
   | { status: "ok"; data: T; error: null }
-  | { status: "error"; data: null; error: string };
+  | { status: "error"; data: null; error: string; forbidden: boolean };
 
 /**
  * Loads one resource per `key`. When the key changes (for example the team),
@@ -32,7 +33,7 @@ export function useResource<T>(key: string | null, load: (signal: AbortSignal) =
       },
       (e: unknown) => {
         if (controller.signal.aborted) return;
-        setState({ key, res: { status: "error", data: null, error: describeError(e) } });
+        setState({ key, res: { status: "error", data: null, error: describeError(e), forbidden: isForbidden(e) } });
       },
     );
     return () => controller.abort();

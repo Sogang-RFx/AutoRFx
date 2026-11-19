@@ -7,26 +7,17 @@ import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { IconArrowRight, IconCheck, IconSpinner, IconWarn } from "@/components/ui/icons";
-import { ErrorState, MockChip, Panel, Skeleton, cx } from "@/components/ui/primitives";
-import type { JobResponse, JobStage } from "@/lib/rfq/contract";
+import { ErrorState, Panel, Skeleton, cx } from "@/components/ui/primitives";
+import type { JobResponse, JobStage, PackageFile } from "@/lib/rfq/contract";
+import { fileTag, usePackageFiles } from "@/lib/rfq/package-context";
 import { describeError, rfqApi } from "@/lib/rfq/provider";
 import { useSession } from "@/lib/rfq/session";
 
-const POLL_MS = 350;
+/** A real analysis takes seconds to minutes. */
+const POLL_MS = 1500;
 const MAX_RETRIES = 3;
 
-function sinceFor(id: string): number {
-  const key = `autorfx.since.${id}`;
-  const fromUrl = Number(new URLSearchParams(window.location.search).get("since"));
-  let since = Number.isFinite(fromUrl) && fromUrl > 0 ? fromUrl : NaN;
-  try {
-    if (Number.isNaN(since)) since = Number(window.sessionStorage.getItem(key)) || Date.now();
-    window.sessionStorage.setItem(key, String(since));
-  } catch {
-    if (Number.isNaN(since)) since = Date.now();
-  }
-  return since;
-}
+const finished = (s: JobStage) => s.status === "done" || s.status === "skipped";
 
 function StageIcon({ status }: { status: JobStage["status"] }) {
   const common = "flex size-7 shrink-0 items-center justify-center rounded-full border";
@@ -48,6 +39,12 @@ function StageIcon({ status }: { status: JobStage["status"] }) {
         <IconWarn size={14} />
       </span>
     );
+  if (status === "skipped")
+    return (
+      <span className={cx(common, "border-dashed border-line-control bg-surface text-ink-muted")} aria-hidden="true">
+        –
+      </span>
+    );
   return <span className={cx(common, "border-line bg-surface text-ink-muted")} />;
 }
 
@@ -56,24 +53,53 @@ const STATUS_LABEL: Record<JobStage["status"], string> = {
   running: "진행 중",
   done: "완료",
   error: "멈춤",
+  skipped: "건너뜀",
 };
+
+const KIND_LABEL: Record<PackageFile["kind"], string> = { pdf: "PDF", doc: "DOC", docx: "DOCX", xlsx: "XLSX" };
+
+function FileList({ files }: { files: PackageFile[] }) {
+  return (
+    <Panel title={`패키지 파일 ${files.length}개`} labelId="files-title">
+      <ul className="divide-y divide-line" data-testid="package-files">
+        {files.map((f) => (
+          <li key={f.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-2.5 text-dense">
+            <span className="w-5 font-semibold text-ink tabular">{fileTag(files, f.id)}</span>
+            <span className="min-w-0 flex-1 basis-48 break-all text-ink">{f.name}</span>
+            <span className="text-label text-ink-muted tabular">
+              {KIND_LABEL[f.kind]} · {f.lang.toUpperCase()} · {f.page_count}페이지 · 조항 {f.clause_count}
+            </span>
+            {f.canonical_tool !== "identity" && (
+              <span className="basis-full pl-8 text-label text-ink-muted">기준 PDF 변환: {f.canonical_tool}</span>
+            )}
+            {f.warnings.map((w) => (
+              <span key={w} className="flex basis-full items-center gap-1 pl-8 text-label text-ink-muted">
+                <IconWarn size={12} /> {w}
+              </span>
+            ))}
+          </li>
+        ))}
+      </ul>
+    </Panel>
+  );
+}
 
 export default function ProcessingPage() {
   const { id } = useParams<{ id: string }>();
   const rfqId = decodeURIComponent(id);
   const session = useSession();
+  const files = usePackageFiles();
   const [job, setJob] = useState<JobResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!session.ready) return;
-    const since = sinceFor(rfqId);
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let failures = 0;
     const tick = async () => {
       try {
-        const res = await rfqApi.job(rfqId, since, session, controller.signal);
+        const res = await rfqApi.job(rfqId, controller.signal);
         failures = 0;
         setError(null);
         setJob(res);
@@ -92,12 +118,10 @@ export default function ProcessingPage() {
       controller.abort();
       clearTimeout(timer);
     };
-    // Re-run only when the demo inputs change.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rfqId, session.ready, session.scenario, session.speed]);
+  }, [rfqId, session.ready]);
 
   const stages = job?.data.stages ?? [];
-  const doneCount = stages.filter((s) => s.status === "done").length;
+  const doneCount = stages.filter(finished).length;
   const halted = stages.find((s) => s.status === "error");
   const progress = stages.length ? Math.round((doneCount / stages.length) * 100) : 0;
 
@@ -106,9 +130,11 @@ export default function ProcessingPage() {
       <div className="flex flex-col gap-2">
         <h1 className="text-title font-semibold text-ink">처리 진행</h1>
         <p className="text-body text-ink-muted">
-          원본을 보관하고 기준 PDF를 만든 뒤, 조항을 나누고 분석해서 모든 결과의 인용을 원문과 대조합니다.
+          파일마다 원본을 보관하고 기준 PDF를 만든 뒤, 조항을 나누고 분석해서 모든 결과의 인용을 원문과 대조하고, 파일
+          사이의 어긋남을 찾습니다.
         </p>
       </div>
+      {files.length > 0 && <FileList files={files} />}
 
       <Panel
         title="파이프라인"
@@ -137,14 +163,19 @@ export default function ProcessingPage() {
                     aria-hidden="true"
                     className={cx(
                       "absolute left-3.5 top-7 bottom-0 w-px",
-                      stage.status === "done" ? "bg-ok" : "bg-line",
+                      finished(stage) ? "bg-ok" : "bg-line",
                     )}
                   />
                 )}
                 <StageIcon status={stage.status} />
                 <div className="flex min-w-0 flex-1 flex-col gap-0.5 pt-0.5">
                   <div className="flex flex-wrap items-center gap-2">
-                    <span className={cx("text-body font-semibold", stage.status === "pending" ? "text-ink-muted" : "text-ink")}>
+                    <span
+                      className={cx(
+                        "text-body font-semibold",
+                        stage.status === "pending" || stage.status === "skipped" ? "text-ink-muted" : "text-ink",
+                      )}
+                    >
                       {stage.label}
                     </span>
                     <span
@@ -152,7 +183,6 @@ export default function ProcessingPage() {
                     >
                       {STATUS_LABEL[stage.status]}
                     </span>
-                    {job.provenance[stage.part] === "mock" && <MockChip title={`이 단계(${stage.part})는 목업입니다.`} />}
                   </div>
                   <p className={cx("text-dense", stage.status === "error" ? "text-danger" : "text-ink-muted")}>
                     {stage.detail}

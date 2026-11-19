@@ -2,15 +2,16 @@
 /**
  * Clause workspace (SPEC §14): ≥1280px three panes (list 380 · source flex ·
  * detail 340); 1024–1279px list 320 + source, detail opens over the source;
- * below 1024px list, detail and source stack.
+ * below 1024px list, detail and source stack. `?clause=<clause_id>` opens a
+ * clause directly (links from RTM and the consistency screen).
  */
-import { useParams } from "next/navigation";
+import { useParams, useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
 import { useTeamGroup } from "@/components/shell/app-shell";
 import { SourceViewer } from "@/components/source-viewer/source-viewer";
 import { cx } from "@/components/ui/primitives";
-import { ClauseDetail, ClauseList } from "@/components/workspace/clause-panels";
-import type { Locus } from "@/lib/rfq/contract";
+import { ClauseDetail, ClauseList, type DeptRole } from "@/components/workspace/clause-panels";
+import type { ClauseItem, Locus } from "@/lib/rfq/contract";
 import { rfqApi } from "@/lib/rfq/provider";
 import { useSession } from "@/lib/rfq/session";
 import { useResource } from "@/lib/rfq/use-resource";
@@ -23,31 +24,47 @@ export default function ClausesPage() {
   return <Workspace key={session.team ?? "none"} rfqId={decodeURIComponent(id)} />;
 }
 
+function firstLocus(c: ClauseItem | undefined): Locus | null {
+  if (c?.kind !== "clause") return null;
+  return c.summary.finding.citations[0] ?? c.excerpt[0]?.locus ?? null;
+}
+
 function Workspace({ rfqId }: { rfqId: string }) {
   const session = useSession();
-  const { restricted, ready: teamReady } = useTeamGroup();
-  const ctx = useMemo(() => ({ team: session.team, scenario: session.scenario }), [session.team, session.scenario]);
+  const search = useSearchParams();
+  const { restricted, ready: teamReady, departments } = useTeamGroup();
+  const ctx = useMemo(() => ({ team: session.team }), [session.team]);
 
-  const [department, setDepartment] = useState<string | null>(session.team);
+  // The team is who is looking; the department filter is what they look at. They are separate.
+  const [department, setDepartment] = useState<string | null>(null);
+  const [role, setRole] = useState<DeptRole>("all");
   const [selected, setSelected] = useState<string | null>(null);
   const [target, setTarget] = useState<Locus | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
 
-  const meta = useResource(session.ready ? "meta" : null, (s) => rfqApi.meta(s));
-  const departments = meta.status === "ok" ? meta.data.data.departments : [];
-
-  const key = session.ready ? `clauses:${rfqId}:${ctx.team ?? "none"}:${department ?? "all"}:${ctx.scenario}` : null;
+  const key = session.ready ? `clauses:${rfqId}:${ctx.team ?? "none"}:${department ?? "all"}` : null;
   const clauses = useResource(key, (s) => rfqApi.clauses(rfqId, ctx, department, s));
-  const items = clauses.status === "ok" ? clauses.data.data.clauses : [];
+  const items = useMemo(() => (clauses.status === "ok" ? clauses.data.data.clauses : []), [clauses]);
   const provenance = clauses.status === "ok" ? clauses.data.provenance : undefined;
-  const current = items.find((c) => c.section_id === selected) ?? null;
+  const current = items.find((c) => c.clause_id === selected) ?? null;
 
-  function select(sectionId: string) {
-    setSelected(sectionId);
+  // Deep link: open the requested clause once, after the list arrives.
+  const wanted = search.get("clause");
+  const [linked, setLinked] = useState(false);
+  if (!linked && wanted && clauses.status === "ok") {
+    setLinked(true);
+    const found = items.find((c) => c.clause_id === wanted);
+    if (found) {
+      setSelected(found.clause_id);
+      setIsDetailOpen(true);
+      setTarget(firstLocus(found));
+    }
+  }
+
+  function select(clauseId: string) {
+    setSelected(clauseId);
     setIsDetailOpen(true);
-    const c = items.find((i) => i.section_id === sectionId);
-    if (c?.kind === "clause") setTarget(c.summary.finding.citations[0] ?? c.excerpt[0]?.locus ?? null);
-    else setTarget(null);
+    setTarget(firstLocus(items.find((i) => i.clause_id === clauseId)));
   }
 
   return (
@@ -62,9 +79,12 @@ function Workspace({ rfqId }: { rfqId: string }) {
         department={department}
         onDepartment={(d) => {
           setDepartment(d);
+          setRole("all");
           setSelected(null);
           setTarget(null);
         }}
+        role={role}
+        onRole={setRole}
         selected={selected}
         onSelect={select}
       />

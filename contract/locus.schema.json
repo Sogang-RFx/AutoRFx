@@ -25,6 +25,12 @@
       "type": "integer",
       "minimum": 1,
       "maximum": 9007199254740991
+    },
+    "anchor": {
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [
@@ -32,7 +38,8 @@
     "page_number",
     "section_id",
     "paragraph_index",
-    "sentence_index"
+    "sentence_index",
+    "anchor"
   ],
   "additionalProperties": false
 }

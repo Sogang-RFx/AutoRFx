@@ -26,8 +26,12 @@ venv/
 *.mp3
 data/raw/
 !data/.gitkeep
-# Exception: the synthetic demo RFQ generated from web/src/fixtures/sample/manuscript.yaml
-!web/src/fixtures/sample/*.pdf
+# Pipeline output: stored originals, canonical PDFs, parsed and analysed artifacts, caches
+data/work/
+data/cache/
+# Answer keys may quote RFQ text; kept local until the team decides (OQ-7)
+data/answer_keys/
+# No exceptions: the GitHub repository is public, so no RFQ file (not even a synthetic one) is committed.
 
 # Web
 web/node_modules/
@@ -36,17 +40,29 @@ web/test-results/
 web/playwright-report/
 web/public/pdf.worker.min.mjs
 *.tsbuildinfo
+# Playwright MCP screenshots and snapshots (may show real RFQ screens)
+.playwright-mcp/
 
 # SDD documents (kept local; root only, so web/AGENTS.md from Next.js is unaffected)
 /AGENTS.md
+/CLAUDE.md
+/DESIGN.md
 /REQUIREMENTS.md
 /SPEC.md
 /TASKS.md
 /docs/demo-script.md
 
+# Reference material (paid course files, other teams' repos). Never upload.
+/docs/references-do-not-upload/
+
 # Local AI tool state
 .omc/
 .serena/
+.remember/
+
+# Test coverage data
+.coverage
+htmlcov/
 
 # Vector Stores & Caches
 .chroma/

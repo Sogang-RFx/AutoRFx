@@ -20,7 +20,7 @@ const sourceSerif = Source_Serif_4({
 
 export const metadata: Metadata = {
   title: "AutoRFx — RFQ 분석 데모",
-  description: "다국어 RFQ 분석 · 정밀 인용 추적 · 사전원가 판단 (목업 데모 셸)",
+  description: "다국어 RFQ 패키지 분석 · 정밀 인용 추적 · 문서 간 정합성 · 사전원가 판단",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

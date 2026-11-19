@@ -1,12 +1,18 @@
 "use client";
-/** RTM table (TASKS S013, SPEC §14, US2): filters, sort, CSV and per-department brief. */
+/**
+ * RTM table (TASKS S013, SPEC §14, US2): lead and reference departments, file,
+ * filters, sort, exports (server Excel in http mode, CSV, per-department brief).
+ * Each row links to its clause in the workspace.
+ */
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMemo, useState } from "react";
+import { useTeamGroup } from "@/components/shell/app-shell";
 import { IconDownload, IconLock, IconWarn } from "@/components/ui/icons";
-import { Button, EmptyState, ErrorState, Panel, PriorityChip, RedFlagChip, Skeleton, cx } from "@/components/ui/primitives";
-import type { Priority, RtmRow, VisibleClause } from "@/lib/rfq/contract";
-import { departmentBrief, download, exportName, hasMock, rtmCsv } from "@/lib/rfq/export";
+import { Button, EmptyState, ErrorState, Panel, PriorityChip, RedFlagChip, Skeleton, cx, formatLocus } from "@/components/ui/primitives";
+import type { Department, Priority, RtmRow, VisibleClause } from "@/lib/rfq/contract";
+import { departmentBrief, download, exportName, exportNote, rtmCsv } from "@/lib/rfq/export";
+import { fileName, fileTag, usePackageFiles } from "@/lib/rfq/package-context";
 import { describeError, rfqApi } from "@/lib/rfq/provider";
 import { useSession } from "@/lib/rfq/session";
 import { useResource } from "@/lib/rfq/use-resource";
@@ -14,48 +20,61 @@ import { useResource } from "@/lib/rfq/use-resource";
 const PRIORITY_ORDER: Record<Priority, number> = { must: 0, should: 1, optional: 2, info: 3 };
 type SortKey = "section" | "priority";
 
+function inDepartment(r: Extract<RtmRow, { kind: "clause" }>, dept: Department | undefined): boolean {
+  if (!dept) return true;
+  return dept.receives_all || r.primary_department === dept.id || r.reference_departments.includes(dept.id);
+}
+
 export default function RtmPage() {
   const { id } = useParams<{ id: string }>();
   const rfqId = decodeURIComponent(id);
   const session = useSession();
-  const ctx = { team: session.team, scenario: session.scenario };
+  const { departments, engines } = useTeamGroup();
+  const files = usePackageFiles();
+  const ctx = { team: session.team };
   const [department, setDepartment] = useState<string>("");
   const [onlyRedFlags, setOnlyRedFlags] = useState(false);
   const [sort, setSort] = useState<SortKey>("section");
   const [exportError, setExportError] = useState<string | null>(null);
 
-  const meta = useResource(session.ready ? "meta" : null, (s) => rfqApi.meta(s));
-  const departments = meta.status === "ok" ? meta.data.data.departments : [];
   const deptLabel = (d: string) => departments.find((x) => x.id === d)?.label ?? d;
-  const rtm = useResource(session.ready ? `rtm:${rfqId}:${ctx.team ?? "none"}:${ctx.scenario}` : null, (s) =>
+  const labels = { dept: deptLabel, file: (f: string) => fileName(files, f) };
+  const rtm = useResource(session.ready ? `rtm:${rfqId}:${ctx.team ?? "none"}` : null, (s) =>
     rfqApi.rtm(rfqId, ctx, s),
   );
 
   const rows = useMemo(() => {
     const all = rtm.status === "ok" ? rtm.data.data.rows : [];
+    const dept = departments.find((d) => d.id === department);
     const filtered = all.filter((r) => {
+      // Masked rows stay under every department: the filter must not reveal them.
       if (r.kind === "masked") return !onlyRedFlags;
-      if (department && !r.departments.includes(department)) return false;
+      if (!inDepartment(r, dept)) return false;
       return !onlyRedFlags || r.red_flag !== null;
     });
     if (sort === "section") return filtered;
     const rank = (r: RtmRow) => (r.kind === "clause" ? PRIORITY_ORDER[r.priority] : 9);
     return [...filtered].sort((a, b) => rank(a) - rank(b));
-  }, [rtm, department, onlyRedFlags, sort]);
+  }, [rtm, department, departments, onlyRedFlags, sort]);
 
-  const isMock = rtm.status === "ok" && hasMock(rtm.data.provenance);
+  const xlsxUrl = (() => {
+    try {
+      return rfqApi.rtmXlsxUrl(rfqId, ctx);
+    } catch {
+      return null;
+    }
+  })();
 
   async function exportBrief() {
     setExportError(null);
     try {
       const res = await rfqApi.clauses(rfqId, ctx, department || null);
       const visible = res.data.clauses.filter((c): c is VisibleClause => c.kind === "clause");
-      const masked = res.data.clauses.filter((c) => c.kind === "masked").map((c) => c.section_id);
+      const masked = res.data.clauses.filter((c) => c.kind === "masked").map((c) => c.clause_id);
       const name = department ? deptLabel(department) : "전체 부서";
-      const mock = hasMock(res.provenance);
       download(
-        exportName(`AutoRFx_정리본_${name}`, "md", mock),
-        departmentBrief(name, visible, masked, mock),
+        exportName(`AutoRFx_정리본_${name}`, "md"),
+        departmentBrief(name, visible, masked, labels, exportNote(engines)),
         "text/markdown;charset=utf-8",
       );
     } catch (e) {
@@ -70,17 +89,32 @@ export default function RtmPage() {
       <div className="flex flex-wrap items-end gap-3">
         <div className="min-w-0 flex-1 basis-72">
           <h1 className="text-title font-semibold text-ink">요구사항 추적표 (RTM)</h1>
-          <p className="text-body text-ink-muted">조항마다 담당 부서, 요건 강도, 독소조항, 원문 위치를 한 줄로 봅니다.</p>
+          <p className="text-body text-ink-muted">
+            조항마다 파일, 주관·참조 부서, 요건 강도, 독소조항, 원문 위치를 한 줄로 봅니다.
+          </p>
         </div>
         <div className="flex flex-wrap gap-2">
+          {xlsxUrl && (
+            <a
+              href={xlsxUrl}
+              data-testid="export-rtm-xlsx"
+              className="inline-flex min-h-9 items-center justify-center gap-2 rounded-control border border-line-control bg-surface px-3 text-dense font-medium text-ink transition-soft hover:bg-canvas"
+            >
+              <IconDownload size={14} /> RTM 내려받기 (Excel)
+            </a>
+          )}
           <Button
             disabled={rtm.status !== "ok"}
             data-testid="export-rtm"
             onClick={() =>
-              download(exportName("AutoRFx_RTM", "csv", isMock), rtmCsv(rows, deptLabel, isMock), "text/csv;charset=utf-8")
+              download(
+                exportName("AutoRFx_RTM", "csv"),
+                rtmCsv(rows, labels, exportNote(engines)),
+                "text/csv;charset=utf-8",
+              )
             }
           >
-            <IconDownload size={14} /> RTM 내려받기 (CSV)
+            <IconDownload size={14} /> CSV
           </Button>
           <Button disabled={rtm.status !== "ok"} onClick={exportBrief} data-testid="export-brief">
             <IconDownload size={14} /> {department ? `${deptLabel(department)} ` : ""}정리본 (Markdown)
@@ -125,12 +159,13 @@ export default function RtmPage() {
         {rtm.status === "ok" && rows.length === 0 && <EmptyState title="조건에 맞는 행이 없습니다" />}
         {rtm.status === "ok" && rows.length > 0 && (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] text-left text-dense" data-testid="rtm-table">
+            <table className="w-full min-w-[880px] text-left text-dense" data-testid="rtm-table">
               <thead className="border-b border-line bg-canvas text-label text-ink-muted">
                 <tr>
                   <th scope="col" className="px-4 py-2 font-semibold">조항</th>
                   <th scope="col" className="px-3 py-2 font-semibold">제목</th>
-                  <th scope="col" className="px-3 py-2 font-semibold">담당 부서</th>
+                  <th scope="col" className="px-3 py-2 font-semibold">주관</th>
+                  <th scope="col" className="px-3 py-2 font-semibold">참조</th>
                   <th scope="col" className="px-3 py-2 font-semibold">요건 강도</th>
                   <th scope="col" className="px-3 py-2 font-semibold">독소조항</th>
                   <th scope="col" className="px-3 py-2 font-semibold">원문 위치</th>
@@ -138,7 +173,7 @@ export default function RtmPage() {
               </thead>
               <tbody>
                 {rows.map((r) => (
-                  <Row key={r.section_id} row={r} rfqId={rfqId} deptLabel={deptLabel} />
+                  <Row key={r.clause_id} row={r} rfqId={rfqId} deptLabel={deptLabel} tag={files.length > 1 ? fileTag(files, r.source_doc) : null} />
                 ))}
               </tbody>
             </table>
@@ -149,12 +184,21 @@ export default function RtmPage() {
   );
 }
 
-function Row({ row, rfqId, deptLabel }: { row: RtmRow; rfqId: string; deptLabel: (d: string) => string }) {
+type RowProps = { row: RtmRow; rfqId: string; deptLabel: (d: string) => string; tag: string | null };
+
+function Row({ row, rfqId, deptLabel, tag }: RowProps) {
+  const files = usePackageFiles();
+  const number = (
+    <td className="px-4 py-2.5 font-semibold text-ink tabular" title={fileName(files, row.source_doc)}>
+      {tag && <span className="mr-1 text-label font-medium text-ink-muted">{tag}</span>}
+      {row.section_id}
+    </td>
+  );
   if (row.kind === "masked") {
     return (
       <tr className="h-11 border-b border-line text-ink-muted" data-testid="rtm-masked">
-        <td className="px-4 font-semibold tabular">{row.section_id}</td>
-        <td colSpan={5} className="px-3">
+        {number}
+        <td colSpan={6} className="px-3">
           <span className="inline-flex items-center gap-1.5">
             <IconLock size={14} /> 이 팀에는 표시되지 않음
           </span>
@@ -163,24 +207,23 @@ function Row({ row, rfqId, deptLabel }: { row: RtmRow; rfqId: string; deptLabel:
     );
   }
   const verified = row.citation_status === "verified";
+  const href = `/rfq/${encodeURIComponent(rfqId)}/clauses?clause=${encodeURIComponent(row.clause_id)}`;
   return (
-    <tr className="border-b border-line align-top transition-soft hover:bg-canvas">
-      <td className="px-4 py-2.5 font-semibold text-ink tabular">{row.section_id}</td>
-      <td className="px-3 py-2.5 text-ink">{row.title}</td>
-      <td className="px-3 py-2.5 text-ink-muted">{row.departments.map(deptLabel).join(" · ")}</td>
+    <tr className="border-b border-line align-top transition-soft hover:bg-canvas" data-testid="rtm-row">
+      {number}
+      <td className="px-3 py-2.5 text-ink">{row.title || <span className="text-ink-muted">(제목 없음)</span>}</td>
+      <td className="px-3 py-2.5 font-semibold text-ink">{deptLabel(row.primary_department)}</td>
+      <td className="px-3 py-2.5 text-ink-muted">{row.reference_departments.map(deptLabel).join(", ") || "–"}</td>
       <td className="px-3 py-2.5">
         <PriorityChip priority={row.priority} />
       </td>
       <td className="px-3 py-2.5">
-        {row.red_flag ? <RedFlagChip type={row.red_flag} /> : <span className="text-ink-muted">–</span>}
+        {row.red_flag ? <RedFlagChip label={row.red_flag.label} /> : <span className="text-ink-muted">–</span>}
       </td>
       <td className="px-3 py-2.5">
-        <Link
-          href={`/rfq/${encodeURIComponent(rfqId)}/clauses`}
-          className={cx("inline-flex items-center gap-1 tabular hover:underline", verified ? "text-ok" : "text-warn")}
-        >
+        <Link href={href} className={cx("inline-flex items-center gap-1 tabular hover:underline", verified ? "text-ok" : "text-warn")}>
           {!verified && <IconWarn size={12} />}
-          {row.page_number}페이지 {row.sentence_index}번째 문장
+          {formatLocus(row, tag ?? undefined)}
           {!verified && " · 미검증"}
         </Link>
       </td>

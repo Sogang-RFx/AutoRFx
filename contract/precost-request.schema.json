@@ -6,6 +6,12 @@
     "team": {
       "type": "string"
     },
+    "rfq_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "inputs": {
       "type": "object",
       "properties": {
@@ -29,6 +35,17 @@
         "currency": {
           "type": "string",
           "pattern": "^[A-Z]{3}$"
+        },
+        "target_price": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -36,13 +53,116 @@
         "min_quantity",
         "fixed_costs",
         "variable_cost_per_unit",
-        "currency"
+        "currency",
+        "target_price"
       ],
       "additionalProperties": false
+    },
+    "breakdown": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "gross_weight": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "net_weight": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "material_price": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "scrap_credit": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "machine_hour_rate": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "strokes_per_minute": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "parts_per_stroke": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "oee": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "surface_cost": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "packaging_cost": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "freight_cost": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "warehousing_cost": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "scrap_rate": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "sga_rate": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "profit_rate": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            }
+          },
+          "required": [
+            "gross_weight",
+            "net_weight",
+            "material_price",
+            "scrap_credit",
+            "machine_hour_rate",
+            "strokes_per_minute",
+            "parts_per_stroke",
+            "oee",
+            "surface_cost",
+            "packaging_cost",
+            "freight_cost",
+            "warehousing_cost",
+            "scrap_rate",
+            "sga_rate",
+            "profit_rate"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "resolved": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "type": "string"
+      }
     }
   },
   "required": [
-    "inputs"
+    "rfq_id",
+    "inputs",
+    "breakdown",
+    "resolved"
   ],
   "additionalProperties": false
 }

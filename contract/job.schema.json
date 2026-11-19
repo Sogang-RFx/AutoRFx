@@ -37,6 +37,7 @@
                   "citation",
                   "translation",
                   "source",
+                  "consistency",
                   "cost_inputs",
                   "precost",
                   "chat",
@@ -49,7 +50,8 @@
                   "pending",
                   "running",
                   "done",
-                  "error"
+                  "error",
+                  "skipped"
                 ]
               }
             },
@@ -82,6 +84,7 @@
           "citation",
           "translation",
           "source",
+          "consistency",
           "cost_inputs",
           "precost",
           "chat",

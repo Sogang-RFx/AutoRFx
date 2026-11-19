@@ -6,6 +6,10 @@
     "data": {
       "type": "object",
       "properties": {
+        "source_doc": {
+          "type": "string",
+          "minLength": 1
+        },
         "page_number": {
           "type": "integer",
           "minimum": 1,
@@ -41,6 +45,12 @@
                     "type": "integer",
                     "minimum": 1,
                     "maximum": 9007199254740991
+                  },
+                  "anchor": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
@@ -48,7 +58,8 @@
                   "page_number",
                   "section_id",
                   "paragraph_index",
-                  "sentence_index"
+                  "sentence_index",
+                  "anchor"
                 ],
                 "additionalProperties": false
               },
@@ -102,6 +113,7 @@
         }
       },
       "required": [
+        "source_doc",
         "page_number",
         "sentences"
       ],
@@ -118,6 +130,7 @@
           "citation",
           "translation",
           "source",
+          "consistency",
           "cost_inputs",
           "precost",
           "chat",

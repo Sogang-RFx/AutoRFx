@@ -1,23 +1,29 @@
 "use client";
 /**
- * RFQ chatbot (TASKS S016, SPEC §14, US6). The mock answers prepared
- * questions only and says so for anything else; it never invents an answer.
- * Citations open the source viewer. The conversation resets on team change.
+ * RFQ chatbot (TASKS S016, SPEC §14, US6). Answers come from the backend and
+ * quote the source; with no evidence it does not answer. Citations open the
+ * source viewer. The conversation resets on team change.
  */
 import { useParams } from "next/navigation";
 import { useMemo, useState } from "react";
 import { useTeamGroup } from "@/components/shell/app-shell";
 import { SourceViewer } from "@/components/source-viewer/source-viewer";
 import { IconArrowRight, IconLock } from "@/components/ui/icons";
-import { Button, CitationChip, ErrorState, ProvenanceBadge, cx } from "@/components/ui/primitives";
-import { modeOf } from "@/lib/rfq/config";
+import { Button, CitationChip, ErrorState, ProvenanceBadge, cx, locusKey, sameLocus } from "@/components/ui/primitives";
 import type { ChatResponse, Locus } from "@/lib/rfq/contract";
 import { describeError, rfqApi } from "@/lib/rfq/provider";
 import { useSession } from "@/lib/rfq/session";
 
 type Turn = { question: string; response: ChatResponse | null; error: string | null };
 
-const STARTERS = ["지체상금에 상한이 있나요?", "PPAP는 어느 레벨로 언제 제출하나요?", "견적 마감일은 언제인가요?"];
+/** First suggestions before any answer: general RFQ topics. */
+const STARTERS = ["인도조건", "납기", "포장"];
+
+const MODE_NOTE: Record<ChatResponse["data"]["mode"], string> = {
+  scripted: "준비된 문답",
+  extractive: "원문 문장 그대로 · LLM 미연결로 요약하지 않음",
+  generative: "LLM이 원문을 근거로 쓴 답",
+};
 
 export default function ChatPage() {
   const { id } = useParams<{ id: string }>();
@@ -36,10 +42,10 @@ function Chat({ rfqId }: { rfqId: string }) {
   const [isBusy, setIsBusy] = useState(false);
 
   const lastResponse = [...turns].reverse().find((t) => t.response)?.response ?? null;
-  const lastSuggestions = lastResponse?.data.suggestions ?? STARTERS;
-  // Before the first answer the badge follows the configured mode; after that,
-  // the server's provenance (INV-10: never decided by the screen on its own).
-  const headerProvenance = lastResponse?.provenance ?? (modeOf("chat") === "mock" ? { chat: "mock" as const } : undefined);
+  const suggested = lastResponse?.data.suggestions ?? [];
+  const lastSuggestions = suggested.length > 0 ? suggested : STARTERS;
+  // The badge follows the server's provenance (INV-10: never decided by the screen).
+  const headerProvenance = lastResponse?.provenance;
 
   async function ask(question: string) {
     const q = question.trim();
@@ -78,7 +84,9 @@ function Chat({ rfqId }: { rfqId: string }) {
         </header>
         <ol className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4" aria-live="polite" data-testid="chat-log">
           {turns.length === 0 && (
-            <li className="text-dense text-ink-muted">답은 원문 문장을 인용해서만 합니다. 목업 챗봇은 준비된 질문에만 답합니다.</li>
+            <li className="text-dense text-ink-muted">
+              답은 원문 문장을 인용해서만 하고, 근거가 없으면 답하지 않습니다.
+            </li>
           )}
           {turns.map((t, i) => (
             <li key={i} className="flex flex-col gap-2">
@@ -117,7 +125,7 @@ function Chat({ rfqId }: { rfqId: string }) {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             maxLength={500}
-            placeholder="예: 지체상금에 상한이 있나요?"
+            placeholder="예: 인도조건은 무엇인가요?"
             className="min-h-10 min-w-0 flex-1 rounded-control border border-line-control bg-surface px-3 text-body text-ink"
             data-testid="chat-input"
           />
@@ -141,15 +149,12 @@ function Chat({ rfqId }: { rfqId: string }) {
 type AnswerProps = { response: ChatResponse; target: Locus | null; onCite: (l: Locus) => void };
 
 function Answer({ response, target, onCite }: AnswerProps) {
-  const { status, answer, message } = response.data;
+  const { status, answer, message, mode } = response.data;
   if (status !== "answered" || !answer) {
     return (
       <div
         data-testid={`chat-${status}`}
-        className={cx(
-          "flex max-w-[85%] items-start gap-2 rounded-panel border px-3 py-2 text-dense",
-          status === "restricted" ? "border-line bg-canvas text-ink-muted" : "mock-outline bg-mock-tint text-mock",
-        )}
+        className="flex max-w-[85%] items-start gap-2 rounded-panel border border-line bg-canvas px-3 py-2 text-dense text-ink-muted"
       >
         {status === "restricted" && <IconLock size={14} className="mt-1 shrink-0" />}
         {message}
@@ -161,18 +166,19 @@ function Answer({ response, target, onCite }: AnswerProps) {
     <div
       className="flex max-w-[85%] flex-col gap-2 rounded-panel border border-line bg-surface px-3 py-2"
       data-testid="chat-answered"
+      data-mode={mode}
     >
-      <p className="text-body text-ink">{answer.finding.text}</p>
+      <p className={cx("whitespace-pre-line text-ink", mode === "extractive" ? "font-serif text-source" : "text-body")}>
+        {answer.finding.text}
+      </p>
+      <p className="text-label text-ink-muted" data-testid="chat-mode">
+        {MODE_NOTE[mode]}
+        {message && mode !== "scripted" ? ` · ${message}` : ""}
+      </p>
       <div className="flex flex-wrap items-center gap-1">
         <ProvenanceBadge provenance={response.provenance} />
-        {answer.finding.citations.map((l) => (
-          <CitationChip
-            key={`${l.page_number}-${l.sentence_index}`}
-            locus={l}
-            verified={verified}
-            onOpen={onCite}
-            isActive={target?.page_number === l.page_number && target.sentence_index === l.sentence_index}
-          />
+        {answer.finding.citations.map((l, i) => (
+          <CitationChip key={locusKey(l, i)} locus={l} verified={verified} onOpen={onCite} isActive={sameLocus(target, l)} />
         ))}
       </div>
     </div>
