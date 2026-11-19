@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 from collections.abc import Iterator
@@ -129,6 +130,69 @@ def test_upload_name_cannot_leave_the_upload_folder(api: Api):
     state = client.app.state.autorfx
     assert not list(state.settings.data_dir.parent.rglob("evil.txt"))
     assert not state.upload_root.exists() or not any(state.upload_root.iterdir()), "uploads are cleaned up"
+
+
+MB = 1024 * 1024
+PART_HEAD = (
+    b'--B\r\nContent-Disposition: form-data; name="files"; filename="big.pdf"\r\n'
+    b"Content-Type: application/pdf\r\n\r\n"
+)
+
+
+def _post_raw(app, chunks: list[bytes], headers: list[tuple[bytes, bytes]]) -> tuple[int, str, int]:
+    """POST /rfqs straight to the ASGI app; returns status, error code and how many body chunks it read."""
+    pulled = 0
+    sent: list[dict] = []
+
+    async def receive() -> dict:
+        nonlocal pulled
+        if pulled == len(chunks):
+            return {"type": "http.disconnect"}
+        pulled += 1
+        return {"type": "http.request", "body": chunks[pulled - 1], "more_body": pulled < len(chunks)}
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/rfqs",
+        "raw_path": b"/rfqs",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"127.0.0.1:8000"),
+            (b"content-type", b"multipart/form-data; boundary=B"),
+            *headers,
+        ],
+        "client": ("127.0.0.1", 50000),
+        "server": ("127.0.0.1", 8000),
+    }
+    asyncio.run(app(scope, receive, send))
+    status = next(m["status"] for m in sent if m["type"] == "http.response.start")
+    body = b"".join(m.get("body", b"") for m in sent if m["type"] == "http.response.body")
+    return status, json.loads(body)["error"]["code"], pulled
+
+
+@pytest.mark.parametrize("declare_length", [True, False], ids=["content-length", "chunked"])
+def test_an_oversized_upload_is_refused_while_it_arrives(
+    tmp_path: Path, ruleset: Ruleset, declare_length: bool
+):
+    """PKG-03, security: the size limit stops reading the body; the server never buffers an oversized
+    upload (40 MB sent against a 1 file x 1 MB limit) before refusing it."""
+    settings = Settings(_env_file=None, data_dir=tmp_path / "data", max_files=1, max_file_mb=1)
+    chunks = [PART_HEAD, *([b"x" * MB] * 40), b"\r\n--B--\r\n"]
+    headers = [(b"content-length", str(sum(map(len, chunks))).encode())] if declare_length else []
+    with TestClient(create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())) as client:
+        status, code, pulled = _post_raw(client.app, chunks, headers)
+        upload_root = client.app.state.autorfx.upload_root
+    assert (status, code) == (413, "too_large")
+    assert pulled <= (0 if declare_length else 4), f"read {pulled} of {len(chunks)} chunks before refusing"
+    assert not upload_root.exists() or not any(upload_root.iterdir()), "nothing is left on disk"
 
 
 def test_results_of_older_rules_are_not_served(tmp_path: Path, ruleset: Ruleset):

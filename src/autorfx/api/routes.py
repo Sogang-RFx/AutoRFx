@@ -29,6 +29,7 @@ from autorfx.retrieval import answer_question
 
 router = APIRouter()
 CHUNK = 1024 * 1024
+MULTIPART_OVERHEAD = 1024 * 1024  # part headers and boundaries on top of the file bytes (SPEC PKG-03)
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 REAL_ANALYSIS = {"parsing": "real", "analysis": "real", "citation": "real", "translation": "real"}
 
@@ -102,9 +103,38 @@ def meta(state: State) -> dict:
     return envelope(data, document="real")
 
 
+def _bounded(request: Request, limit: int, message: str) -> Request:
+    """The same request, whose body is refused with 413 once it grows past ``limit`` bytes.
+
+    ``request.form()`` spools every part before the per-file check can run, so the
+    whole body is counted as it arrives; a chunked upload has no length to check first.
+    """
+    declared = request.headers.get("content-length", "")
+    if declared.isdigit() and int(declared) > limit:
+        raise ApiError(413, "too_large", message)
+    received = 0
+
+    async def receive() -> dict:
+        nonlocal received
+        event = await request.receive()
+        if event["type"] == "http.request":
+            received += len(event.get("body", b""))
+            if received > limit:
+                raise ApiError(413, "too_large", message)
+        return event
+
+    return Request(request.scope, receive)
+
+
 async def _save_uploads(request: Request, state: AppState) -> tuple[list[Path], Path]:
     """Write the uploaded files to a folder of their own; sizes are checked while reading."""
     settings = state.settings
+    total = settings.max_files * settings.max_file_mb * 1024 * 1024 + MULTIPART_OVERHEAD
+    too_big = (
+        f"올린 파일이 너무 큽니다. 한 번에 {settings.max_files}개, "
+        f"파일당 {settings.max_file_mb}MB까지 받습니다."
+    )
+    request = _bounded(request, total, too_big)
     form = await request.form(max_files=settings.max_files, max_fields=settings.max_files + 8)
     uploads = [item for item in form.getlist("files") if hasattr(item, "filename")]
     if not uploads:
