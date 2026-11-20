@@ -19,7 +19,8 @@ from autorfx.analysis import AnalysisProvider, SqliteCache, engine_ids, make_pro
 from autorfx.config import Settings
 from autorfx.ingest import identify_package
 from autorfx.jobs import JobStore, close_interrupted, load_job
-from autorfx.models import JobState
+from autorfx.models import Group, JobState
+from autorfx.org import OrgStore
 from autorfx.pipeline import (
     PIPELINE_VERSION,
     RETRIEVAL_ENGINE,
@@ -73,6 +74,7 @@ class AppState:
         self.ruleset = ruleset or load_ruleset(settings.rules_dir)
         self.provider = provider or make_provider(settings, self.ruleset)
         self.cache = SqliteCache(settings.cache_dir / "analysis.sqlite")
+        self.org = OrgStore(settings.work_dir, self.ruleset)
         self._jobs: dict[str, JobStore] = {}
         self._data: dict[str, tuple[int, RfqData]] = {}
         """Loaded results per RFQ, with the start time of the job that produced them."""
@@ -99,6 +101,19 @@ class AppState:
     def wait(self) -> None:
         """Block until every job submitted so far has ended. Jobs run in order on one worker."""
         self._worker.submit(lambda: None).result()
+
+    # ── teams ───────────────────────────────────────────────────────────────
+    def group_of(self, team: str | None) -> Group:
+        """Access group of a team: a company department first, then a rule team; unknown is restricted."""
+        found = self.org.find(team)
+        return found.group if found is not None else self.ruleset.group_of(team)
+
+    def areas_of(self, department: str | None) -> tuple[str, ...] | None:
+        """Rule departments a department filter stands for; ``None`` means no filter."""
+        if not department:
+            return None
+        found = self.org.find(department)
+        return found.areas if found is not None else (department,)
 
     # ── lookup ──────────────────────────────────────────────────────────────
     def workspace(self, rfq_id: str) -> Workspace:

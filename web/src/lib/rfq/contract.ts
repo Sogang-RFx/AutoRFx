@@ -474,8 +474,41 @@ export const EvaluationResponse = envelope(
 export type EvaluationResponse = z.infer<typeof EvaluationResponse>;
 
 // ── Meta and upload ─────────────────────────────────────────────────────────
-export const Team = z.object({ id: z.string(), label: z.string(), group: Group });
+export const Team = z.object({
+  id: z.string(),
+  label: z.string(),
+  group: Group,
+  /** A company department (SPEC US10) lists the rule departments it receives; a rule team has none. */
+  areas: z.array(z.string()).optional(),
+});
 export type Team = z.infer<typeof Team>;
+
+// ── Company departments (SPEC US10) ─────────────────────────────────────────
+/**
+ * A department the company defined. `areas` are rule department ids ("업무 영역");
+ * the clause filter is their union. Cost visibility is off unless switched on.
+ */
+export const OrgDepartment = z.object({
+  id: z.string().regex(/^org-[0-9a-f]{12}$/),
+  label: z.string().min(1).max(40),
+  areas: z.array(z.string()).min(1),
+  cost_visible: z.boolean(),
+});
+export type OrgDepartment = z.infer<typeof OrgDepartment>;
+export const OrgDepartmentsResponse = envelope(z.object({ departments: z.array(OrgDepartment).max(30) }));
+export type OrgDepartmentsResponse = z.infer<typeof OrgDepartmentsResponse>;
+/** Body of `PUT /org/departments`: the whole list. `id: null` is a new department. */
+export const OrgDepartmentsRequest = z.object({
+  departments: z.array(
+    z.object({
+      id: z.string().nullable(),
+      label: z.string(),
+      areas: z.array(z.string()),
+      cost_visible: z.boolean(),
+    }),
+  ),
+});
+export type OrgDepartmentsRequest = z.infer<typeof OrgDepartmentsRequest>;
 export const Department = z.object({
   id: z.string(),
   label: z.string(),
@@ -534,6 +567,8 @@ export const CONTRACT_SCHEMAS = {
   chat: ChatResponse,
   evaluation: EvaluationResponse,
   meta: MetaResponse,
+  "org-departments": OrgDepartmentsResponse,
+  "org-departments-request": OrgDepartmentsRequest,
   "upload-request": UploadRequest,
   upload: UploadResponse,
   error: ErrorResponse,

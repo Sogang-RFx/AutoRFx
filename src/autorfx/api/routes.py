@@ -23,6 +23,7 @@ from autorfx.api.state import ApiError, AppState, discard, now_ms
 from autorfx.export import rtm_workbook
 from autorfx.ingest import ACCEPT, IngestError
 from autorfx.models import BreakdownInput, FileRecord, Group, Model, PrecostInput
+from autorfx.org import OrgError
 from autorfx.pipeline import RfqData
 from autorfx.precost import PrecostInputError, compute, cost_context
 from autorfx.retrieval import answer_question
@@ -82,10 +83,15 @@ def health() -> dict:
 @router.get("/meta")
 def meta(state: State) -> dict:
     rules, settings = state.ruleset, state.settings
+    company = state.org.departments
+    # The team picker follows the company once it has defined departments (SPEC US10).
+    teams = (
+        [{"id": d.id, "label": d.label, "group": d.group, "areas": list(d.areas)} for d in company]
+        if company
+        else [{"id": d.id, "label": d.team_label, "group": rules.group_of(d.id)} for d in rules.departments]
+    )
     data = {
-        "teams": [
-            {"id": d.id, "label": d.team_label, "group": rules.group_of(d.id)} for d in rules.departments
-        ],
+        "teams": teams,
         "departments": [
             {"id": d.id, "label": d.label, "role": d.role, "receives_all": d.receives_all}
             for d in rules.departments
@@ -101,6 +107,39 @@ def meta(state: State) -> dict:
         },
     }
     return envelope(data, document="real")
+
+
+# ── company departments (SPEC US10) ─────────────────────────────────────────
+class OrgDepartmentIn(Model):
+    id: str | None = None
+    label: str = Field(max_length=200)
+    areas: list[str] = Field(max_length=50)
+    cost_visible: bool = False
+
+
+class OrgBody(Model):
+    departments: list[OrgDepartmentIn] = Field(max_length=200)
+
+
+def _org_payload(state: AppState) -> dict:
+    return envelope(
+        {"departments": [d.model_dump(mode="json") for d in state.org.departments]}, document="real"
+    )
+
+
+@router.get("/org/departments")
+def org_departments(state: State) -> dict:
+    return _org_payload(state)
+
+
+@router.put("/org/departments")
+def save_org_departments(body: OrgBody, state: State) -> dict:
+    """Replace the whole list. Nothing is reanalysed: departments only change who sees what."""
+    try:
+        state.org.replace([d.model_dump() for d in body.departments])
+    except OrgError as exc:
+        raise ApiError(400, "invalid_request", str(exc)) from exc
+    return _org_payload(state)
 
 
 def _bounded(request: Request, limit: int, message: str) -> Request:
@@ -204,23 +243,28 @@ def job(rfq_id: str, state: State) -> dict:
 # ── analysis ────────────────────────────────────────────────────────────────
 @router.get("/rfqs/{rfq_id}/clauses")
 def clauses(rfq_id: str, state: State, team: Team = None, department: Team = None) -> dict:
-    data, group = state.data(rfq_id), state.ruleset.group_of(team)
+    data, group = state.data(rfq_id), state.group_of(team)
     items = access.clause_items(
-        data.clauses, data.analyses, group=group, department=department, ruleset=state.ruleset
+        data.clauses,
+        data.analyses,
+        group=group,
+        department=department,
+        ruleset=state.ruleset,
+        areas=state.areas_of(department),
     )
     return envelope({"group": group, "clauses": items}, **REAL_ANALYSIS)
 
 
 @router.get("/rfqs/{rfq_id}/rtm")
 def rtm(rfq_id: str, state: State, team: Team = None) -> dict:
-    data, group = state.data(rfq_id), state.ruleset.group_of(team)
+    data, group = state.data(rfq_id), state.group_of(team)
     rows = access.rtm_rows(data.clauses, data.analyses, group=group, ruleset=state.ruleset)
     return envelope({"group": group, "rows": rows}, **REAL_ANALYSIS)
 
 
 @router.get("/rfqs/{rfq_id}/rtm.xlsx")
 def rtm_file(rfq_id: str, state: State, team: Team = None) -> Response:
-    data, group = state.data(rfq_id), state.ruleset.group_of(team)
+    data, group = state.data(rfq_id), state.group_of(team)
     rows = access.rtm_rows(data.clauses, data.analyses, group=group, ruleset=state.ruleset)
     content = rtm_workbook(
         rows, manifest=data.manifest, ruleset=state.ruleset, engines=data.engines, group=group
@@ -234,7 +278,7 @@ def rtm_file(rfq_id: str, state: State, team: Team = None) -> Response:
 
 @router.get("/rfqs/{rfq_id}/consistency")
 def consistency(rfq_id: str, state: State, team: Team = None) -> dict:
-    data, group = state.data(rfq_id), state.ruleset.group_of(team)
+    data, group = state.data(rfq_id), state.group_of(team)
     report = data.consistency
     payload = {
         "group": group,
@@ -247,7 +291,7 @@ def consistency(rfq_id: str, state: State, team: Team = None) -> dict:
 # ── source ──────────────────────────────────────────────────────────────────
 @router.get("/rfqs/{rfq_id}/files/{file_id}/pages/{page_number}/sentences")
 def sentences(rfq_id: str, file_id: str, page_number: int, state: State, team: Team = None) -> dict:
-    data, group = state.data(rfq_id), state.ruleset.group_of(team)
+    data, group = state.data(rfq_id), state.group_of(team)
     file = _file(data, file_id)
     own = [c for c in data.clauses if c.source_doc == file.id]
     try:
@@ -259,7 +303,7 @@ def sentences(rfq_id: str, file_id: str, page_number: int, state: State, team: T
 
 @router.get("/rfqs/{rfq_id}/files/{file_id}/source")
 def source(rfq_id: str, file_id: str, state: State, team: Team = None) -> FileResponse:
-    data, group = state.data(rfq_id), state.ruleset.group_of(team)
+    data, group = state.data(rfq_id), state.group_of(team)
     file = _file(data, file_id)
     try:
         path = access.source_pdf(data.workspace, file, group=group)
@@ -273,13 +317,13 @@ def source(rfq_id: str, file_id: str, state: State, team: Team = None) -> FileRe
 # ── pre-cost ────────────────────────────────────────────────────────────────
 @router.get("/rfqs/{rfq_id}/cost-inputs")
 def cost_inputs(rfq_id: str, state: State, team: Team = None) -> dict:
-    _cost_visible(state.ruleset.group_of(team))
+    _cost_visible(state.group_of(team))
     return envelope(state.data(rfq_id).cost_inputs, cost_inputs="real")
 
 
 @router.post("/precost")
 def precost(body: PrecostBody, state: State) -> dict:
-    _cost_visible(state.ruleset.group_of(body.team))
+    _cost_visible(state.group_of(body.team))
     if body.rfq_id is None:
         context = cost_context((), (), ())
     else:
@@ -305,7 +349,7 @@ def precost(body: PrecostBody, state: State) -> dict:
 # ── chat and evaluation ─────────────────────────────────────────────────────
 @router.post("/rfqs/{rfq_id}/chat")
 def chat(rfq_id: str, body: ChatBody, state: State) -> dict:
-    data, group = state.data(rfq_id), state.ruleset.group_of(body.team)
+    data, group = state.data(rfq_id), state.group_of(body.team)
     try:
         answer = answer_question(
             body.question, index=data.index, clauses=data.clauses, group=group, provider=state.provider
@@ -317,7 +361,7 @@ def chat(rfq_id: str, body: ChatBody, state: State) -> dict:
 
 @router.get("/rfqs/{rfq_id}/evaluation")
 def evaluation(rfq_id: str, state: State, team: Team = None) -> dict:
-    data, group = state.data(rfq_id), state.ruleset.group_of(team)
+    data, group = state.data(rfq_id), state.group_of(team)
     try:
         key = scoring.find_key(data.manifest, state.settings.answer_keys_dir)
     except scoring.AnswerKeyError as exc:

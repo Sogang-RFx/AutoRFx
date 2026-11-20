@@ -8,6 +8,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
 import type { Department, Engines, Team } from "@/lib/rfq/contract";
+import { departmentFilters, type DeptFilter } from "@/lib/rfq/departments";
 import { PackageProvider } from "@/lib/rfq/package-context";
 import { rfqApi } from "@/lib/rfq/provider";
 import { useSession } from "@/lib/rfq/session";
@@ -32,6 +33,7 @@ export function useTeamGroup(): {
   restricted: boolean;
   teams: Team[];
   departments: Department[];
+  filters: DeptFilter[];
   engines: Engines | null;
   ready: boolean;
   error: string | null;
@@ -40,13 +42,15 @@ export function useTeamGroup(): {
   const meta = useResource(session.ready ? "meta" : null, (s) => rfqApi.meta(s));
   const data = meta.status === "ok" ? meta.data.data : null;
   const teams = data?.teams ?? [];
+  const departments = data?.departments ?? [];
   const found = teams.find((t) => t.id === session.team) ?? null;
   // Fails closed: restricted until team info proves otherwise.
   return {
     team: found,
     restricted: found?.group !== "cost_visible",
     teams,
-    departments: data?.departments ?? [],
+    departments,
+    filters: departmentFilters(teams, departments),
     engines: data?.engines ?? null,
     ready: meta.status === "ok",
     error: meta.status === "error" ? meta.error : null,
@@ -116,6 +120,13 @@ export function AppShell({ rfqId, children }: { rfqId: string; children: ReactNo
                 ))}
               </select>
             </label>
+            <Link
+              href="/settings/departments"
+              data-testid="org-settings-link"
+              className="inline-flex min-h-8 items-center rounded-control border border-line-control px-2 text-label font-medium text-ink transition-soft hover:bg-canvas"
+            >
+              부서 설정
+            </Link>
             <button
               type="button"
               aria-pressed={session.present}

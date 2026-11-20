@@ -1,0 +1,82 @@
+{
+  "$id": "https://autorfx.local/contract/org-departments.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "data": {
+      "type": "object",
+      "properties": {
+        "departments": {
+          "maxItems": 30,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^org-[0-9a-f]{12}$"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "areas": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "cost_visible": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "id",
+              "label",
+              "areas",
+              "cost_visible"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "departments"
+      ],
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "enum": [
+          "document",
+          "parsing",
+          "analysis",
+          "citation",
+          "translation",
+          "source",
+          "consistency",
+          "cost_inputs",
+          "precost",
+          "chat",
+          "evaluation"
+        ]
+      },
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "mock",
+          "real"
+        ]
+      }
+    }
+  },
+  "required": [
+    "data",
+    "provenance"
+  ],
+  "additionalProperties": false
+}

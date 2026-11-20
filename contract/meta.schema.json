@@ -23,6 +23,12 @@
                   "cost_visible",
                   "cost_restricted"
                 ]
+              },
+              "areas": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
               }
             },
             "required": [
