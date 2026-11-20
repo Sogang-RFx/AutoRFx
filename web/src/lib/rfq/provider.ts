@@ -15,10 +15,12 @@ import {
   EvaluationResponse,
   JobResponse,
   MetaResponse,
+  OrgDepartmentsResponse,
   PrecostResponse,
   RtmResponse,
   SentencesResponse,
   UploadResponse,
+  type OrgDepartmentsRequest,
   type PrecostRequest,
 } from "./contract";
 
@@ -103,6 +105,16 @@ export type UploadSource = { kind: "files"; files: File[] };
 
 export const rfqApi = {
   meta: (signal?: AbortSignal) => request("document", MetaResponse, buildUrl("document", "/meta", {}), { signal }),
+
+  /** Company departments (SPEC US10). Saving replaces the whole list; an empty list restores the defaults. */
+  orgDepartments: (signal?: AbortSignal) =>
+    request("document", OrgDepartmentsResponse, buildUrl("document", "/org/departments", {}), { signal }),
+
+  saveOrgDepartments: (body: OrgDepartmentsRequest) =>
+    request("document", OrgDepartmentsResponse, buildUrl("document", "/org/departments", {}), {
+      ...post(body),
+      method: "PUT",
+    }),
 
   /**
    * The backend receives the files as multipart/form-data (field `files`). The

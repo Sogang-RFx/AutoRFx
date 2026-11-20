@@ -9,6 +9,7 @@
 import { useState } from "react";
 import type { KeyboardEvent } from "react";
 import type { ClauseItem, Locus, ProvenanceMap, VisibleClause } from "@/lib/rfq/contract";
+import type { DeptFilter } from "@/lib/rfq/departments";
 import { fileName, fileTag, usePackageFiles } from "@/lib/rfq/package-context";
 import { IconClose, IconLock, IconWarn } from "../ui/icons";
 import {
@@ -43,10 +44,10 @@ function displayTitle(c: VisibleClause): string {
   return c.title || c.excerpt[0]?.text || "(제목 없음)";
 }
 
-/** Role of a department on a clause, for the "주관만 / 참조만" filter. */
-export function roleOf(c: VisibleClause, department: string): "primary" | "reference" | null {
-  if (c.primary_department === department) return "primary";
-  if (c.reference_departments.includes(department)) return "reference";
+/** Role of a department (its rule departments) on a clause, for the "주관만 / 참조만" filter. */
+export function roleOf(c: VisibleClause, areas: readonly string[]): "primary" | "reference" | null {
+  if (areas.includes(c.primary_department)) return "primary";
+  if (c.reference_departments.some((d) => areas.includes(d))) return "reference";
   return null;
 }
 
@@ -56,7 +57,10 @@ type ListProps = {
   error: string | null;
   clauses: ClauseItem[];
   provenance?: ProvenanceMap;
+  /** Rule departments, for the labels of a clause's lead and reference chips. */
   departments: Dept[];
+  /** Buttons of the department filter: the company's departments, or the rule departments. */
+  filters: DeptFilter[];
   department: string | null;
   onDepartment: (d: string | null) => void;
   role: DeptRole;
@@ -72,6 +76,7 @@ export function ClauseList({
   clauses,
   provenance,
   departments,
+  filters,
   department,
   onDepartment,
   role,
@@ -83,20 +88,21 @@ export function ClauseList({
   const files = usePackageFiles();
   const multiFile = files.length > 1;
   const deptLabel = (id: string) => departments.find((d) => d.id === id)?.label ?? id;
-  const dept = departments.find((d) => d.id === department) ?? null;
+  const dept = filters.find((d) => d.id === department) ?? null;
+  const areas = dept?.areas ?? (department ? [department] : []);
 
   // Masked rows stay in every view: the filter must not reveal a hidden clause's department.
   const shown = clauses.filter((c) => {
     if (c.kind === "masked" || !department || role === "all") return true;
-    return roleOf(c, department) === role;
+    return roleOf(c, areas) === role;
   });
   const visible = shown.filter((c): c is VisibleClause => c.kind === "clause");
   const redFlags = visible.filter((c) => c.red_flag).length;
   const unverified = visible.filter((c) => c.summary.citation_status === "unverified").length;
   const masked = shown.length - visible.length;
   const allVisible = clauses.filter((c): c is VisibleClause => c.kind === "clause");
-  const leads = department ? allVisible.filter((c) => roleOf(c, department) === "primary").length : 0;
-  const refs = department ? allVisible.filter((c) => roleOf(c, department) === "reference").length : 0;
+  const leads = department ? allVisible.filter((c) => roleOf(c, areas) === "primary").length : 0;
+  const refs = department ? allVisible.filter((c) => roleOf(c, areas) === "reference").length : 0;
 
   function onKeyDown(e: KeyboardEvent<HTMLUListElement>) {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
@@ -120,7 +126,7 @@ export function ClauseList({
   return (
     <Panel title="부서별 조항" provenance={provenance} labelId="clauses-title" className={className} bodyClassName="flex flex-col">
       <div className="flex gap-1 overflow-x-auto border-b border-line px-3 py-2" role="group" aria-label="부서 필터">
-        {[{ id: "", label: "전체" }, ...departments].map((d) => {
+        {[{ id: "", label: "전체" }, ...filters].map((d) => {
           const active = (department ?? "") === d.id;
           return (
             <button key={d.id || "all"} type="button" aria-pressed={active} onClick={() => onDepartment(d.id || null)} className={pill(active)}>

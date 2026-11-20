@@ -58,7 +58,7 @@ def create_app(
     app.add_middleware(
         CORSMiddleware,
         allow_origins=list(settings.cors_origin_list),
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "PUT"],  # PUT: department settings (SPEC US10)
         allow_headers=["Content-Type"],
         expose_headers=["Content-Disposition"],
     )

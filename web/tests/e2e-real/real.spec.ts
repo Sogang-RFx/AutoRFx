@@ -125,6 +125,37 @@ test.describe.serial("real backend with user-supplied files", () => {
     }
   });
 
+  test("company departments: a new department is restricted and filters by its areas (US10)", async ({
+    page,
+    request,
+  }) => {
+    const label = "e2e 설비팀";
+    await page.goto("/settings/departments");
+    await page.getByTestId("org-add").click();
+    await page.getByTestId("org-label-0").fill(label);
+    await page.getByTestId("org-area-0-production_engineering").check({ force: true });
+    await page.getByTestId("org-save").click();
+    await expect(page.getByTestId("org-ok")).toBeVisible();
+
+    try {
+      const meta = await apiJson<MetaResponse>(request, "/meta");
+      const mine = meta.data.teams.find((t) => t.label === label);
+      expect(mine?.group, "cost visibility is off by default").toBe("cost_restricted");
+      const masked = (await clausesFor(request, mine!.id)).filter((c) => c.kind === "masked").length;
+
+      await go(page, "clauses", mine!.id);
+      await expect(page.getByTestId("team-select")).toHaveValue(mine!.id);
+      await expect(page.getByTestId("masked-row")).toHaveCount(masked);
+      await page.getByRole("group", { name: "부서 필터" }).getByRole("button", { name: label }).click();
+      await expect(page.getByTestId("role-filter")).toBeVisible();
+      await expect(page.getByRole("link", { name: "사전원가" })).toHaveCount(0);
+    } finally {
+      await page.goto("/settings/departments");
+      await page.getByTestId("org-reset").click();
+      await expect(page.getByTestId("org-empty")).toBeVisible();
+    }
+  });
+
   test("a citation opens the right file, page and sentence", async ({ page, request }) => {
     const doc = await apiJson<DocumentResponse>(request, `/rfqs/${rfqId}`);
     const cited = (await clausesFor(request, restricted!.id)).filter(

@@ -32,7 +32,7 @@ function firstLocus(c: ClauseItem | undefined): Locus | null {
 function Workspace({ rfqId }: { rfqId: string }) {
   const session = useSession();
   const search = useSearchParams();
-  const { restricted, ready: teamReady, departments } = useTeamGroup();
+  const { restricted, ready: teamReady, departments, filters } = useTeamGroup();
   const ctx = useMemo(() => ({ team: session.team }), [session.team]);
 
   // The team is who is looking; the department filter is what they look at. They are separate.
@@ -76,6 +76,7 @@ function Workspace({ rfqId }: { rfqId: string }) {
         clauses={items}
         provenance={provenance}
         departments={departments}
+        filters={filters}
         department={department}
         onDepartment={(d) => {
           setDepartment(d);

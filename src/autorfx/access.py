@@ -110,13 +110,16 @@ def _excerpt(clause: Clause, analysis: ClauseAnalysis) -> list[dict]:
     return [{"locus": s.locus.model_dump(mode="json"), "text": s.text} for s in chosen]
 
 
-def _matches(analysis: ClauseAnalysis, department: str | None, ruleset: Ruleset) -> bool:
-    if department is None:
+def _matches(analysis: ClauseAnalysis, areas: Sequence[str] | None, ruleset: Ruleset) -> bool:
+    """Whether a clause belongs to any of the rule departments; ``None`` is no filter."""
+    if areas is None:
         return True
-    rule = ruleset.department(department)
-    if rule is None:
-        return False
-    return rule.receives_all or department in (analysis.primary_department, *analysis.reference_departments)
+    routed = (analysis.primary_department, *analysis.reference_departments)
+    for area in areas:
+        rule = ruleset.department(area)
+        if rule is not None and (rule.receives_all or area in routed):
+            return True
+    return False
 
 
 def clause_items(
@@ -126,8 +129,14 @@ def clause_items(
     group: Group,
     department: str | None,
     ruleset: Ruleset,
+    areas: Sequence[str] | None = None,
 ) -> list[dict]:
-    """Contract ``ClauseItem`` dicts in document order: masked first, then filtered by department."""
+    """Contract ``ClauseItem`` dicts in document order: masked first, then filtered by department.
+
+    ``areas`` filters by several rule departments at once (a company department, SPEC US10);
+    without it the filter is ``department`` alone.
+    """
+    wanted = tuple(areas) if areas is not None else ((department,) if department else None)
     hidden = hidden_keys(clauses)
     by_id = {a.clause_id: a for a in analyses}
     items: list[dict] = []
@@ -138,7 +147,7 @@ def clause_items(
         if _is_hidden(clause, analysis, group, hidden):
             items.append(_masked(clause))
             continue
-        if not _matches(analysis, department, ruleset):
+        if not _matches(analysis, wanted, ruleset):
             continue
         flag = analysis.red_flag
         items.append(

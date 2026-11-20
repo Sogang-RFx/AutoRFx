@@ -3,6 +3,7 @@
  * Start screen (TASKS S010, SPEC §14, US7). An RFQ is a package of files the
  * user uploads. Nothing already on the server is listed or offered here.
  */
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import type { DragEvent } from "react";
@@ -86,6 +87,13 @@ export default function StartPage() {
         <p className="flex flex-wrap items-center gap-2 text-label font-semibold text-ink-muted">
           AutoRFx · 자동차 부품 RFQ 분석
           {meta.status === "ok" && <EngineBadge engines={meta.data.data.engines} />}
+          <Link
+            href="/settings/departments"
+            data-testid="org-settings-link"
+            className="rounded-control border border-line-control px-2 py-0.5 font-medium text-ink transition-soft hover:bg-surface"
+          >
+            부서 설정
+          </Link>
         </p>
         <h1
           id="hero-title"
