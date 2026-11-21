@@ -1,0 +1,37 @@
+# 검색 비교용 질문 10개 (autorfx compare-search 기본값)
+# RFQ 원문은 넣지 않습니다. 질문만 적습니다.
+# intent: 무엇을 확인하려는 질문인지
+#   용어집 = data/rules/glossary.yaml에 있는 단어 → BM25가 잘 찾아야 함
+#   의역   = 용어집에 없는 표현 → 임베딩이 나아야 함
+#   없는 정보 = RFQ에 없을 내용 → 둘 다 "근거 없음"이어야 정상
+questions:
+  - id: Q01
+    text: 납기 조건은 어떻게 되나요?
+    intent: 용어집
+  - id: Q02
+    text: 보증 기간은 얼마인가요?
+    intent: 용어집
+  - id: Q03
+    text: 요구하는 공정능력 Cpk 기준은?
+    intent: 용어집 (영문 약어)
+  - id: Q04
+    text: 금형 소유권은 누구에게 있나요?
+    intent: 용어집 + 일반어
+  - id: Q05
+    text: 양산 시작 일정은 언제인가요?
+    intent: 용어집 (SOP)
+  - id: Q06
+    text: 견적서를 언제까지 내야 하나요?
+    intent: 의역 (제출 기한)
+  - id: Q07
+    text: 부품을 어떤 상자에 담아서 보내야 하나요?
+    intent: 의역 (포장)
+  - id: Q08
+    text: 공급한 부품에 문제가 생기면 공급사가 어떤 비용을 물어야 하나요?
+    intent: 의역 (책임, 클레임)
+  - id: Q09
+    text: 공급사가 갖춰야 하는 자격이나 품질 시스템은?
+    intent: 의역 (인증, IATF)
+  - id: Q10
+    text: 공급사 대표이사의 이름은 무엇인가요?
+    intent: 없는 정보

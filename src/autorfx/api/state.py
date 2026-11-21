@@ -23,12 +23,13 @@ from autorfx.models import Group, JobState
 from autorfx.org import OrgStore
 from autorfx.pipeline import (
     PIPELINE_VERSION,
-    RETRIEVAL_ENGINE,
     PipelineError,
     RfqData,
     load_rfq,
+    retrieval_engine,
     run_pipeline,
 )
+from autorfx.retrieval.dense import Encoder, load_encoder
 from autorfx.rules import Ruleset, load_ruleset
 from autorfx.workspace import RFQ_ID, Workspace
 
@@ -69,11 +70,17 @@ class AppState:
         *,
         ruleset: Ruleset | None = None,
         provider: AnalysisProvider | None = None,
+        encoder: Encoder | None = None,
     ) -> None:
         self.settings = settings
         self.ruleset = ruleset or load_ruleset(settings.rules_dir)
         self.provider = provider or make_provider(settings, self.ruleset)
         self.cache = SqliteCache(settings.cache_dir / "analysis.sqlite")
+        key = settings.openai_api_key.get_secret_value() if settings.openai_api_key else None
+        self.encoder = encoder or load_encoder(
+            settings.embedding_model, openai_api_key=key, cache_dir=settings.cache_dir
+        )
+        """Loaded once: a local model such as BGE-M3 takes seconds to load."""
         self.org = OrgStore(settings.work_dir, self.ruleset)
         self._jobs: dict[str, JobStore] = {}
         self._data: dict[str, tuple[int, RfqData]] = {}
@@ -93,7 +100,7 @@ class AppState:
     @property
     def engines(self) -> dict:
         """How a package submitted now would be analysed."""
-        return {**engine_ids(self.provider), "retrieval": RETRIEVAL_ENGINE}
+        return {**engine_ids(self.provider), "retrieval": retrieval_engine(self.encoder)}
 
     def close(self) -> None:
         self._worker.shutdown(wait=True, cancel_futures=True)
@@ -155,7 +162,12 @@ class AppState:
             message = "규칙이나 처리 방식이 바뀌어 저장된 결과가 오래됐습니다. RFQ를 다시 분석해 주세요."
             raise ApiError(409, "stale_results", message)
         try:
-            loaded = load_rfq(workspace, self.ruleset)
+            loaded = load_rfq(
+                workspace,
+                self.ruleset,
+                encoder=self.encoder,
+                min_score=self.settings.embedding_min_score,
+            )
         except (PipelineError, OSError, ValueError) as exc:
             log.exception("stored results of %s cannot be read", rfq_id)
             message = "저장된 결과를 읽을 수 없습니다. RFQ를 다시 올려 주세요."
@@ -229,6 +241,7 @@ class AppState:
                 now_ms=started,
                 reporter=store,
                 cache=self.cache,
+                retrieval=retrieval_engine(self.encoder),
             )
         except PipelineError as exc:
             log.warning("job stopped: %s", exc)

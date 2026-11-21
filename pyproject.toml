@@ -21,6 +21,10 @@ dependencies = [
     "uvicorn>=0.30.0",
 ]
 
+[project.optional-dependencies]
+# Local embedding model for dense retrieval (BAAI/bge-m3). Pulls in torch; about 2 GB with the model.
+embedding = ["sentence-transformers>=3.0.0"]
+
 [project.scripts]
 autorfx = "autorfx.cli:main"
 
