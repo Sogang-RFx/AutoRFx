@@ -127,6 +127,15 @@ export function AppShell({ rfqId, children }: { rfqId: string; children: ReactNo
             >
               부서 설정
             </Link>
+            {!restricted && (
+              <Link
+                href="/settings/company"
+                data-testid="company-settings-link"
+                className="inline-flex min-h-8 items-center rounded-control border border-line-control px-2 text-label font-medium text-ink transition-soft hover:bg-canvas"
+              >
+                원가 설정
+              </Link>
+            )}
             <button
               type="button"
               aria-pressed={session.present}

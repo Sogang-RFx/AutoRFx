@@ -29,6 +29,7 @@ from autorfx.pipeline import (
     load_rfq,
     run_pipeline,
 )
+from autorfx.precost import CompanyStore
 from autorfx.rules import Ruleset, load_ruleset
 from autorfx.workspace import RFQ_ID, Workspace
 
@@ -75,6 +76,7 @@ class AppState:
         self.provider = provider or make_provider(settings, self.ruleset)
         self.cache = SqliteCache(settings.cache_dir / "analysis.sqlite")
         self.org = OrgStore(settings.work_dir, self.ruleset)
+        self.company = CompanyStore(settings.work_dir, self.ruleset)
         self._jobs: dict[str, JobStore] = {}
         self._data: dict[str, tuple[int, RfqData]] = {}
         """Loaded results per RFQ, with the start time of the job that produced them."""

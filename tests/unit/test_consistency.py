@@ -168,10 +168,10 @@ def test_conflicts_are_found_and_same_values_are_not(ruleset: Ruleset):
     assert set(conflicts) == {"thickness", "incoterm"}
     thickness = conflicts["thickness"]
     assert [e.normalized for e in thickness.evidence] == ["2.5", "2"]
-    assert thickness.affects_cost and thickness.cost_fields == ("gross_weight", "net_weight")
+    assert thickness.affects_cost and thickness.cost_fields == ("thickness",)
     assert thickness.departments[0] == "development"
     assert "2.5 mm" in thickness.title and thickness.citation_status == "verified"
-    assert conflicts["incoterm"].cost_fields == ("freight_cost",)
+    assert conflicts["incoterm"].cost_fields == ("incoterm",)
 
 
 def test_missing_attachment_is_reported_but_not_standards_or_files_in_the_package(ruleset: Ruleset):

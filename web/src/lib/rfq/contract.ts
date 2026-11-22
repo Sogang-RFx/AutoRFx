@@ -291,38 +291,39 @@ export const ConsistencyResponse = envelope(
 );
 export type ConsistencyResponse = z.infer<typeof ConsistencyResponse>;
 
-// ── Pre-cost ────────────────────────────────────────────────────────────────
+// ── Pre-cost and Go/No-Go ───────────────────────────────────────────────────
 const decimalString = z.string().regex(/^\d+(\.\d+)?$/);
+const signedDecimal = z.string().regex(/^-?\d+(\.\d+)?$/);
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
-/** Top-level inputs (SPEC §8.1) and the line items of the cost breakdown (§8.2). */
+/** What the RFQ itself can state for a pre-cost; the supplier's own figures are in the company settings. */
 export const COST_FIELDS = [
   "currency",
-  "min_quantity",
-  "fixed_costs",
-  "variable_cost_per_unit",
+  "volume",
   "target_price",
   "annual_reduction_rate",
-  "gross_weight",
-  "net_weight",
-  "material_price",
-  "scrap_credit",
-  "machine_hour_rate",
-  "strokes_per_minute",
-  "parts_per_stroke",
-  "oee",
-  "surface_cost",
-  "packaging_cost",
-  "freight_cost",
-  "warehousing_cost",
-  "scrap_rate",
-  "sga_rate",
-  "profit_rate",
-  "thickness",
-  "incoterm",
   "payment_days",
+  "incoterm",
+  "thickness",
+  "net_weight",
+  "material",
 ] as const;
 export const CostField = z.enum(COST_FIELDS);
 export type CostField = z.infer<typeof CostField>;
+
+export const ITEM_CATEGORIES = [
+  "material",
+  "process",
+  "labor",
+  "purchased",
+  "outsourced",
+  "logistics",
+  "freight",
+  "other",
+  "credit",
+] as const;
+export const ItemCategory = z.enum(ITEM_CATEGORIES);
+export type ItemCategory = z.infer<typeof ItemCategory>;
 
 export const CostAlternative = z.object({ value: z.string(), evidence: VerifiedFinding });
 export type CostAlternative = z.infer<typeof CostAlternative>;
@@ -333,7 +334,7 @@ export const CostInputCandidate = z.object({
   unit: z.string().nullable(),
   /** Decimal or code as string; null when the RFQ does not state it or the files disagree. */
   value: z.string().nullable(),
-  /** "rfq": stated in the RFQ. "assumption": supplier's own figure. "missing": neither. */
+  /** "rfq": stated in the RFQ. "missing": not stated. ("assumption" is kept for old artifacts.) */
   source: z.enum(["rfq", "assumption", "missing"]),
   note: z.string(),
   evidence: VerifiedFinding.nullable(),
@@ -343,89 +344,219 @@ export const CostInputCandidate = z.object({
   issue_id: z.string().nullable(),
 });
 export type CostInputCandidate = z.infer<typeof CostInputCandidate>;
-export const CostInputsResponse = envelope(
-  z.object({ item: z.string(), candidates: z.array(CostInputCandidate) }),
-);
+export const CostInputs = z.object({
+  item: z.string(),
+  candidates: z.array(CostInputCandidate),
+  /** Planned quantity per year, read from the RFQ's volume table; empty when none was found. */
+  volumes: z.array(z.object({ year: z.int(), quantity: z.int().min(0) })),
+  /** Fraction (0.03 = 3 %) or null when the RFQ states no annual reduction. */
+  annual_reduction_rate: decimalString.nullable(),
+  /** 1: the reduction starts in the second delivery year. */
+  reduction_starts_at_index: z.int().min(0),
+});
+export type CostInputs = z.infer<typeof CostInputs>;
+/** The cost-input artifact the pipeline stores for each RFQ. */
+export const CostInputsResponse = envelope(CostInputs);
 export type CostInputsResponse = z.infer<typeof CostInputsResponse>;
 
+/** ③ One qualification or contract term the RFQ requires (knockout 1). */
+export const RequirementCheck = z.object({
+  /** Stable key, e.g. "certification:IATF16949"; answers are given by this key. */
+  key: z.string(),
+  requirement: z.string(),
+  label: z.string(),
+  department: z.string(),
+  /** "fact": answered once and remembered. "judgment": asked every time. */
+  kind: z.enum(["fact", "judgment"]),
+  value: z.string(),
+  question: z.string(),
+  /** "ask": the user has to answer (setup only). After the calculation: pass, fail or unknown. */
+  status: z.enum(["ask", "pass", "fail", "unknown"]),
+  /** Where a settled status came from. */
+  source: z.enum(["profile", "stored", "answer"]).nullable(),
+  evidence: VerifiedFinding.nullable(),
+});
+export type RequirementCheck = z.infer<typeof RequirementCheck>;
+
+export const Classification = z.object({
+  /** manufacturing | distribution | construction | other */
+  type: z.string(),
+  label: z.string(),
+  decision_unit: z.enum(["rfq", "item"]),
+  baseline: z.enum(["target_price", "none"]),
+  /** False: recognised but never judged automatically. */
+  automatic: z.boolean(),
+  /** Distinct patterns found per type. */
+  signals: z.record(z.string(), z.int()),
+  note: z.string(),
+});
+export type Classification = z.infer<typeof Classification>;
+
+/** A cost item: quantity per piece × unit price. Credit items are subtracted. */
+export const CostItem = z.object({
+  label: z.string().min(1).max(80),
+  category: ItemCategory,
+  quantity: decimalString,
+  unit: z.string().min(1).max(16),
+  unit_price: decimalString,
+  /** Price-table row the unit price came from; null when typed in. */
+  price_id: z.string().nullable(),
+});
+export type CostItem = z.infer<typeof CostItem>;
+
+export const PrecostSetupResponse = envelope(
+  z.object({
+    classification: Classification,
+    requirements: z.array(RequirementCheck),
+    /** Clauses that pass a shock to the customer; evidence is null when the RFQ has none. */
+    pass_through: z.array(z.object({ id: z.string(), label: z.string(), evidence: VerifiedFinding.nullable() })),
+    cost_inputs: CostInputs,
+    suggested_items: z.array(CostItem.extend({ expired: z.boolean(), note: z.string() })),
+    assumption_note: z.string(),
+  }),
+);
+export type PrecostSetupResponse = z.infer<typeof PrecostSetupResponse>;
+
+// Company settings: the supplier's own figures, entered once (initial setup).
+export const PriceRow = z.object({
+  id: z.string().regex(/^price-[0-9a-f]{12}$/),
+  category: ItemCategory,
+  name: z.string().min(1).max(80),
+  unit: z.string().min(1).max(16),
+  price: decimalString,
+  currency: z.string().regex(/^[A-Z]{3}$/),
+  valid_until: isoDate,
+  department: z.string(),
+});
+export type PriceRow = z.infer<typeof PriceRow>;
+export const CompanySettings = z.object({
+  home_currency: z.string().regex(/^[A-Z]{3}$/),
+  discount_rate: decimalString,
+  min_margin: decimalString,
+  scrap_rate: decimalString,
+  sga_rate: decimalString,
+  max_payment_days: z.int().min(0).max(365).nullable(),
+  max_liability: decimalString.nullable(),
+});
+export type CompanySettings = z.infer<typeof CompanySettings>;
+export const CompanyProfile = z.object({
+  certifications: z.array(z.string()),
+  processes: z.array(z.string()),
+  qualifications: z.array(z.string()),
+});
+export type CompanyProfile = z.infer<typeof CompanyProfile>;
+export const CompanyResponse = envelope(
+  z.object({
+    settings: CompanySettings,
+    profile: CompanyProfile,
+    prices: z.array(PriceRow).max(300),
+    answers: z.array(z.object({ key: z.string(), label: z.string(), answer: z.enum(["yes", "no", "unknown"]), saved_on: isoDate })),
+    today: isoDate,
+    categories: z.record(z.string(), z.string()),
+  }),
+);
+export type CompanyResponse = z.infer<typeof CompanyResponse>;
+/** Body of `PUT /company`: the whole record. A price row with `id: null` is new. Stored answers are kept. */
+export const CompanyRequest = z.object({
+  settings: CompanySettings,
+  profile: CompanyProfile,
+  prices: z.array(PriceRow.extend({ id: z.string().nullable() })),
+});
+export type CompanyRequest = z.infer<typeof CompanyRequest>;
+
 export const PrecostInputs = z.object({
-  item: z.string().min(1),
-  min_quantity: z.int().min(1),
-  fixed_costs: decimalString,
-  variable_cost_per_unit: decimalString,
+  item: z.string().min(1).max(200),
   currency: z.string().regex(/^[A-Z]{3}$/),
   target_price: decimalString.nullable(),
+  volumes: z.array(z.object({ year: z.int().min(2000).max(2100), quantity: z.int().min(0) })).min(1).max(30),
+  /** Fraction: 0.03 = 3 % per year. */
+  annual_reduction_rate: decimalString,
+  reduction_starts_at_index: z.int().min(0).max(30),
+  payment_days: z.int().min(0).max(365).nullable(),
+  items: z.array(CostItem).min(1).max(60),
+  tooling: z.object({
+    amount: decimalString,
+    payment: z.enum(["lump_sum", "amortized", "deferred"]),
+    deferred_years: z.int().min(0).max(10),
+  }),
+  /** null: as found in the RFQ. */
+  material_indexed: z.boolean().nullable(),
+  fx_adjusted: z.boolean().nullable(),
+  /** Peak yearly volume ÷ available capacity, e.g. 0.85. */
+  capacity_utilization: decimalString.nullable(),
+  strategic: z.int().min(0).max(100).nullable(),
+  /** Knockout answers by question key. */
+  answers: z.record(z.string(), z.enum(["yes", "no", "unknown"])),
 });
 export type PrecostInputs = z.infer<typeof PrecostInputs>;
 
-/** Annex-style cost breakdown. Rates are fractions (0.05 = 5 %), OEE included. */
-export const BreakdownInputs = z.object({
-  gross_weight: decimalString,
-  net_weight: decimalString,
-  material_price: decimalString,
-  scrap_credit: decimalString,
-  machine_hour_rate: decimalString,
-  strokes_per_minute: decimalString,
-  parts_per_stroke: decimalString,
-  oee: decimalString,
-  surface_cost: decimalString,
-  packaging_cost: decimalString,
-  freight_cost: decimalString,
-  warehousing_cost: decimalString,
-  scrap_rate: decimalString,
-  sga_rate: decimalString,
-  profit_rate: decimalString,
-});
-export type BreakdownInputs = z.infer<typeof BreakdownInputs>;
-
 export const PrecostRequest = z.object({
   team: z.string().optional(),
-  /** When given, unresolved cost-related consistency issues of this RFQ are taken into account. */
+  /** When given, the RFQ's type, knockout questions, clauses and cost conflicts are taken into account. */
   rfq_id: z.string().nullable(),
   inputs: PrecostInputs,
-  /** When given, the variable cost is computed from it and `inputs.variable_cost_per_unit` is ignored. */
-  breakdown: BreakdownInputs.nullable(),
   /** The value the user chose for each resolved issue: issue id → value. */
   resolved: z.record(z.string(), z.string()),
+  /** Keep yes/no answers to fact questions for the next RFQ. */
+  remember: z.boolean().optional(),
 });
 export type PrecostRequest = z.infer<typeof PrecostRequest>;
 
-export const DecisionStatus = z.enum(["go", "no_go", "hold", "baseline_undefined"]);
+export const DecisionStatus = z.enum(["go", "conditional", "no_go", "hold", "baseline_undefined", "not_applicable"]);
 export type DecisionStatus = z.infer<typeof DecisionStatus>;
 
 export const PrecostResponse = envelope(
   z.object({
-    /** Inputs as used: `variable_cost_per_unit` is the computed one when a breakdown was sent. */
-    inputs: PrecostInputs,
-    breakdown: z
+    item: z.string(),
+    currency: z.string(),
+    classification: Classification.nullable(),
+    knockout: z.object({
+      status: z.enum(["passed", "open", "failed"]),
+      checks: z.array(RequirementCheck.extend({ answer: z.enum(["yes", "no", "unknown"]).nullable() })),
+    }),
+    cost: z.object({
+      lines: z.array(z.object({ category: z.string(), label: z.string(), value: signedDecimal })),
+      piece_cost: decimalString,
+      tooling_per_piece: decimalString.nullable(),
+      lifetime_factor: decimalString,
+      material_indexed: z.boolean(),
+      /** Least favourable case of the unresolved conflicts. */
+      min_quote: decimalString,
+      safe_quote: decimalString,
+      scenarios: z.array(
+        z.object({
+          label: z.string(),
+          choices: z.array(z.object({ issue_id: z.string(), value: z.string() })),
+          piece_cost: decimalString,
+          min_quote: decimalString,
+        }),
+      ),
+      shocks: z.array(
+        z.object({ id: z.string(), label: z.string(), applied: z.boolean(), note: z.string(), min_quote_delta: signedDecimal.nullable() }),
+      ),
+      /** Reference only: never decides. */
+      npv: z.object({
+        value: signedDecimal,
+        discount_rate: decimalString,
+        price_basis: z.enum(["target_price", "min_quote"]),
+        payback_year: z.int().nullable(),
+      }),
+      yearly: z.array(z.object({ year: z.int(), quantity: z.int(), price: decimalString })),
+    }),
+    score: z
       .object({
-        lines: z.array(z.object({ key: z.string(), label: z.string(), value: decimalString })),
-        piece_cost: decimalString,
-        piece_price: decimalString,
+        total: z.int().min(0).max(100),
+        band: z.enum(["go", "conditional", "no_go"]),
+        items: z.array(z.object({ id: z.string(), label: z.string(), weight: z.int(), score: z.int(), note: z.string() })),
       })
       .nullable(),
-    fixed_cost_per_unit: decimalString,
-    unit_cost: decimalString,
-    /** One entry per combination of unresolved cost-driver values; empty when nothing is unresolved. */
-    scenarios: z.array(
-      z.object({
-        label: z.string(),
-        choices: z.array(z.object({ issue_id: z.string(), value: z.string() })),
-        unit_cost: decimalString,
-      }),
-    ),
-    range: z.object({ low: decimalString, high: decimalString }),
-    /** Target price per delivery year after the annual reduction; empty when not stated. */
-    yearly: z.array(z.object({ year: z.int(), price: decimalString, below_cost: z.boolean() })),
     decision: z.object({
       status: DecisionStatus,
-      note: z.string(),
-      reasons: z.array(z.string()),
-      target_price: decimalString.nullable(),
-      /** target_price − range.high; negative as "-0.0050". */
-      gap: z.string().nullable(),
-      /** Id of the rule in data/rules/go_no_go.yaml that decided. */
+      label: z.string(),
+      /** What decided: knockout | rfq_type | unmodelled_conflict | no_target | price_knockout | conflict_dependent | score */
       rule: z.string(),
+      reasons: z.array(z.string()),
+      score: z.int().min(0).max(100).nullable(),
     }),
   }),
 );
@@ -561,8 +692,11 @@ export const CONTRACT_SCHEMAS = {
   rtm: RtmResponse,
   consistency: ConsistencyResponse,
   "cost-inputs": CostInputsResponse,
+  "precost-setup": PrecostSetupResponse,
   "precost-request": PrecostRequest,
   precost: PrecostResponse,
+  company: CompanyResponse,
+  "company-request": CompanyRequest,
   "chat-request": ChatRequest,
   chat: ChatResponse,
   evaluation: EvaluationResponse,

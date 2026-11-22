@@ -18,29 +18,14 @@
                 "type": "string",
                 "enum": [
                   "currency",
-                  "min_quantity",
-                  "fixed_costs",
-                  "variable_cost_per_unit",
+                  "volume",
                   "target_price",
                   "annual_reduction_rate",
-                  "gross_weight",
-                  "net_weight",
-                  "material_price",
-                  "scrap_credit",
-                  "machine_hour_rate",
-                  "strokes_per_minute",
-                  "parts_per_stroke",
-                  "oee",
-                  "surface_cost",
-                  "packaging_cost",
-                  "freight_cost",
-                  "warehousing_cost",
-                  "scrap_rate",
-                  "sga_rate",
-                  "profit_rate",
-                  "thickness",
+                  "payment_days",
                   "incoterm",
-                  "payment_days"
+                  "thickness",
+                  "net_weight",
+                  "material"
                 ]
               },
               "label": {
@@ -444,11 +429,53 @@
             ],
             "additionalProperties": false
           }
+        },
+        "volumes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "year": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "quantity": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "year",
+              "quantity"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "annual_reduction_rate": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reduction_starts_at_index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
         }
       },
       "required": [
         "item",
-        "candidates"
+        "candidates",
+        "volumes",
+        "annual_reduction_rate",
+        "reduction_starts_at_index"
       ],
       "additionalProperties": false
     },

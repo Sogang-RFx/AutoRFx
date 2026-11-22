@@ -6,94 +6,63 @@
     "data": {
       "type": "object",
       "properties": {
-        "inputs": {
-          "type": "object",
-          "properties": {
-            "item": {
-              "type": "string",
-              "minLength": 1
-            },
-            "min_quantity": {
-              "type": "integer",
-              "minimum": 1,
-              "maximum": 9007199254740991
-            },
-            "fixed_costs": {
-              "type": "string",
-              "pattern": "^\\d+(\\.\\d+)?$"
-            },
-            "variable_cost_per_unit": {
-              "type": "string",
-              "pattern": "^\\d+(\\.\\d+)?$"
-            },
-            "currency": {
-              "type": "string",
-              "pattern": "^[A-Z]{3}$"
-            },
-            "target_price": {
-              "anyOf": [
-                {
-                  "type": "string",
-                  "pattern": "^\\d+(\\.\\d+)?$"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            }
-          },
-          "required": [
-            "item",
-            "min_quantity",
-            "fixed_costs",
-            "variable_cost_per_unit",
-            "currency",
-            "target_price"
-          ],
-          "additionalProperties": false
+        "item": {
+          "type": "string"
         },
-        "breakdown": {
+        "currency": {
+          "type": "string"
+        },
+        "classification": {
           "anyOf": [
             {
               "type": "object",
               "properties": {
-                "lines": {
-                  "type": "array",
-                  "items": {
-                    "type": "object",
-                    "properties": {
-                      "key": {
-                        "type": "string"
-                      },
-                      "label": {
-                        "type": "string"
-                      },
-                      "value": {
-                        "type": "string",
-                        "pattern": "^\\d+(\\.\\d+)?$"
-                      }
-                    },
-                    "required": [
-                      "key",
-                      "label",
-                      "value"
-                    ],
-                    "additionalProperties": false
+                "type": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "decision_unit": {
+                  "type": "string",
+                  "enum": [
+                    "rfq",
+                    "item"
+                  ]
+                },
+                "baseline": {
+                  "type": "string",
+                  "enum": [
+                    "target_price",
+                    "none"
+                  ]
+                },
+                "automatic": {
+                  "type": "boolean"
+                },
+                "signals": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string"
+                  },
+                  "additionalProperties": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
                   }
                 },
-                "piece_cost": {
-                  "type": "string",
-                  "pattern": "^\\d+(\\.\\d+)?$"
-                },
-                "piece_price": {
-                  "type": "string",
-                  "pattern": "^\\d+(\\.\\d+)?$"
+                "note": {
+                  "type": "string"
                 }
               },
               "required": [
-                "lines",
-                "piece_cost",
-                "piece_price"
+                "type",
+                "label",
+                "decision_unit",
+                "baseline",
+                "automatic",
+                "signals",
+                "note"
               ],
               "additionalProperties": false
             },
@@ -102,120 +71,315 @@
             }
           ]
         },
-        "fixed_cost_per_unit": {
-          "type": "string",
-          "pattern": "^\\d+(\\.\\d+)?$"
-        },
-        "unit_cost": {
-          "type": "string",
-          "pattern": "^\\d+(\\.\\d+)?$"
-        },
-        "scenarios": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "label": {
-                "type": "string"
-              },
-              "choices": {
-                "type": "array",
-                "items": {
-                  "type": "object",
-                  "properties": {
-                    "issue_id": {
-                      "type": "string"
-                    },
-                    "value": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "issue_id",
-                    "value"
-                  ],
-                  "additionalProperties": false
-                }
-              },
-              "unit_cost": {
-                "type": "string",
-                "pattern": "^\\d+(\\.\\d+)?$"
-              }
-            },
-            "required": [
-              "label",
-              "choices",
-              "unit_cost"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "range": {
-          "type": "object",
-          "properties": {
-            "low": {
-              "type": "string",
-              "pattern": "^\\d+(\\.\\d+)?$"
-            },
-            "high": {
-              "type": "string",
-              "pattern": "^\\d+(\\.\\d+)?$"
-            }
-          },
-          "required": [
-            "low",
-            "high"
-          ],
-          "additionalProperties": false
-        },
-        "yearly": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "year": {
-                "type": "integer",
-                "minimum": -9007199254740991,
-                "maximum": 9007199254740991
-              },
-              "price": {
-                "type": "string",
-                "pattern": "^\\d+(\\.\\d+)?$"
-              },
-              "below_cost": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "year",
-              "price",
-              "below_cost"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "decision": {
+        "knockout": {
           "type": "object",
           "properties": {
             "status": {
               "type": "string",
               "enum": [
-                "go",
-                "no_go",
-                "hold",
-                "baseline_undefined"
+                "passed",
+                "open",
+                "failed"
               ]
             },
-            "note": {
-              "type": "string"
-            },
-            "reasons": {
+            "checks": {
               "type": "array",
               "items": {
-                "type": "string"
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string"
+                  },
+                  "requirement": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "department": {
+                    "type": "string"
+                  },
+                  "kind": {
+                    "type": "string",
+                    "enum": [
+                      "fact",
+                      "judgment"
+                    ]
+                  },
+                  "value": {
+                    "type": "string"
+                  },
+                  "question": {
+                    "type": "string"
+                  },
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "ask",
+                      "pass",
+                      "fail",
+                      "unknown"
+                    ]
+                  },
+                  "source": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "profile",
+                          "stored",
+                          "answer"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "evidence": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "finding": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "summary",
+                                  "priority",
+                                  "red_flag",
+                                  "answer",
+                                  "cost_input",
+                                  "consistency"
+                                ]
+                              },
+                              "departments": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "text": {
+                                "type": "string"
+                              },
+                              "priority": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "must",
+                                      "should",
+                                      "optional",
+                                      "info"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "red_flag_reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "citations": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "source_doc": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "page_number": {
+                                      "type": "integer",
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "section_id": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "paragraph_index": {
+                                      "type": "integer",
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "sentence_index": {
+                                      "type": "integer",
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "anchor": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "source_doc",
+                                    "page_number",
+                                    "section_id",
+                                    "paragraph_index",
+                                    "sentence_index",
+                                    "anchor"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "departments",
+                              "text",
+                              "priority",
+                              "red_flag_reason",
+                              "citations"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "citation_status": {
+                            "type": "string",
+                            "enum": [
+                              "verified",
+                              "unverified"
+                            ]
+                          },
+                          "failed_citations": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "source_doc": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "page_number": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                },
+                                "section_id": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "paragraph_index": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                },
+                                "sentence_index": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                },
+                                "anchor": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "source_doc",
+                                "page_number",
+                                "section_id",
+                                "paragraph_index",
+                                "sentence_index",
+                                "anchor"
+                              ],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": [
+                          "finding",
+                          "citation_status",
+                          "failed_citations"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "answer": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "enum": [
+                          "yes",
+                          "no",
+                          "unknown"
+                        ]
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "key",
+                  "requirement",
+                  "label",
+                  "department",
+                  "kind",
+                  "value",
+                  "question",
+                  "status",
+                  "source",
+                  "evidence",
+                  "answer"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "status",
+            "checks"
+          ],
+          "additionalProperties": false
+        },
+        "cost": {
+          "type": "object",
+          "properties": {
+            "lines": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "category": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "string",
+                    "pattern": "^-?\\d+(\\.\\d+)?$"
+                  }
+                },
+                "required": [
+                  "category",
+                  "label",
+                  "value"
+                ],
+                "additionalProperties": false
               }
             },
-            "target_price": {
+            "piece_cost": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "tooling_per_piece": {
               "anyOf": [
                 {
                   "type": "string",
@@ -226,35 +390,310 @@
                 }
               ]
             },
-            "gap": {
-              "type": [
-                "string",
-                "null"
+            "lifetime_factor": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "material_indexed": {
+              "type": "boolean"
+            },
+            "min_quote": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "safe_quote": {
+              "type": "string",
+              "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "scenarios": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "label": {
+                    "type": "string"
+                  },
+                  "choices": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "issue_id": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "issue_id",
+                        "value"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "piece_cost": {
+                    "type": "string",
+                    "pattern": "^\\d+(\\.\\d+)?$"
+                  },
+                  "min_quote": {
+                    "type": "string",
+                    "pattern": "^\\d+(\\.\\d+)?$"
+                  }
+                },
+                "required": [
+                  "label",
+                  "choices",
+                  "piece_cost",
+                  "min_quote"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "shocks": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "applied": {
+                    "type": "boolean"
+                  },
+                  "note": {
+                    "type": "string"
+                  },
+                  "min_quote_delta": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^-?\\d+(\\.\\d+)?$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "id",
+                  "label",
+                  "applied",
+                  "note",
+                  "min_quote_delta"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "npv": {
+              "type": "object",
+              "properties": {
+                "value": {
+                  "type": "string",
+                  "pattern": "^-?\\d+(\\.\\d+)?$"
+                },
+                "discount_rate": {
+                  "type": "string",
+                  "pattern": "^\\d+(\\.\\d+)?$"
+                },
+                "price_basis": {
+                  "type": "string",
+                  "enum": [
+                    "target_price",
+                    "min_quote"
+                  ]
+                },
+                "payback_year": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "value",
+                "discount_rate",
+                "price_basis",
+                "payback_year"
+              ],
+              "additionalProperties": false
+            },
+            "yearly": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "year": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "quantity": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "price": {
+                    "type": "string",
+                    "pattern": "^\\d+(\\.\\d+)?$"
+                  }
+                },
+                "required": [
+                  "year",
+                  "quantity",
+                  "price"
+                ],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": [
+            "lines",
+            "piece_cost",
+            "tooling_per_piece",
+            "lifetime_factor",
+            "material_indexed",
+            "min_quote",
+            "safe_quote",
+            "scenarios",
+            "shocks",
+            "npv",
+            "yearly"
+          ],
+          "additionalProperties": false
+        },
+        "score": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "total": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                "band": {
+                  "type": "string",
+                  "enum": [
+                    "go",
+                    "conditional",
+                    "no_go"
+                  ]
+                },
+                "items": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "weight": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "score": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "note": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "label",
+                      "weight",
+                      "score",
+                      "note"
+                    ],
+                    "additionalProperties": false
+                  }
+                }
+              },
+              "required": [
+                "total",
+                "band",
+                "items"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "decision": {
+          "type": "object",
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "go",
+                "conditional",
+                "no_go",
+                "hold",
+                "baseline_undefined",
+                "not_applicable"
               ]
+            },
+            "label": {
+              "type": "string"
             },
             "rule": {
               "type": "string"
+            },
+            "reasons": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "score": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                },
+                {
+                  "type": "null"
+                }
+              ]
             }
           },
           "required": [
             "status",
-            "note",
+            "label",
+            "rule",
             "reasons",
-            "target_price",
-            "gap",
-            "rule"
+            "score"
           ],
           "additionalProperties": false
         }
       },
       "required": [
-        "inputs",
-        "breakdown",
-        "fixed_cost_per_unit",
-        "unit_cost",
-        "scenarios",
-        "range",
-        "yearly",
+        "item",
+        "currency",
+        "classification",
+        "knockout",
+        "cost",
+        "score",
         "decision"
       ],
       "additionalProperties": false

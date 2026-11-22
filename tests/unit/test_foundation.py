@@ -112,7 +112,8 @@ def test_editing_a_rule_file_changes_the_digest(tmp_path: Path, ruleset: Ruleset
     [
         ("red_flags.yaml", "'liquidated damages'", "'liquidated (damages'", "정규식"),
         ("entities.yaml", "department: logistics", "department: nobody", "없는 부서"),
-        ("cost_model.yaml", "material_price:", "steel_price:", "알 수 없는 원가 입력"),
+        ("cost_model.yaml", "scales: [material, credit]", "scales: [steel, credit]", "없는 원가 분류"),
+        ("entities.yaml", "cost_fields: [thickness]", "cost_fields: [gross_weight]", "알 수 없는 원가 입력"),
         ("priority.yaml", "- level: info", "- level: must", "priority.yaml"),
     ],
 )

@@ -8,8 +8,8 @@ import { ConfigError, baseUrlOf, type RoutePart } from "./config";
 import {
   ChatResponse,
   ClausesResponse,
+  CompanyResponse,
   ConsistencyResponse,
-  CostInputsResponse,
   DocumentResponse,
   ErrorResponse,
   EvaluationResponse,
@@ -17,9 +17,11 @@ import {
   MetaResponse,
   OrgDepartmentsResponse,
   PrecostResponse,
+  PrecostSetupResponse,
   RtmResponse,
   SentencesResponse,
   UploadResponse,
+  type CompanyRequest,
   type OrgDepartmentsRequest,
   type PrecostRequest,
 } from "./contract";
@@ -168,9 +170,24 @@ export const rfqApi = {
       { signal },
     ),
 
-  costInputs: (id: string, ctx: RequestCtx, signal?: AbortSignal) =>
-    request("cost_inputs", CostInputsResponse, buildUrl("cost_inputs", `${rfq(id)}/cost-inputs`, { team: ctx.team }), {
-      signal,
+  /** Steps ①–⑤ for one RFQ: type, knockout questions, cited cost inputs, suggested cost items. */
+  precostSetup: (id: string, ctx: RequestCtx, signal?: AbortSignal) =>
+    request(
+      "cost_inputs",
+      PrecostSetupResponse,
+      buildUrl("cost_inputs", `${rfq(id)}/precost-setup`, { team: ctx.team }),
+      { signal },
+    ),
+
+  /** Company settings: price table, knockout profile and rates (cost-visible teams only). */
+  company: (ctx: RequestCtx, signal?: AbortSignal) =>
+    request("precost", CompanyResponse, buildUrl("precost", "/company", { team: ctx.team }), { signal }),
+
+  /** Replaces the whole record. A price row with `id: null` is new; stored answers are kept. */
+  saveCompany: (body: CompanyRequest, ctx: RequestCtx) =>
+    request("precost", CompanyResponse, buildUrl("precost", "/company", { team: ctx.team }), {
+      ...post(body),
+      method: "PUT",
     }),
 
   precost: (body: Omit<PrecostRequest, "team">, ctx: RequestCtx) =>

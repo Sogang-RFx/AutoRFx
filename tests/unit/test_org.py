@@ -15,21 +15,10 @@ from autorfx.api import create_app
 from autorfx.config import Settings
 from autorfx.rules import Ruleset
 from contract_schema import assert_valid
-from factories import PACKAGE_SECRET, make_package
+from factories import PACKAGE_SECRET, make_package, precost_inputs
 
 PDF = "application/pdf"
-PRECOST = {
-    "inputs": {
-        "item": "x",
-        "min_quantity": 1,
-        "fixed_costs": "0",
-        "variable_cost_per_unit": "1",
-        "currency": "EUR",
-        "target_price": None,
-    },
-    "breakdown": None,
-    "resolved": {},
-}
+PRECOST = {"inputs": precost_inputs(), "resolved": {}}
 Org = tuple[TestClient, str, Settings]
 
 
@@ -184,13 +173,14 @@ def test_a_company_department_is_cost_restricted_unless_switched_on(client: Test
         assert PACKAGE_SECRET not in text, f"{path} leaks cost text"
     chat = client.post(f"/rfqs/{rfq_id}/chat", json={"team": team, "question": "목표가는 얼마인가?"})
     assert PACKAGE_SECRET not in chat.text
-    assert client.get(f"/rfqs/{rfq_id}/cost-inputs", params={"team": team}).status_code == 403
+    assert client.get(f"/rfqs/{rfq_id}/precost-setup", params={"team": team}).status_code == 403
+    assert client.get("/company", params={"team": team}).status_code == 403
     assert client.post("/precost", json={**PRECOST, "rfq_id": rfq_id, "team": team}).status_code == 403
 
     seen = client.get(f"/rfqs/{rfq_id}/clauses", params={"team": opened["id"]})
     assert seen.json()["data"]["group"] == "cost_visible"
     assert PACKAGE_SECRET in seen.text
-    assert client.get(f"/rfqs/{rfq_id}/cost-inputs", params={"team": opened["id"]}).status_code == 200
+    assert client.get(f"/rfqs/{rfq_id}/precost-setup", params={"team": opened["id"]}).status_code == 200
 
 
 def test_the_browser_may_send_the_save_request(client: TestClient, org: Org):

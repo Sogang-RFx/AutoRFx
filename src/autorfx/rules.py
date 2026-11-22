@@ -17,41 +17,35 @@ from typing import Literal
 import yaml
 from pydantic import Field, ValidationError, field_validator, model_validator
 
-from autorfx.models import DecisionStatus, Group, Model, Priority, Severity
+from autorfx.models import Group, Model, Priority, Severity
 
 RULE_FILES = ("departments", "priority", "red_flags", "entities", "glossary", "sensitivity", "cost_model")
 
 # Same list, same order, as COST_FIELDS in web/src/lib/rfq/contract.ts.
+# What the RFQ itself can state for a pre-cost; everything else is the supplier's own input.
 COST_FIELDS = (
     "currency",
-    "min_quantity",
-    "fixed_costs",
-    "variable_cost_per_unit",
+    "volume",
     "target_price",
     "annual_reduction_rate",
-    "gross_weight",
-    "net_weight",
-    "material_price",
-    "scrap_credit",
-    "machine_hour_rate",
-    "strokes_per_minute",
-    "parts_per_stroke",
-    "oee",
-    "surface_cost",
-    "packaging_cost",
-    "freight_cost",
-    "warehousing_cost",
-    "scrap_rate",
-    "sga_rate",
-    "profit_rate",
-    "thickness",
-    "incoterm",
     "payment_days",
+    "incoterm",
+    "thickness",
+    "net_weight",
+    "material",
 )
 
-DecisionCondition = Literal[
-    "no_target", "missing_inputs", "all_within_target", "all_above_target", "straddles_target"
-]
+ITEM_CATEGORIES = (
+    "material",
+    "process",
+    "labor",
+    "purchased",
+    "outsourced",
+    "logistics",
+    "freight",
+    "other",
+    "credit",
+)
 
 
 class RulesError(ValueError):
@@ -172,38 +166,140 @@ class SensitivityRules(Model):
         return value
 
 
+class RfqTypeRule(Model):
+    id: str = Field(pattern=r"^[a-z][a-z_]*$")
+    label: str
+    decision_unit: Literal["rfq", "item"] = "rfq"
+    baseline: Literal["target_price", "none"] = "target_price"
+    automatic: bool = True
+    """False: the type is recognised but never judged automatically (manual pre-cost)."""
+    patterns: Patterns
+
+
+class RfqTypeRules(Model):
+    min_hits: int = Field(default=3, ge=1)
+    types: tuple[RfqTypeRule, ...] = Field(min_length=1)
+
+
+class RequirementRule(Model):
+    """A qualification or contract condition checked before any cost is computed (knockout 1)."""
+
+    id: str = Field(pattern=r"^[a-z][a-z_]*$")
+    label: str
+    department: str
+    kind: Literal["fact", "judgment"]
+    question: str
+    profile_field: Literal["certifications", "qualifications", "processes"] | None = None
+    patterns: Patterns = Patterns()
+    named_patterns: dict[str, tuple[str, ...]] = Field(default_factory=dict)
+    """Process name → expressions; the name is what is asked and compared."""
+
+    @field_validator("named_patterns")
+    @classmethod
+    def _valid_named(cls, value: dict[str, tuple[str, ...]]) -> dict[str, tuple[str, ...]]:
+        for patterns in value.values():
+            _compile_all(patterns)
+        return value
+
+
+class DriverCount(Model):
+    category: str
+    when: tuple[str, ...]
+
+
 class DriverRule(Model):
-    """How an unresolved conflict on one entity changes the cost breakdown."""
+    """How an unresolved conflict on one entity changes the cost items."""
 
     entity: str
     scales: tuple[str, ...] = ()
-    """Breakdown fields multiplied by (chosen value / reference value)."""
-    includes: dict[str, tuple[str, ...]] = Field(default_factory=dict)
-    """Code value → breakdown fields that count; the fields named by other codes become zero."""
+    """Item categories whose quantity is multiplied by (chosen value / reference value)."""
+    counts: DriverCount | None = None
+    """Items of this category count only when the chosen code is listed."""
 
 
-class DecisionRule(Model):
-    id: str
-    when: DecisionCondition
-    status: DecisionStatus
-    note: str
+class ShockRule(Model):
+    id: str = Field(pattern=r"^[a-z][a-z_]*$")
+    label: str
+    size: str = "0"
+    categories: dict[str, str] = Field(default_factory=dict)
+    rate_points: str | None = None
+    applies_when: Literal["always", "foreign_currency"] = "always"
+    passed_through_by: str | None = None
+
+
+class PassThroughRule(Model):
+    label: str
+    patterns: Patterns
+
+
+class ScoreBand(Model):
+    min: int = Field(ge=0, le=100)
+    status: Literal["go", "conditional", "no_go"]
+
+
+class ProfitabilityRule(Model):
+    at_min_quote: int = Field(ge=0, le=100)
+    at_safe_quote: int = Field(ge=0, le=100)
+
+
+class ScoringRules(Model):
+    weights: dict[str, int]
+    bands: tuple[ScoreBand, ...] = Field(min_length=1)
+    profitability: ProfitabilityRule
+    contract_risk_per_flag: int = Field(ge=0, le=100)
+    payment_curve: tuple[tuple[int, int], ...] = Field(min_length=2)
+    deferred_tooling_penalty: int = Field(ge=0, le=100)
+    capacity_curve: tuple[tuple[str, int], ...] = Field(min_length=2)
+    neutral: int = Field(ge=0, le=100)
+
+    @field_validator("weights")
+    @classmethod
+    def _weights(cls, value: dict[str, int]) -> dict[str, int]:
+        expected = {"profitability", "contract_risk", "cash_flow", "capacity", "technical_fit", "strategic"}
+        if set(value) != expected:
+            raise ValueError(f"가중치 항목은 {sorted(expected)}이어야 합니다")
+        if sum(value.values()) != 100:
+            raise ValueError("가중치의 합은 100이어야 합니다")
+        return value
+
+
+class CompanyDefaults(Model):
+    home_currency: str = Field(pattern=r"^[A-Z]{3}$")
+    discount_rate: str
+    min_margin: str
+    scrap_rate: str
+    sga_rate: str
 
 
 class CostModelRules(Model):
     assumption_note: str = ""
-    margin: str = "0"
-    """Headroom required below the target price, as a fraction."""
+    rfq_types: RfqTypeRules
+    requirements: tuple[RequirementRule, ...] = ()
+    item_categories: dict[str, str]
     drivers: tuple[DriverRule, ...] = ()
-    decisions: tuple[DecisionRule, ...] = Field(min_length=1)
-    example_assumptions: dict[str, str] = Field(default_factory=dict)
+    shocks: tuple[ShockRule, ...] = ()
+    combined: tuple[str, ...] = ()
+    pass_through: dict[str, PassThroughRule] = Field(default_factory=dict)
+    scoring: ScoringRules
+    company_defaults: CompanyDefaults
 
-    @field_validator("example_assumptions")
-    @classmethod
-    def _known_fields(cls, value: dict[str, str]) -> dict[str, str]:
-        unknown = [f for f in value if f not in COST_FIELDS]
-        if unknown:
-            raise ValueError(f"알 수 없는 원가 입력: {unknown}")
-        return value
+    @model_validator(mode="after")
+    def _consistent(self) -> CostModelRules:
+        if set(self.item_categories) != set(ITEM_CATEGORIES):
+            raise ValueError(f"item_categories는 {list(ITEM_CATEGORIES)}이어야 합니다")
+        shock_ids = {s.id for s in self.shocks}
+        if unknown := set(self.combined) - shock_ids:
+            raise ValueError(f"combined: 없는 충격 {sorted(unknown)}")
+        for shock in self.shocks:
+            if unknown := set(shock.categories) - set(ITEM_CATEGORIES):
+                raise ValueError(f"충격 '{shock.id}': 없는 원가 분류 {sorted(unknown)}")
+            if shock.passed_through_by and shock.passed_through_by not in self.pass_through:
+                raise ValueError(f"충격 '{shock.id}': 없는 전가 조항 '{shock.passed_through_by}'")
+        for driver in self.drivers:
+            used = set(driver.scales) | ({driver.counts.category} if driver.counts else set())
+            if unknown := used - set(ITEM_CATEGORIES):
+                raise ValueError(f"driver '{driver.entity}': 없는 원가 분류 {sorted(unknown)}")
+        return self
 
 
 class Ruleset(Model):
@@ -241,6 +337,9 @@ class Ruleset(Model):
             raise ValueError(f"sensitivity.yaml: 없는 부서 '{dept}'")
         if unknown := {d.entity for d in self.cost_model.drivers} - entity_ids:
             raise ValueError(f"cost_model.yaml: 없는 엔터티 {sorted(unknown)}")
+        for requirement in self.cost_model.requirements:
+            if requirement.department not in known:
+                raise ValueError(f"cost_model.yaml '{requirement.id}': 없는 부서 '{requirement.department}'")
         return self
 
     @property
