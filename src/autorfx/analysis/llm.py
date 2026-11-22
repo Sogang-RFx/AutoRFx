@@ -81,10 +81,12 @@ def clause_prompt(clause: ClauseInput, candidates: Candidates, ruleset: Ruleset,
 
 def answer_prompt(question: str, evidence: Sequence[EvidenceSentence], feedback: str | None) -> str:
     parts = [
-        "Answer the question using ONLY the evidence sentences below. If they do not answer it, say so.",
+        "Answer the question using ONLY the evidence sentences below.",
         f"Question: {question}",
         "Evidence:\n" + "\n".join(f"[S{e.number}] {e.text}" for e in evidence),
-        "Return: text (Korean, concise) and citations (the sentence numbers you used; at least one).",
+        "Return: answered (true only if the evidence states the answer), text (Korean, concise) and "
+        "citations (the sentence numbers you used; at least one). If the evidence does not state the "
+        "answer, set answered to false, say so in text and give no citations.",
     ]
     if feedback:
         parts.append(f"Your previous answer was rejected by the citation check: {feedback} Fix exactly that.")
