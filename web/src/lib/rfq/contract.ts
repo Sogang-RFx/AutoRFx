@@ -516,6 +516,8 @@ export const PrecostResponse = envelope(
     }),
     cost: z.object({
       lines: z.array(z.object({ category: z.string(), label: z.string(), value: signedDecimal })),
+      /** manufacturing: scrap and SG&A uplift; resale: bought-in goods, no uplift. */
+      cost_basis: z.enum(["manufacturing", "resale"]),
       piece_cost: decimalString,
       tooling_per_piece: decimalString.nullable(),
       lifetime_factor: decimalString,
@@ -523,6 +525,11 @@ export const PrecostResponse = envelope(
       /** Least favourable case of the unresolved conflicts. */
       min_quote: decimalString,
       safe_quote: decimalString,
+      /** Units over the whole contract and the revenue at each quote (Σ quantity × price after reductions). */
+      total_quantity: z.int(),
+      totals: z.object({ min_quote: decimalString, safe_quote: decimalString }),
+      /** Resale only: quote over the purchase cost, as a fraction (0.12 = 12 % markup). */
+      markup: z.object({ purchased: decimalString, min_quote: signedDecimal, safe_quote: signedDecimal }).nullable(),
       scenarios: z.array(
         z.object({
           label: z.string(),

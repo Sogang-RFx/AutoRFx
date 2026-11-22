@@ -43,9 +43,16 @@ class CompanyError(ValueError):
     """Settings that cannot be saved; the message is shown to the user."""
 
 
+PLURAL = re.compile(r"(?<=[A-Za-z]{3})(?<![sS])[sS]\b")
+
+
 def canonical(text: str) -> str:
-    """How profile entries and RFQ requirements are compared: no spaces or hyphens, upper case."""
-    return re.sub(r"[\s\-_.]+", "", text).upper()
+    """How profile entries and RFQ requirements are compared.
+
+    No spaces, hyphens or dots, upper case, and an English plural "s" dropped, so
+    "authorized Ford Dealers" and "authorized Ford Dealer" are the same requirement.
+    """
+    return re.sub(r"[\s\-_.]+", "", PLURAL.sub("", text)).upper()
 
 
 class PriceRow(Model):

@@ -39,10 +39,8 @@ import {
   type VerifiedFinding,
 } from "@/lib/rfq/contract";
 import {
-  CATEGORY_DEPARTMENT,
   CATEGORY_LABEL,
-  companyRequest,
-  defaultValidUntil,
+  currencyOptions,
   fractionToPercent,
   isDecimal,
   isInt,
@@ -95,13 +93,10 @@ export default function PrecostPage() {
         <div className="min-w-0 flex-1">
           <h1 className="text-title font-semibold text-ink">사전원가 Go / No-Go</h1>
           <p className="text-body text-ink-muted">
-            RFQ에서 찾은 조건을 확인하고 원가 항목을 넣으면, 정해진 식과 규칙으로 최소 견적·안전 견적·점수·판정을 냅니다. AI는
-            수치를 만들지 않습니다.
+            RFQ 유형과 1차 넉아웃을 확인하고, RFQ에 없는 값만 채우면 최소 견적·안전 견적·점수·판정을 냅니다. 단가표와 회사
+            설정은 첫 화면의 기본 설정(톱니바퀴)에서 관리합니다. AI는 수치를 만들지 않습니다.
           </p>
         </div>
-        <Link href="/settings/company" className="text-label text-accent hover:underline" data-testid="precost-company-link">
-          단가표·회사 설정 →
-        </Link>
       </div>
       {metaError && <ErrorState message={`팀 정보를 불러오지 못했습니다. ${metaError}`} />}
       {!metaError && (!ready || loaded.status === "loading") && <Skeleton lines={6} />}
@@ -188,6 +183,17 @@ function initialItems(setup: Setup): ItemRow[] {
 }
 
 const SWITCH = { auto: null, yes: true, no: false } as const;
+const STARTS: Record<string, string> = { "0": "첫해부터", "1": "2년차부터", "2": "3년차부터" };
+
+type FieldSpec = {
+  id: string;
+  label: string;
+  hint?: string;
+  stated: boolean;
+  evidence: VerifiedFinding | null;
+  show: () => ReactNode;
+  edit: () => ReactNode;
+};
 
 /** The request body, or the first problem that stops the calculation. */
 function build(
@@ -289,15 +295,17 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
   const [items, setItems] = useState<ItemRow[]>(() => initialItems(setup));
   const [answers, setAnswers] = useState<Record<string, Answer>>({});
   const [resolved, setResolved] = useState<Record<string, string>>({});
-  const [prices, setPrices] = useState<PriceRow[]>(company.prices);
+  const prices: PriceRow[] = company.prices;
+  const [editing, setEditing] = useState<Set<string>>(() => new Set());
   const [result, setResult] = useState<PrecostResponse | null>(null);
   const [error, setError] = useState<{ message: string; forbidden: boolean } | null>(null);
   const [isBusy, setIsBusy] = useState(false);
-  const [priceNote, setPriceNote] = useState<string | null>(null);
 
   const setForm = (patch: Partial<Form>) => setFormState((f) => ({ ...f, ...patch }));
   const { departments } = useTeamGroup();
   const departmentLabel = (id: string) => departments.find((d) => d.id === id)?.label ?? id;
+  // Distribution RFQs are priced per unit of purchases (e.g. 100 USD worth), not per piece.
+  const per = setup.classification.type === "distribution" ? "단위" : "개";
   const asked = setup.requirements.filter((r) => r.status === "ask");
   const settled = setup.requirements.filter((r) => r.status !== "ask");
   const unanswered = asked.filter((r) => !answers[r.key]);
@@ -318,36 +326,129 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
     }
   }
 
-  /** Save a typed-in price to the company price table so the next RFQ can pick it. */
-  async function savePrice(row: ItemRow) {
-    setPriceNote(null);
-    try {
-      const current = await rfqApi.company({ team });
-      const res = await rfqApi.saveCompany(
-        companyRequest(current.data, [
-          {
-            category: row.category,
-            name: row.label.trim(),
-            unit: row.unit.trim() || "개",
-            price: row.unit_price.trim(),
-            currency: form.currency,
-            valid_until: defaultValidUntil(current.data.today),
-            department: CATEGORY_DEPARTMENT[row.category],
-          },
-        ]),
-        { team },
-      );
-      setPrices(res.data.prices);
-      const saved = res.data.prices.find((p) => p.category === row.category && p.name === row.label.trim());
-      setItems((list) => list.map((r) => (r.key === row.key ? { ...r, price_id: saved?.id ?? null } : r)));
-      setPriceNote(`'${row.label.trim()}' 단가를 단가표에 저장했습니다.`);
-    } catch (e) {
-      setPriceNote(describeError(e));
-    }
-  }
-
   const patchItem = (key: string, patch: Partial<ItemRow>) =>
     setItems((list) => list.map((r) => (r.key === key ? { ...r, ...patch } : r)));
+  const toggle = (id: string) =>
+    setEditing((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  // ③/④: each RFQ condition is either stated in the RFQ (shown with its citation, editable on request)
+  // or missing (an input in ④). Nothing is guessed.
+  const evidenceOf = (field: string) => candidate(setup, field)?.evidence ?? null;
+  const statedIn = (field: string) => candidate(setup, field)?.value != null;
+  const clause = (id: string) => setup.pass_through.find((p) => p.id === id)?.evidence ?? null;
+  const switchLabel = (value: Form["material_indexed"], found: boolean, shock: string) =>
+    value === "yes" || (value === "auto" && found) ? `있음 · ${shock} 충격 제외` : `없음 · ${shock} 충격 반영`;
+  const switchEdit = (key: "material_indexed" | "fx_adjusted") => (
+    <select className={cx(input, "max-w-60")} value={form[key]} onChange={(e) => setForm({ [key]: e.target.value as Form[typeof key] })}>
+      <option value="auto">RFQ대로</option>
+      <option value="yes">있음</option>
+      <option value="no">없음</option>
+    </select>
+  );
+  const fields: FieldSpec[] = [
+    {
+      id: "currency",
+      label: "통화",
+      stated: statedIn("currency"),
+      evidence: evidenceOf("currency"),
+      show: () => form.currency,
+      edit: () => (
+        <select className={cx(input, "max-w-60")} value={form.currency} data-testid="input-currency"
+          onChange={(e) => setForm({ currency: e.target.value })}>
+          {currencyOptions(form.currency, company.settings.home_currency).map((c) => (
+            <option key={c.code} value={c.code}>
+              {c.label}
+            </option>
+          ))}
+        </select>
+      ),
+    },
+    {
+      id: "target_price",
+      label: `목표가 (${per}당)`,
+      hint: "RFQ에 목표가가 없으면 비워 두세요. 판정 대신 최소 입찰가만 냅니다.",
+      stated: statedIn("target_price"),
+      evidence: evidenceOf("target_price"),
+      show: () => (form.target_price ? `${form.target_price} ${form.currency}` : "없음"),
+      edit: () => (
+        <input className={cx(input, "max-w-60 tabular")} value={form.target_price} inputMode="decimal" data-testid="input-target_price"
+          onChange={(e) => setForm({ target_price: e.target.value.trim() })} />
+      ),
+    },
+    {
+      id: "payment_days",
+      label: "결제 기한 (일)",
+      hint: "모르면 비워 두세요.",
+      stated: statedIn("payment_days"),
+      evidence: evidenceOf("payment_days"),
+      show: () => (form.payment_days ? `${form.payment_days}일` : "없음"),
+      edit: () => (
+        <input className={cx(input, "max-w-60 tabular")} value={form.payment_days} inputMode="numeric" data-testid="input-payment_days"
+          onChange={(e) => setForm({ payment_days: e.target.value.trim() })} />
+      ),
+    },
+    {
+      id: "reduction",
+      label: "연간 단가 인하율",
+      hint: "매년 단가를 깎아 달라는 조건이 없으면 0입니다.",
+      stated: setup.cost_inputs.annual_reduction_rate !== null,
+      evidence: evidenceOf("annual_reduction_rate"),
+      show: () => `${form.reduction || 0}% · ${STARTS[form.starts]}`,
+      edit: () => (
+        <div className="flex flex-wrap items-center gap-2">
+          <input className={cx(input, "w-24 tabular")} value={form.reduction} inputMode="decimal" data-testid="input-reduction"
+            aria-label="연간 단가 인하율 (%)" onChange={(e) => setForm({ reduction: e.target.value.trim() })} />
+          <span className="text-label text-ink-muted">%</span>
+          <select className={cx(input, "w-32")} value={form.starts} aria-label="인하 시작" onChange={(e) => setForm({ starts: e.target.value })}>
+            {Object.entries(STARTS).map(([v, l]) => (
+              <option key={v} value={v}>
+                {l}
+              </option>
+            ))}
+          </select>
+        </div>
+      ),
+    },
+    {
+      id: "volumes",
+      label: "연도별 물량",
+      hint:
+        per === "단위"
+          ? "유통 RFQ는 품목이 많아 '단위'로 넣습니다. 예: 매입 100 USD어치를 1단위로 잡으면 연간 예상 매입액 ÷ 100."
+          : "RFQ의 계획 물량(개)을 연도별로 넣으세요.",
+      stated: setup.cost_inputs.volumes.length > 0,
+      evidence: evidenceOf("volume"),
+      show: () => volumes.map((v) => `${v.year} ${Number(v.quantity || 0).toLocaleString("ko-KR")}`).join(" · "),
+      edit: () => <VolumesEditor rows={volumes} setRows={setVolumes} per={per} />,
+    },
+    {
+      id: "indexation",
+      label: "원자재 연동",
+      stated: true,
+      evidence: clause("indexation"),
+      show: () => switchLabel(form.material_indexed, clause("indexation") !== null, "원자재"),
+      edit: () => switchEdit("material_indexed"),
+    },
+    {
+      id: "fx_adjustment",
+      label: "환율 조정",
+      stated: true,
+      evidence: clause("fx_adjustment"),
+      show: () => switchLabel(form.fx_adjusted, clause("fx_adjustment") !== null, "환율"),
+      edit: () => switchEdit("fx_adjusted"),
+    },
+  ];
+  const stated = fields.filter((f) => f.stated);
+  const missing = fields.filter((f) => !f.stated);
+  const hints = (["material", "net_weight", "thickness", "incoterm"] as const)
+    .map((field) => candidate(setup, field))
+    .filter((c): c is CostInputCandidate => !!c && c.value !== null)
+    .map((c) => `${c.label} ${c.value}${c.unit ? ` ${c.unit}` : ""}`);
 
   return (
     <div className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]">
@@ -358,7 +459,7 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
           </p>
         </Step>
 
-        <Step n="③" title="1차 넉아웃: 자격·계약 조건" aside={<KnockoutCount asked={asked.length} settled={settled.length} />}>
+        <Step n="②" title="1차 넉아웃: 자격·계약 조건" aside={<KnockoutCount asked={asked.length} settled={settled.length} />}>
           {setup.requirements.length === 0 && (
             <p className="text-label text-ink-muted">RFQ에서 인증·공정·자격·책임·결제 조건을 찾지 못했습니다.</p>
           )}
@@ -388,33 +489,37 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
           </p>
         </Step>
 
-        <Step n="④" title="RFQ 조건 확인">
-          <div className="grid gap-3 sm:grid-cols-3">
-            <Field label="통화">
-              <input className={input} value={form.currency} maxLength={3} data-testid="input-currency"
-                onChange={(e) => setForm({ currency: e.target.value.toUpperCase().trim() })} />
-            </Field>
-            <Field label="목표가 (개당)" hint="비우면 판정 대신 최소 입찰가만 냅니다.">
-              <input className={cx(input, "tabular")} value={form.target_price} inputMode="decimal" data-testid="input-target_price"
-                onChange={(e) => setForm({ target_price: e.target.value.trim() })} />
-            </Field>
-            <Field label="결제 기한 (일)">
-              <input className={cx(input, "tabular")} value={form.payment_days} inputMode="numeric" data-testid="input-payment_days"
-                onChange={(e) => setForm({ payment_days: e.target.value.trim() })} />
-            </Field>
-            <Field label="연간 단가 인하율 (%)">
-              <input className={cx(input, "tabular")} value={form.reduction} inputMode="decimal" data-testid="input-reduction"
-                onChange={(e) => setForm({ reduction: e.target.value.trim() })} />
-            </Field>
-            <Field label="인하 시작">
-              <select className={input} value={form.starts} onChange={(e) => setForm({ starts: e.target.value })}>
-                <option value="0">첫해부터</option>
-                <option value="1">2년차부터</option>
-                <option value="2">3년차부터</option>
-              </select>
-            </Field>
-          </div>
-          <VolumesEditor rows={volumes} setRows={setVolumes} />
+        <Step n="③" title="RFQ에서 읽은 값" aside={<span className="text-label text-ink-muted">확인만 하세요 · 다르면 수정</span>}>
+          <ul className="flex flex-col divide-y divide-line rounded-control border border-line" data-testid="rfq-values">
+            {stated.length === 0 && <li className="px-3 py-2 text-label text-ink-muted">RFQ에서 읽은 원가 조건이 없습니다.</li>}
+            {stated.map((f) => (
+              <li key={f.id} className="flex flex-col gap-1.5 px-3 py-2" data-testid={`rfq-value-${f.id}`}>
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="w-28 shrink-0 text-label font-semibold text-ink-muted">{f.label}</span>
+                  <span className="text-dense font-semibold text-ink tabular">{f.show()}</span>
+                  <Cite evidence={f.evidence} />
+                  <button type="button" className="ml-auto text-label text-accent hover:underline" onClick={() => toggle(f.id)}
+                    data-testid={`edit-${f.id}`}>
+                    {editing.has(f.id) ? "닫기" : "수정"}
+                  </button>
+                </div>
+                {editing.has(f.id) && <div className="pl-0 sm:pl-30">{f.edit()}</div>}
+              </li>
+            ))}
+          </ul>
+        </Step>
+
+        <Step n="④" title="추가로 필요한 값">
+          {missing.length > 0 && (
+            <div className="flex flex-col gap-3" data-testid="missing-values">
+              <p className="text-label text-ink-muted">RFQ에 적혀 있지 않은 값입니다. 직접 넣어 주세요.</p>
+              {missing.map((f) => (
+                <Field key={f.id} label={f.label} hint={f.hint}>
+                  {f.edit()}
+                </Field>
+              ))}
+            </div>
+          )}
           {pickers.length > 0 && (
             <fieldset className="flex flex-col gap-3 rounded-control border border-line p-3" data-testid="conflict-pickers">
               <legend className="px-1 text-label font-semibold text-ink-muted">파일마다 다른 값: 고르지 않으면 경우마다 계산합니다</legend>
@@ -459,28 +564,24 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
               })}
             </fieldset>
           )}
-          <details className="text-label">
-            <summary className="cursor-pointer text-ink-muted">RFQ에서 찾은 값과 근거 보기</summary>
-            <ul className="mt-2 divide-y divide-line rounded-control border border-line" data-testid="cost-candidates">
-              {setup.cost_inputs.candidates.map((c) => (
-                <Candidate key={c.field} c={c} />
-              ))}
-            </ul>
-          </details>
-        </Step>
 
-        <Step n="⑤" title="원가 항목 (개당 수량 × 단가)">
-          <ItemsEditor
-            rows={items}
-            prices={prices}
-            currency={form.currency}
-            patch={patchItem}
-            setRows={setItems}
-            onSavePrice={savePrice}
-          />
-          {priceNote && <p role="status" className="text-label text-ink-muted">{priceNote}</p>}
+          <div className="flex flex-col gap-1.5">
+            <span className="text-label font-semibold text-ink-muted">원가 항목 ({per}당 수량 × 단가)</span>
+            {hints.length > 0 && (
+              <p className="text-label text-ink-muted" data-testid="item-hints">
+                RFQ 참고: {hints.join(" · ")}
+              </p>
+            )}
+            {prices.length === 0 && (
+              <p className="rounded-control bg-warn-tint px-3 py-2 text-label text-warn">
+                단가표가 비어 있습니다. 첫 화면의 기본 설정(톱니바퀴)에서 단가를 넣으면 여기서 고를 수 있습니다.
+              </p>
+            )}
+            <ItemsEditor rows={items} prices={prices} currency={form.currency} per={per} patch={patchItem} setRows={setItems} />
+          </div>
+
           <div className="grid gap-3 sm:grid-cols-3">
-            <Field label="금형비 (총액)">
+            <Field label="금형비 (총액)" hint="없으면 0">
               <input className={cx(input, "tabular")} value={form.tooling_amount} inputMode="decimal" data-testid="input-tooling"
                 onChange={(e) => setForm({ tooling_amount: e.target.value.trim() })} />
             </Field>
@@ -498,32 +599,11 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
                   onChange={(e) => setForm({ deferred_years: e.target.value.trim() })} />
               </Field>
             )}
-          </div>
-        </Step>
-
-        <Step n="⑦⑧" title="충격 전가 · 점수 입력">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="원자재 연동 조항" hint={passThroughHint(setup, "indexation")}>
-              <select className={input} value={form.material_indexed}
-                onChange={(e) => setForm({ material_indexed: e.target.value as Form["material_indexed"] })}>
-                <option value="auto">RFQ대로</option>
-                <option value="yes">있음</option>
-                <option value="no">없음</option>
-              </select>
-            </Field>
-            <Field label="환율 조정 조항" hint={passThroughHint(setup, "fx_adjustment")}>
-              <select className={input} value={form.fx_adjusted}
-                onChange={(e) => setForm({ fx_adjusted: e.target.value as Form["fx_adjusted"] })}>
-                <option value="auto">RFQ대로</option>
-                <option value="yes">있음</option>
-                <option value="no">없음</option>
-              </select>
-            </Field>
-            <Field label="최대 연 물량의 설비 가동률 (%)" hint="비우면 중립(50점)">
+            <Field label="설비 가동률 (%)" hint="최대 연 물량 기준. 비우면 중립">
               <input className={cx(input, "tabular")} value={form.capacity} inputMode="decimal" data-testid="input-capacity"
                 onChange={(e) => setForm({ capacity: e.target.value.trim() })} />
             </Field>
-            <Field label="전략적 가치 (0~100)" hint="신규 고객·차종 등. 비우면 중립(50점)">
+            <Field label="전략적 가치 (0~100)" hint="신규 고객·차종 등. 비우면 중립">
               <input className={cx(input, "tabular")} value={form.strategic} inputMode="numeric" data-testid="input-strategic"
                 onChange={(e) => setForm({ strategic: e.target.value.trim() })} />
             </Field>
@@ -545,11 +625,6 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
       </Panel>
     </div>
   );
-}
-
-function passThroughHint(setup: Setup, id: string): string {
-  const found = setup.pass_through.find((p) => p.id === id);
-  return found?.evidence ? "RFQ에 있음: 해당 충격을 반영하지 않습니다." : "RFQ에서 찾지 못함";
 }
 
 function KnockoutCount({ asked, settled }: { asked: number; settled: number }) {
@@ -629,10 +704,10 @@ function Question({
   );
 }
 
-function VolumesEditor({ rows, setRows }: { rows: VolumeRow[]; setRows: (rows: VolumeRow[]) => void }) {
+function VolumesEditor({ rows, setRows, per }: { rows: VolumeRow[]; setRows: (rows: VolumeRow[]) => void; per: string }) {
   return (
     <div className="flex flex-col gap-1.5" data-testid="volumes">
-      <span className="text-label font-semibold text-ink-muted">연도별 물량 (개)</span>
+      <span className="text-label font-semibold text-ink-muted">연도별 물량 ({per})</span>
       <div className="flex flex-wrap gap-2">
         {rows.map((v, i) => (
           <div key={v.key} className="flex items-center gap-1 rounded-control border border-line p-1">
@@ -666,16 +741,16 @@ function ItemsEditor({
   rows,
   prices,
   currency,
+  per,
   patch,
   setRows,
-  onSavePrice,
 }: {
   rows: ItemRow[];
   prices: PriceRow[];
   currency: string;
+  per: string;
   patch: (key: string, p: Partial<ItemRow>) => void;
   setRows: (fn: (rows: ItemRow[]) => ItemRow[]) => void;
-  onSavePrice: (row: ItemRow) => void;
 }) {
   const cell = "min-h-8 w-full rounded-control border border-line-control bg-surface px-1.5 text-dense text-ink";
   return (
@@ -686,7 +761,7 @@ function ItemsEditor({
             <th scope="col" className="py-1 pr-2">단가표에서</th>
             <th scope="col" className="px-1 py-1">분류</th>
             <th scope="col" className="px-1 py-1">이름</th>
-            <th scope="col" className="px-1 py-1">개당 수량</th>
+            <th scope="col" className="px-1 py-1">{per}당 수량</th>
             <th scope="col" className="px-1 py-1">단위</th>
             <th scope="col" className="px-1 py-1">단가 ({currency})</th>
             <th scope="col" className="py-1"><span className="sr-only">동작</span></th>
@@ -756,11 +831,6 @@ function ItemsEditor({
                     onChange={(e) => patch(r.key, { unit_price: e.target.value.trim() })} />
                 </td>
                 <td className="whitespace-nowrap py-1 pl-1">
-                  {!priced && r.label.trim() && isDecimal(r.unit_price) && (
-                    <Button variant="ghost" onClick={() => onSavePrice(r)} data-testid={`save-price-${i}`}>
-                      단가표에 저장
-                    </Button>
-                  )}
                   <Button variant="ghost" aria-label={`${i + 1}행 삭제`} onClick={() => setRows((list) => list.filter((x) => x.key !== r.key))}>
                     ×
                   </Button>
@@ -786,29 +856,6 @@ function ItemsEditor({
   );
 }
 
-function Candidate({ c }: { c: CostInputCandidate }) {
-  return (
-    <li className="flex flex-col gap-1 px-3 py-2" data-testid={`candidate-${c.field}`}>
-      <div className="flex flex-wrap items-baseline gap-2">
-        <span className="font-semibold text-ink">{c.label}</span>
-        <span className="ml-auto font-semibold text-ink tabular">
-          {c.value !== null ? `${c.value}${c.unit ? ` ${c.unit}` : ""}` : c.alternatives.length > 1 ? "파일마다 다름" : "RFQ에 없음"}
-        </span>
-      </div>
-      {c.note && <p className="text-ink-muted">{c.note}</p>}
-      <div className="flex flex-wrap gap-1">
-        <Cite evidence={c.evidence} />
-        {c.alternatives.map((a) => (
-          <span key={a.value} className="flex items-center gap-1">
-            <strong className="tabular">{a.value}</strong>
-            <Cite evidence={a.evidence} />
-          </span>
-        ))}
-      </div>
-    </li>
-  );
-}
-
 // ── result ──────────────────────────────────────────────────────────────────
 const DECISION: Record<DecisionStatus, { label: string; className: string; icon: ReactNode }> = {
   go: { label: "Go", className: "border-ok bg-ok-tint text-ok", icon: <IconCheck size={16} /> },
@@ -819,10 +866,59 @@ const DECISION: Record<DecisionStatus, { label: string; className: string; icon:
   not_applicable: { label: "자동 판정 대상 아님", className: "border-line-control bg-surface text-ink-muted", icon: null },
 };
 
+/** "1234567.8900" → "1,234,567.89": thousands grouped, trailing zeros after the point dropped. */
+function grouped(value: string): string {
+  const [whole, fraction = ""] = value.split(".");
+  const sign = whole.startsWith("-") ? "-" : "";
+  const digits = whole.replace("-", "").replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  const kept = fraction.replace(/0+$/, "");
+  return `${sign}${digits}${kept ? `.${kept}` : ""}`;
+}
+
+function QuoteTiles({ run }: { run: PrecostResponse }) {
+  const c = run.data.cost;
+  const cur = run.data.currency;
+  const resale = c.cost_basis === "resale";
+  const tiles = [
+    { key: "min", title: "최소 견적 (수명주기 평균 마진 유지)", unit: c.min_quote, total: c.totals.min_quote, markup: c.markup?.min_quote, tone: "bg-canvas", titleTone: "text-ink-muted" },
+    { key: "safe", title: "안전 견적 (복합 충격 반영)", unit: c.safe_quote, total: c.totals.safe_quote, markup: c.markup?.safe_quote, tone: "bg-accent-tint", titleTone: "text-accent" },
+  ];
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="grid grid-cols-2 gap-3">
+        {tiles.map((t) => (
+          <div key={t.key} className={cx("flex flex-col gap-1 rounded-control p-3", t.tone)} data-testid={`${t.key}-tile`}>
+            <span className={cx("text-label", t.titleTone)}>{t.title}</span>
+            <span className="text-heading font-semibold text-ink tabular" data-testid={`${t.key}-quote`}>
+              {grouped(t.unit)} <span className="text-label">{cur} / {resale ? "단위" : "개"}</span>
+            </span>
+            {t.markup !== undefined && (
+              <span className="text-label text-ink tabular" data-testid={`${t.key}-markup`}>
+                매입가 대비 마크업 {fractionToPercent(t.markup)} %
+              </span>
+            )}
+            <span className="border-t border-line pt-1 text-dense text-ink tabular" data-testid={`${t.key}-total`}>
+              총 견적 <span className="font-semibold">{grouped(t.total)}</span> {cur}
+            </span>
+          </div>
+        ))}
+      </div>
+      <p className="text-label text-ink-muted tabular">
+        총 견적 = 연도별 물량 × 그 해 단가(연간 인하 반영)의 합, 전체 {c.total_quantity.toLocaleString("ko-KR")}{" "}
+        {resale ? "단위" : "개"}.
+        {resale && c.markup
+          ? ` 단위는 물량을 넣은 기준과 같습니다(예: 매입 100 ${cur}어치 = 1단위). 단위당 매입가 ${grouped(c.markup.purchased)} ${cur}.`
+          : ""}
+      </p>
+    </div>
+  );
+}
+
 function Result({ run }: { run: PrecostResponse }) {
   const d = run.data;
   const cur = d.currency;
   const decision = DECISION[d.decision.status];
+  const resale = d.cost.cost_basis === "resale";
   return (
     <div className="flex flex-col gap-4 p-4" data-testid="precost-result">
       <section
@@ -855,30 +951,18 @@ function Result({ run }: { run: PrecostResponse }) {
         </p>
       </section>
 
-      <div className="grid grid-cols-2 gap-3">
-        <div className="flex flex-col gap-0.5 rounded-control bg-canvas p-3">
-          <span className="text-label text-ink-muted">최소 견적 (수명주기 평균 마진 유지)</span>
-          <span className="text-heading font-semibold text-ink tabular" data-testid="min-quote">
-            {d.cost.min_quote} <span className="text-label">{cur}</span>
-          </span>
-        </div>
-        <div className="flex flex-col gap-0.5 rounded-control bg-accent-tint p-3">
-          <span className="text-label text-accent">안전 견적 (복합 충격 반영)</span>
-          <span className="text-heading font-semibold text-ink tabular" data-testid="safe-quote">
-            {d.cost.safe_quote} <span className="text-label">{cur}</span>
-          </span>
-        </div>
-      </div>
+      <QuoteTiles run={run} />
       <p className="-mt-2 text-label text-ink-muted tabular">
-        개당 원가 {d.cost.piece_cost}
+        {resale ? "단위당 원가" : "개당 원가"} {d.cost.piece_cost}
         {d.cost.tooling_per_piece && Number(d.cost.tooling_per_piece) > 0 ? ` + 금형 ${d.cost.tooling_per_piece}` : ""} · 수명주기 계수 {d.cost.lifetime_factor}
         {d.cost.material_indexed ? " · 재료비 연동(인하 제외)" : ""}
+        {resale ? " · 유통 산식: 불량·판관비 가산 없음, 운영비는 원가 항목으로 직접 반영" : ""}
       </p>
 
       {d.cost.lines.length > 0 && (
         <table className="w-full text-left text-dense tabular" data-testid="cost-lines">
           <caption className="pb-1 text-left text-label font-semibold text-ink-muted">
-            원가 구성 (개당, 가장 불리한 경우)
+            원가 구성 ({resale ? "단위당" : "개당"}, 가장 불리한 경우)
           </caption>
           <tbody>
             {d.cost.lines.map((l) => (

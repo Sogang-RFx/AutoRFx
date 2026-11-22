@@ -19,6 +19,7 @@ import {
   IconCompare,
   IconDoc,
   IconGauge,
+  IconGear,
   IconPresent,
   IconTable,
   IconTimeline,
@@ -131,9 +132,12 @@ export function AppShell({ rfqId, children }: { rfqId: string; children: ReactNo
               <Link
                 href="/settings/company"
                 data-testid="company-settings-link"
-                className="inline-flex min-h-8 items-center rounded-control border border-line-control px-2 text-label font-medium text-ink transition-soft hover:bg-canvas"
+                aria-label="사전원가 기본 설정"
+                title="사전원가 기본 설정 (단가표 · 회사 프로필 · 비율)"
+                className="inline-flex min-h-8 items-center gap-1 rounded-control border border-line-control px-2 text-label font-medium text-ink transition-soft hover:bg-canvas"
               >
-                원가 설정
+                <IconGear size={14} />
+                기본 설정
               </Link>
             )}
             <button

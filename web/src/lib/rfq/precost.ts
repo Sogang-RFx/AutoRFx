@@ -31,6 +31,31 @@ export const CATEGORY_DEPARTMENT: Record<ItemCategory, string> = {
   credit: "costing",
 };
 
+/** Currencies offered in the pickers. A currency the RFQ states that is not here is added to the list. */
+export const CURRENCIES: { code: string; label: string }[] = [
+  { code: "KRW", label: "KRW · 원" },
+  { code: "USD", label: "USD · 미국 달러" },
+  { code: "EUR", label: "EUR · 유로" },
+  { code: "JPY", label: "JPY · 엔" },
+  { code: "CNY", label: "CNY · 위안" },
+  { code: "GBP", label: "GBP · 파운드" },
+  { code: "CHF", label: "CHF · 스위스 프랑" },
+  { code: "CZK", label: "CZK · 체코 코루나" },
+  { code: "PLN", label: "PLN · 폴란드 즐로티" },
+  { code: "HUF", label: "HUF · 헝가리 포린트" },
+  { code: "MXN", label: "MXN · 멕시코 페소" },
+  { code: "INR", label: "INR · 인도 루피" },
+  { code: "VND", label: "VND · 베트남 동" },
+  { code: "THB", label: "THB · 태국 바트" },
+];
+
+/** The picker options, with `extra` codes (from the RFQ or a saved row) kept when they are not in the list. */
+export function currencyOptions(...extra: string[]): { code: string; label: string }[] {
+  const known = new Set(CURRENCIES.map((c) => c.code));
+  const more = [...new Set(extra.filter((c) => /^[A-Z]{3}$/.test(c) && !known.has(c)))];
+  return [...CURRENCIES, ...more.map((code) => ({ code, label: code }))];
+}
+
 const DECIMAL = /^\d+(\.\d+)?$/;
 export const isDecimal = (v: string) => DECIMAL.test(v.trim());
 export const isInt = (v: string) => /^\d+$/.test(v.trim());

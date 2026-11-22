@@ -221,8 +221,13 @@ test.describe.serial("real backend with user-supplied files", () => {
     await go(page, "precost", visible!.id);
     await expect(page.getByTestId("rfq-type")).toBeVisible();
     // Inputs chosen by the test, not taken from any RFQ.
-    await page.getByTestId("input-currency").fill("EUR");
-    await page.getByTestId("input-target_price").fill("10");
+    // A value the RFQ states sits in the summary until "수정" opens it; a missing one is an input already.
+    const open = async (id: string, input: string) => {
+      if (!(await page.getByTestId(input).isVisible())) await page.getByTestId(`edit-${id}`).click();
+      return page.getByTestId(input);
+    };
+    await (await open("currency", "input-currency")).selectOption("EUR");
+    await (await open("target_price", "input-target_price")).fill("10");
     const items = page.getByTestId("cost-item");
     const first = items.first();
     await first.getByRole("combobox").first().selectOption("");

@@ -48,6 +48,9 @@ rfq_types:
       label: 유통·재판매
       decision_unit: item
       baseline: none
+      # resale: 사 온 물건을 되파는 구조. 불량률·판관비율을 곱하지 않고,
+      # 인건비·물류·보험 같은 운영비를 원가 항목으로 직접 넣는다. 결과는 매입가 대비 마크업으로도 보여 준다.
+      cost_basis: resale
       patterns:
         en:
           - 'authori[sz]ed (\w+ )?dealer'

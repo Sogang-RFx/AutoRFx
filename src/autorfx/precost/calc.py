@@ -73,6 +73,11 @@ def money(value: Decimal) -> str:
     return format(value.quantize(PLACES, rounding=ROUND_HALF_UP), "f")
 
 
+def _grouped(value: Decimal) -> str:
+    """An amount for a sentence: thousands grouped, two decimals."""
+    return f"{value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP):,}"
+
+
 def signed(value: Decimal) -> str:
     return money(value)
 
@@ -87,9 +92,17 @@ def _int(value: Decimal) -> int:
 
 # ── cost of one piece ───────────────────────────────────────────────────────
 def piece_costs(
-    items: Sequence[CostItem], company: Company, multipliers: Mapping[str, Decimal] | None = None
+    items: Sequence[CostItem],
+    company: Company,
+    multipliers: Mapping[str, Decimal] | None = None,
+    *,
+    resale: bool = False,
 ) -> dict[str, Decimal]:
-    """Category totals, direct cost, piece cost and its material part, unrounded."""
+    """Category totals, direct cost, piece cost and its material part, unrounded.
+
+    Resale (distribution) adds no scrap or SG&A uplift: nothing is produced, and the
+    operating costs of reselling are entered as items of their own.
+    """
     settings = company.settings
     totals: dict[str, Decimal] = {}
     for item in items:
@@ -100,7 +113,7 @@ def piece_costs(
     direct = sum(totals.values(), Decimal(0)) - credit
     if direct < 0:
         raise PrecostInputError("환입(차감) 항목이 다른 원가 항목의 합보다 큽니다.")
-    uplift = (ONE + settings.scrap_rate) * (ONE + settings.sga_rate)
+    uplift = ONE if resale else (ONE + settings.scrap_rate) * (ONE + settings.sga_rate)
     return {
         "lines": totals,
         "credit": credit,
@@ -109,6 +122,23 @@ def piece_costs(
         "overhead": direct * uplift - direct,
         "material_part": max(totals.get("material", Decimal(0)) - credit, Decimal(0)) * uplift,
     }
+
+
+def contract_total(quote: Decimal, inputs: PrecostInput) -> Decimal:
+    """Whole-contract revenue at a first-year price: Σ yearly quantity × price after reductions."""
+    return sum(
+        (
+            Decimal(v.quantity) * quote * (ONE - inputs.annual_reduction_rate) ** _steps(i, inputs)
+            for i, v in enumerate(inputs.volumes)
+        ),
+        Decimal(0),
+    )
+
+
+def _cost_basis(context: RfqCostContext, ruleset: Ruleset) -> str:
+    kind = (context.classification or {}).get("type")
+    rule = next((t for t in ruleset.cost_model.rfq_types.types if t.id == kind), None)
+    return rule.cost_basis if rule is not None else "manufacturing"
 
 
 def lifetime_factor(inputs: PrecostInput) -> Decimal:
@@ -402,6 +432,8 @@ def evaluate(
         passed = (passed - {"fx_adjustment"}) | ({"fx_adjustment"} if inputs.fx_adjusted else set())
     indexed = "indexation" in passed
 
+    resale = _cost_basis(context, ruleset) == "resale"
+
     def items_for(choice: Sequence[str]) -> list[CostItem]:
         result = list(inputs.items)
         for (_, driver, base, _), value in zip(dimensions, choice, strict=True):
@@ -411,7 +443,7 @@ def evaluate(
     cases = []
     for choice in combos:
         items = items_for(choice)
-        piece = piece_costs(items, company)
+        piece = piece_costs(items, company, resale=resale)
         cases.append((choice, items, piece, minimum_quote(piece, inputs, company, indexed)))
     worst_choice, worst_items, worst_piece, worst_min = max(cases, key=lambda c: c[3])
     best_min = min(c[3] for c in cases)
@@ -442,7 +474,7 @@ def evaluate(
         reason = _shock_state(shock, inputs, company, passed, ruleset)
         delta = None
         if reason is None:
-            shocked = piece_costs(worst_items, company, _multipliers([shock]))
+            shocked = piece_costs(worst_items, company, _multipliers([shock]), resale=resale)
             delta = minimum_quote(shocked, inputs, company, indexed) - worst_min
             if shock.id in model.combined:
                 applied.append(shock)
@@ -455,7 +487,7 @@ def evaluate(
                 "min_quote_delta": signed(delta) if delta is not None else None,
             }
         )
-    combined_piece = piece_costs(worst_items, company, _multipliers(applied))
+    combined_piece = piece_costs(worst_items, company, _multipliers(applied), resale=resale)
     safe_quote = minimum_quote(combined_piece, inputs, company, indexed)
 
     # NPV (reference only)
@@ -482,6 +514,17 @@ def evaluate(
 
     lf = lifetime_factor(inputs)
     total_volume = sum(v.quantity for v in inputs.volumes)
+    totals = (contract_total(worst_min, inputs), contract_total(safe_quote, inputs))
+    purchased = worst_piece["lines"].get("purchased", Decimal(0))
+    markup = (
+        {
+            "purchased": money(purchased),
+            "min_quote": money(worst_min / purchased - ONE),
+            "safe_quote": money(safe_quote / purchased - ONE),
+        }
+        if resale and purchased > 0
+        else None
+    )
     cost = {
         "lines": [
             {"category": key, "label": model.item_categories[key], "value": money(v)}
@@ -498,7 +541,14 @@ def evaluate(
             if worst_piece["credit"]
             else []
         )
-        + [{"category": "overhead", "label": "불량·판관비 가산", "value": money(worst_piece["overhead"])}],
+        + (
+            []
+            if resale
+            else [
+                {"category": "overhead", "label": "불량·판관비 가산", "value": money(worst_piece["overhead"])}
+            ]
+        ),
+        "cost_basis": "resale" if resale else "manufacturing",
         "piece_cost": money(worst_piece["piece_cost"]),
         "tooling_per_piece": money(inputs.tooling.amount / Decimal(total_volume))
         if inputs.tooling.payment == "amortized"
@@ -507,6 +557,9 @@ def evaluate(
         "material_indexed": indexed,
         "min_quote": money(worst_min),
         "safe_quote": money(safe_quote),
+        "total_quantity": total_volume,
+        "totals": {"min_quote": money(totals[0]), "safe_quote": money(totals[1])},
+        "markup": markup,
         "scenarios": scenarios,
         "shocks": shocks,
         "npv": {
@@ -536,8 +589,10 @@ def evaluate(
     elif target is None:
         status, rule = "baseline_undefined", "no_target"
         reasons.append(
-            f"목표가가 없어 판정하지 않습니다. 최소 입찰가 {money(worst_min)}, "
-            f"안전 입찰가 {money(safe_quote)} {inputs.currency}."
+            f"목표가가 없어 판정하지 않습니다. 단위당 최소 입찰가 {money(worst_min)}, "
+            f"안전 입찰가 {money(safe_quote)} {inputs.currency} "
+            f"(전체 {total_volume:,}단위 총액 {_grouped(totals[0])} ~ "
+            f"{_grouped(totals[1])} {inputs.currency})."
         )
     elif target < best_min:
         status, rule = "no_go", "price_knockout"

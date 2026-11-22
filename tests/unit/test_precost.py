@@ -279,6 +279,58 @@ def test_no_target_gives_the_minimum_bid_instead_of_a_decision(ruleset: Ruleset,
     assert "최소 입찰가" in decision["reasons"][0]
 
 
+def test_the_total_quote_sums_every_year_at_its_reduced_price(ruleset: Ruleset, company: Company):
+    cost = run(ruleset, company)["cost"]
+    years = D(1) + D("0.97") + D("0.97") ** 2
+    for key in ("min_quote", "safe_quote"):
+        expected = D(cost[key]) * 100_000 * years
+        assert abs(D(cost["totals"][key]) - expected) < D("0.01") * 100_000
+    assert cost["total_quantity"] == 300_000
+    assert cost["cost_basis"] == "manufacturing" and cost["markup"] is None
+
+
+DISTRIBUTION = {**MANUFACTURING, "type": "distribution", "label": "유통·재판매", "baseline": "none"}
+RESALE_ITEMS = (
+    CostItem(
+        label="매입 부품 (100 USD어치)",
+        category="purchased",
+        quantity=D("1"),
+        unit="단위",
+        unit_price=D("100"),
+    ),
+    CostItem(label="카운터 인력", category="labor", quantity=D("0.2"), unit="h", unit_price=D("30")),
+    CostItem(label="배송", category="logistics", quantity=D("1"), unit="단위", unit_price=D("3")),
+)
+
+
+def test_distribution_adds_no_scrap_or_sga_and_reports_the_markup(ruleset: Ruleset, company: Company):
+    """Resale: purchase + operating costs, margin only; the quote is also a markup over the purchase."""
+    context = RfqCostContext(classification=DISTRIBUTION)
+    result = run(
+        ruleset,
+        company,
+        context,
+        items=RESALE_ITEMS,
+        target_price=None,
+        annual_reduction_rate=D(0),
+        currency="KRW",
+    )
+    cost = result["cost"]
+    assert cost["cost_basis"] == "resale"
+    assert cost["piece_cost"] == "109.0000"
+    assert "overhead" not in {line["category"] for line in cost["lines"]}
+    assert cost["min_quote"] == "114.4500"  # 109 × 1.05, no reduction
+    assert cost["markup"]["purchased"] == "100.0000"
+    assert cost["markup"]["min_quote"] == "0.1445"
+    assert cost["totals"]["min_quote"] == "34335000.0000"  # 300 000 units × 114.45
+    assert "총액" in result["decision"]["reasons"][0]
+    assert run(ruleset, company, items=RESALE_ITEMS)["cost"]["piece_cost"] == money_of(D(109) * UPLIFT)
+
+
+def money_of(value: Decimal) -> str:
+    return format(value.quantize(D("0.0001")), "f")
+
+
 def test_a_target_below_every_minimum_quote_is_a_price_knockout(ruleset: Ruleset, company: Company):
     decision = run(ruleset, company, target_price=D("1"))["decision"]
     assert (decision["status"], decision["rule"]) == ("no_go", "price_knockout")
@@ -375,6 +427,23 @@ def test_requirements_are_found_cited_and_checked_against_the_profile(ruleset: R
     )
     again = {c["key"]: c for c in requirements(clauses, [payment_mention(clauses)], within, ruleset)}
     assert again["payment:120"]["status"] == "pass"
+
+
+def test_the_same_requirement_in_singular_and_plural_is_asked_once(ruleset: Ruleset, company: Company):
+    """ "authorized Ford Dealers" in one sentence and "authorized Ford Dealer" in another: one question."""
+    clauses = [
+        make_clause("1", ["1 Only authorized Ford Dealers may submit a quote."]),
+        make_clause("2", ["2 The bidder shall be an authorized Ford Dealer."], first_sentence=2),
+    ]
+    checks = [c for c in requirements(clauses, [], company, ruleset) if c["requirement"] == "qualification"]
+    assert [(c["key"], c["value"]) for c in checks] == [
+        ("qualification:AUTHORIZEDFORDDEALER", "authorized Ford Dealers")
+    ]
+    profiled = company.model_copy(
+        update={"profile": company.profile.model_copy(update={"qualifications": ("Authorized Ford dealer",)})}
+    )
+    [check] = [c for c in requirements(clauses, [], profiled, ruleset) if c["requirement"] == "qualification"]
+    assert check["status"] == "pass"
 
 
 def test_answers_decide_the_knockout(ruleset: Ruleset, company: Company):

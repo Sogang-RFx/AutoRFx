@@ -65,7 +65,8 @@ def classify(clauses: Sequence[Clause], ruleset: Ruleset) -> dict:
     note = {
         "manufacturing": "부품 제조 RFQ입니다. 목표가와 비교해 판정합니다.",
         "distribution": "유통·재판매 RFQ입니다. 목표가가 없어 판정 대신 최소 입찰가를 냅니다. "
-        "품목별 판정은 아직 지원하지 않습니다.",
+        "유통 산식으로 계산합니다: 매입가 + 운영비(인건비·물류 등)에 마진만 붙이고 "
+        "불량·판관비 가산은 하지 않습니다. 품목별 판정은 아직 지원하지 않습니다.",
     }.get(best.id, f"{best.label} RFQ입니다.")
     if not best.automatic:
         note = f"{best.label} RFQ입니다. 자동 판정 대상이 아니므로 수기로 원가를 검토하세요."

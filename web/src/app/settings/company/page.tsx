@@ -15,6 +15,7 @@ import { ITEM_CATEGORIES, type CompanyRequest, type CompanyResponse, type ItemCa
 import {
   CATEGORY_DEPARTMENT,
   CATEGORY_LABEL,
+  currencyOptions,
   defaultValidUntil,
   fractionToPercent,
   isDecimal,
@@ -113,7 +114,7 @@ export default function CompanySettingsPage() {
       <Link href="/" className="font-serif text-heading font-semibold text-ink">
         AutoRFx
       </Link>
-      <h1 className="text-heading font-semibold text-ink">회사 원가 설정</h1>
+      <h1 className="text-heading font-semibold text-ink">사전원가 기본 설정</h1>
       <button type="button" onClick={() => history.back()} className="ml-auto text-label text-ink-muted hover:text-ink">
         ← 돌아가기
       </button>
@@ -124,7 +125,7 @@ export default function CompanySettingsPage() {
     return (
       <main className="mx-auto flex min-h-dvh max-w-5xl flex-col gap-6 px-4 py-8 md:px-8">
         {header}
-        <Panel title="회사 원가 설정" labelId="company-title">
+        <Panel title="사전원가 기본 설정" labelId="company-title">
           <EmptyState title="이 팀에는 원가 정보가 제공되지 않습니다">
             <p className="flex items-center gap-1.5">
               <IconLock size={14} /> 금액 열람이 허용된 팀을 고르면 볼 수 있습니다.
@@ -220,7 +221,22 @@ export default function CompanySettingsPage() {
           <div className="grid gap-4 lg:grid-cols-2">
             <Panel title="기본 비율" labelId="rates-title">
               <div className="grid gap-3 p-4 sm:grid-cols-2">
-                {text("home_currency", "기준 통화", "견적 통화와 다르면 환율 충격을 반영합니다.")}
+                <label className="flex flex-col gap-1">
+                  <span className="text-label font-semibold text-ink-muted">기준 통화</span>
+                  <select
+                    value={state.form.home_currency}
+                    onChange={(e) => setForm({ home_currency: e.target.value })}
+                    className="min-h-9 w-full rounded-control border border-line-control bg-surface px-2 text-dense text-ink"
+                    data-testid="company-home_currency"
+                  >
+                    {currencyOptions(state.form.home_currency).map((c) => (
+                      <option key={c.code} value={c.code}>
+                        {c.label}
+                      </option>
+                    ))}
+                  </select>
+                  <span className="text-label text-ink-muted">견적 통화와 다르면 환율 충격을 반영합니다.</span>
+                </label>
                 {text("discount", "할인율 (NPV)", "WACC 또는 차입금리 + 2~3%p", "%")}
                 {text("margin", "최소 마진", undefined, "%")}
                 {text("scrap", "스크랩률", "직접비에 곱합니다.", "%")}
@@ -321,9 +337,15 @@ export default function CompanySettingsPage() {
                             <input aria-label={`${i + 1}행 단가`} value={r.price} inputMode="decimal"
                               onChange={(e) => patch({ price: e.target.value })} className={cx(cell, "tabular")} />
                           </td>
-                          <td className="w-20 px-2 py-1.5">
-                            <input aria-label={`${i + 1}행 통화`} value={r.currency} maxLength={3}
-                              onChange={(e) => patch({ currency: e.target.value.toUpperCase() })} className={cell} />
+                          <td className="w-24 px-2 py-1.5">
+                            <select aria-label={`${i + 1}행 통화`} value={r.currency}
+                              onChange={(e) => patch({ currency: e.target.value })} className={cell}>
+                              {currencyOptions(r.currency).map((c) => (
+                                <option key={c.code} value={c.code}>
+                                  {c.code}
+                                </option>
+                              ))}
+                            </select>
                           </td>
                           <td className="w-40 px-2 py-1.5">
                             <input type="date" aria-label={`${i + 1}행 유효기간`} value={r.valid_until}

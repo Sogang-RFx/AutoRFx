@@ -173,6 +173,8 @@ class RfqTypeRule(Model):
     baseline: Literal["target_price", "none"] = "target_price"
     automatic: bool = True
     """False: the type is recognised but never judged automatically (manual pre-cost)."""
+    cost_basis: Literal["manufacturing", "resale"] = "manufacturing"
+    """resale: bought-in goods sold on; no scrap or SG&A uplift, operating costs are entered as items."""
     patterns: Patterns
 
 

@@ -375,6 +375,13 @@
                 "additionalProperties": false
               }
             },
+            "cost_basis": {
+              "type": "string",
+              "enum": [
+                "manufacturing",
+                "resale"
+              ]
+            },
             "piece_cost": {
               "type": "string",
               "pattern": "^\\d+(\\.\\d+)?$"
@@ -404,6 +411,59 @@
             "safe_quote": {
               "type": "string",
               "pattern": "^\\d+(\\.\\d+)?$"
+            },
+            "total_quantity": {
+              "type": "integer",
+              "minimum": -9007199254740991,
+              "maximum": 9007199254740991
+            },
+            "totals": {
+              "type": "object",
+              "properties": {
+                "min_quote": {
+                  "type": "string",
+                  "pattern": "^\\d+(\\.\\d+)?$"
+                },
+                "safe_quote": {
+                  "type": "string",
+                  "pattern": "^\\d+(\\.\\d+)?$"
+                }
+              },
+              "required": [
+                "min_quote",
+                "safe_quote"
+              ],
+              "additionalProperties": false
+            },
+            "markup": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "purchased": {
+                      "type": "string",
+                      "pattern": "^\\d+(\\.\\d+)?$"
+                    },
+                    "min_quote": {
+                      "type": "string",
+                      "pattern": "^-?\\d+(\\.\\d+)?$"
+                    },
+                    "safe_quote": {
+                      "type": "string",
+                      "pattern": "^-?\\d+(\\.\\d+)?$"
+                    }
+                  },
+                  "required": [
+                    "purchased",
+                    "min_quote",
+                    "safe_quote"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
             },
             "scenarios": {
               "type": "array",
@@ -559,12 +619,16 @@
           },
           "required": [
             "lines",
+            "cost_basis",
             "piece_cost",
             "tooling_per_piece",
             "lifetime_factor",
             "material_indexed",
             "min_quote",
             "safe_quote",
+            "total_quantity",
+            "totals",
+            "markup",
             "scenarios",
             "shocks",
             "npv",

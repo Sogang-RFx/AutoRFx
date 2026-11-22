@@ -7,7 +7,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useRef, useState } from "react";
 import type { DragEvent } from "react";
-import { IconArrowRight, IconClose, IconUpload, IconWarn } from "@/components/ui/icons";
+import { IconArrowRight, IconClose, IconGear, IconUpload, IconWarn } from "@/components/ui/icons";
 import { Button, EngineBadge, ErrorState, cx } from "@/components/ui/primitives";
 import type { MetaResponse } from "@/lib/rfq/contract";
 import { describeError, rfqApi, type UploadSource } from "@/lib/rfq/provider";
@@ -93,6 +93,16 @@ export default function StartPage() {
             className="rounded-control border border-line-control px-2 py-0.5 font-medium text-ink transition-soft hover:bg-surface"
           >
             부서 설정
+          </Link>
+          <Link
+            href="/settings/company"
+            data-testid="company-settings-link"
+            aria-label="사전원가 기본 설정"
+            title="사전원가 기본 설정 (단가표 · 회사 프로필 · 비율)"
+            className="inline-flex items-center gap-1 rounded-control border border-line-control px-2 py-0.5 font-medium text-ink transition-soft hover:bg-surface"
+          >
+            <IconGear size={14} />
+            기본 설정
           </Link>
         </p>
         <h1
