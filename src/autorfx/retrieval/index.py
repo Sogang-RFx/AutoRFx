@@ -33,6 +33,7 @@ from dataclasses import dataclass
 
 from autorfx.chunker import mentions_cost
 from autorfx.models import Clause, Group, ParsedSentence
+from autorfx.retrieval.dense import DenseIndex
 from autorfx.rules import GlossaryEntry, Ruleset
 
 WORD = re.compile(r"[^\W_]+(?:[.,][^\W_]+)*")
@@ -41,6 +42,8 @@ K1, B = 1.5, 0.75
 TITLE_WEIGHT = 1.0
 MAX_SUGGESTIONS = 4
 INFLECTIONS = ("s", "es", "e", "n", "en", "er")
+RRF_K = 60
+"""Reciprocal rank fusion constant (Cormack et al., 2009): a rank-r hit adds 1 / (RRF_K + r)."""
 COMPOUND_MIN = 8
 """A word this long also matches a longer word that starts or ends with it (German compounds)."""
 STOPWORDS = frozenset(
@@ -178,10 +181,18 @@ class _Corpus:
 
 
 class SearchIndex:
-    """Retrieval for one RFQ package, per access group."""
+    """Retrieval for one RFQ package, per access group.
 
-    def __init__(self, clauses: Sequence[Clause], ruleset: Ruleset) -> None:
+    With a ``dense`` index the default search is hybrid: the BM25 hits that pass the evidence gate and
+    the embedding hits that pass the similarity gate are merged by reciprocal rank fusion. Without one
+    it is BM25 alone, exactly as before.
+    """
+
+    def __init__(
+        self, clauses: Sequence[Clause], ruleset: Ruleset, *, dense: DenseIndex | None = None
+    ) -> None:
         self._ruleset = ruleset
+        self.dense = dense
         self._corpora: dict[Group, _Corpus] = {
             "cost_visible": _Corpus(clauses),
             "cost_restricted": _Corpus([c for c in clauses if not c.is_cost_sensitive]),
@@ -229,7 +240,35 @@ class SearchIndex:
             found.append(Concept(token, (token,)))
         return tuple(found)
 
-    def search(self, question: str, *, group: Group, limit: int = 8) -> SearchResult:
+    def search(self, question: str, *, group: Group, limit: int = 8, mode: str | None = None) -> SearchResult:
+        """``mode``: "bm25", "dense" or "hybrid"; by default hybrid when a dense index is attached."""
+        mode = mode or ("hybrid" if self.dense is not None else "bm25")
+        if mode == "bm25":
+            return self.search_bm25(question, group=group, limit=limit)
+        if self.dense is None:
+            raise ValueError("임베딩 모델이 설정되지 않았습니다 (EMBEDDING_MODEL).")
+        dense = self.dense.search(question, group=group, limit=limit)
+        if mode == "dense":
+            hits = tuple(Hit(h.sentence, h.clause_id, rank) for rank, h in enumerate(dense, start=1))
+            return SearchResult(hits, (), (), bool(hits))
+        if mode != "hybrid":
+            raise ValueError(f"알 수 없는 검색 방식입니다: {mode}")
+        lexical = self.search_bm25(question, group=group, limit=limit)
+        fused: dict[tuple, float] = defaultdict(float)
+        first: dict[tuple, tuple[ParsedSentence, str]] = {}
+        for ranked in (
+            [(h.sentence, h.clause_id) for h in lexical.hits],
+            [(h.sentence, h.clause_id) for h in dense],
+        ):
+            for rank, (sentence, clause_id) in enumerate(ranked, start=1):
+                key = sentence.locus.key()
+                fused[key] += 1 / (RRF_K + rank)
+                first.setdefault(key, (sentence, clause_id))
+        order = sorted(fused, key=lambda key: -fused[key])[:limit]
+        hits = tuple(Hit(*first[key], rank) for rank, key in enumerate(order, start=1))
+        return SearchResult(hits, lexical.concepts, lexical.missing, bool(hits))
+
+    def search_bm25(self, question: str, *, group: Group, limit: int = 8) -> SearchResult:
         corpus = self._corpus(group)
         concepts = self.concepts(question, keep_hangul=corpus.has_hangul)
         labels = tuple(concept.label for concept in concepts)
