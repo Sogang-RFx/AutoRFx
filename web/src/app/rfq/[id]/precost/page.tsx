@@ -1287,6 +1287,7 @@ const MANUAL = "직접 추가";
 function AddLineForm({ currency, per, year, add }: { currency: string; per: string; year: string; add: (line: LineRow) => void }) {
   const empty = { name: "", part: "", quantity: "", price: "", target: "" };
   const [draft, setDraft] = useState(empty);
+  const [isOpen, setIsOpen] = useState(false);
   const set = (p: Partial<typeof empty>) => setDraft((d) => ({ ...d, ...p }));
   const problem = !draft.name.trim()
     ? "품목 이름을 넣으세요."
@@ -1311,6 +1312,16 @@ function AddLineForm({ currency, per, year, add }: { currency: string; per: stri
       group: MANUAL,
     });
     setDraft(empty);
+    setIsOpen(false);
+  }
+  if (!isOpen) {
+    return (
+      <div>
+        <Button variant="ghost" data-testid="add-open" onClick={() => setIsOpen(true)}>
+          + 빠진 품목 직접 추가
+        </Button>
+      </div>
+    );
   }
   return (
     <fieldset className="flex flex-col gap-2 rounded-control border border-dashed border-line-control p-3" data-testid="line-add-form">
@@ -1338,6 +1349,9 @@ function AddLineForm({ currency, per, year, add }: { currency: string; per: stri
         </Field>
         <Button data-testid="add-submit" disabled={problem !== null} onClick={submit}>
           목록에 추가
+        </Button>
+        <Button variant="ghost" data-testid="add-cancel" onClick={() => { setDraft(empty); setIsOpen(false); }}>
+          취소
         </Button>
       </div>
       {problem && (draft.name || draft.quantity || draft.price || draft.target) && <p className="text-label text-ink-muted">{problem}</p>}
