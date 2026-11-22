@@ -202,10 +202,16 @@ function initialItems(setup: Setup): ItemRow[] {
     unit_price: s.unit_price,
     price_id: s.price_id,
   }));
-  return suggested.length > 0
-    ? suggested
-    : [{ key: newKey(), label: "", category: "material", quantity: "", unit: "kg", unit_price: "", price_id: null }];
+  if (suggested.length > 0) return suggested;
+  // A distribution RFQ is priced per unit of purchases: one unit is 100 of the quote currency
+  // bought, so its purchase cost is 100 by definition (not a value read from the RFQ).
+  if (setup.classification.type === "distribution") {
+    return [{ key: newKey(), label: RESALE_ITEM, category: "purchased", quantity: "1", unit: "묶음", unit_price: "100", price_id: null }];
+  }
+  return [{ key: newKey(), label: "", category: "material", quantity: "", unit: "kg", unit_price: "", price_id: null }];
 }
+
+const RESALE_ITEM = "매입액 (1단위 = 100어치)";
 
 /** Lines priced from the RFQ's price sheet: name and printed quantity; the user adds the purchase price. */
 function linesFromRfq(rows: RfqLine[], year: string, processes: string[]): LineRow[] {
@@ -738,6 +744,12 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
           ) : (
           <div className="flex flex-col gap-1.5">
             <span className="text-label font-semibold text-ink-muted">원가 항목 ({per}당 수량 × 단가)</span>
+            {per === "단위" && (
+              <p className="text-label text-ink-muted" data-testid="resale-unit-note">
+                1단위 = 매입액 100 {form.currency}어치입니다. 첫 줄의 100은 RFQ 값이 아니라 단위의 정의라 그대로 두세요. 인건비·물류비 같은
+                운영비는 줄을 추가해 {per}당 금액으로 넣으세요.
+              </p>
+            )}
             {hints.length > 0 && (
               <p className="text-label text-ink-muted" data-testid="item-hints">
                 RFQ 참고: {hints.join(" · ")}
