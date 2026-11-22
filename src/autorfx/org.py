@@ -24,6 +24,7 @@ from pydantic import Field, ValidationError
 
 from autorfx.models import Group, Model
 from autorfx.rules import Ruleset
+from autorfx.work_areas import CATALOG
 
 log = logging.getLogger(__name__)
 
@@ -64,7 +65,7 @@ def validate(
     """Check a whole list and give new departments an id. Raises :class:`OrgError`."""
     if len(raw) > MAX_DEPARTMENTS:
         raise OrgError(f"부서는 {MAX_DEPARTMENTS}개까지 둘 수 있습니다.")
-    known_areas = set(ruleset.department_ids)
+    known_areas = set(ruleset.department_ids) | CATALOG.keys()
     known_ids = {d.id for d in current}
     taken = set(known_ids)
     seen_labels: set[str] = set()

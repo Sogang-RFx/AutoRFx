@@ -25,6 +25,7 @@ from autorfx.export import rtm_workbook
 from autorfx.ingest import ACCEPT, IngestError
 from autorfx.models import Answer, FileRecord, Group, Model, PrecostInput
 from autorfx.org import OrgError
+from autorfx.work_areas import CATALOG
 from autorfx.pipeline import RfqData
 from autorfx.precost import (
     CompanyError,
@@ -110,6 +111,7 @@ def meta(state: State) -> dict:
     )
     data = {
         "teams": teams,
+        "work_areas": [{"id": key, "label": label} for key, (label, _) in CATALOG.items()],
         "departments": [
             {"id": d.id, "label": d.label, "role": d.role, "receives_all": d.receives_all}
             for d in rules.departments

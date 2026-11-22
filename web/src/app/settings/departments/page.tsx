@@ -10,7 +10,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { IconWarn } from "@/components/ui/icons";
 import { Button, ErrorState, Panel, Skeleton, cx } from "@/components/ui/primitives";
-import type { Department, OrgDepartment } from "@/lib/rfq/contract";
+import type { OrgDepartment } from "@/lib/rfq/contract";
 import { describeError, rfqApi } from "@/lib/rfq/provider";
 import { useSession } from "@/lib/rfq/session";
 import { useResource } from "@/lib/rfq/use-resource";
@@ -32,7 +32,7 @@ const toRow = (d: OrgDepartment): Row => ({
 
 async function loadSettings(signal: AbortSignal) {
   const [meta, org] = await Promise.all([rfqApi.meta(signal), rfqApi.orgDepartments(signal)]);
-  return { areas: meta.data.departments, departments: org.data.departments };
+  return { areas: meta.data.work_areas ?? [], legacy: meta.data.departments, departments: org.data.departments };
 }
 
 export default function DepartmentSettingsPage() {
@@ -44,17 +44,22 @@ export default function DepartmentSettingsPage() {
 
   // Start editing from what the server holds, once it arrives.
   if (rows === null && loaded.status === "ok") setRows(loaded.data.departments.map(toRow));
-  const areas: Department[] = loaded.status === "ok" ? loaded.data.areas : [];
+  const areas = loaded.status === "ok" ? loaded.data.areas : [];
 
   function update(key: string, patch: Partial<Row>) {
     setRows((current) => (current ?? []).map((r) => (r.key === key ? { ...r, ...patch } : r)));
     setNotice(null);
   }
 
+  function choices(row: Row) {
+    const legacy = loaded.status === "ok" ? loaded.data.legacy : [];
+    const saved = legacy.filter((area) => row.areas.includes(area.id));
+    return [...areas, ...saved.map(({ id, label }) => ({ id, label: label + " (기존 설정)" }))];
+  }
+
   function toggleArea(row: Row, area: string) {
     const next = row.areas.includes(area) ? row.areas.filter((a) => a !== area) : [...row.areas, area];
-    // Keep the rule order so the saved list reads the same way every time.
-    update(row.key, { areas: areas.map((a) => a.id).filter((id) => next.includes(id)) });
+    update(row.key, { areas: next });
   }
 
   async function save(list: Row[]) {
@@ -153,29 +158,28 @@ export default function DepartmentSettingsPage() {
                     </p>
                   )}
                   <fieldset>
-                    <legend className="mb-1.5 text-label text-ink-muted">받을 업무 영역</legend>
-                    <div className="flex flex-wrap gap-1.5">
-                      {areas.map((a) => {
+                    <legend className="mb-1.5 text-label text-ink-muted">받을 업무 영역 · {row.areas.length}개 선택</legend>
+                    <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                      {choices(row).map((a) => {
                         const isOn = row.areas.includes(a.id);
                         return (
                           <label
                             key={a.id}
-                            title={a.role}
                             className={cx(
-                              "inline-flex cursor-pointer items-center gap-1.5 rounded-full border px-2.5 py-1 text-label font-medium transition-soft",
+                              "inline-flex cursor-pointer items-center gap-1.5 min-h-10 rounded-control border px-3 py-2 text-dense font-medium transition-soft",
                               "has-[:focus-visible]:outline has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-accent",
                               isOn ? "border-ink bg-ink text-white" : "border-line text-ink-muted hover:border-line-control hover:text-ink",
                             )}
                           >
                             <input
                               type="checkbox"
-                              className="sr-only"
+                              className="shrink-0 accent-accent"
                               data-testid={`org-area-${i}-${a.id}`}
                               checked={isOn}
                               onChange={() => toggleArea(row, a.id)}
                             />
                             {a.label}
-                            {a.receives_all && <span className="opacity-70">· 모든 조항</span>}
+
                           </label>
                         );
                       })}

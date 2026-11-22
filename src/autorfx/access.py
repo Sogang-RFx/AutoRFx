@@ -33,6 +33,7 @@ from autorfx.models import (
     ParsedFile,
     ParsedSentence,
 )
+from autorfx.work_areas import matching_areas
 from autorfx.rules import Ruleset
 from autorfx.workspace import Workspace
 
@@ -147,7 +148,8 @@ def clause_items(
         if _is_hidden(clause, analysis, group, hidden):
             items.append(_masked(clause))
             continue
-        if not _matches(analysis, wanted, ruleset):
+        work_areas = matching_areas(clause.text)
+        if not _matches(analysis, wanted, ruleset) and not any(a in work_areas for a in wanted or ()):
             continue
         flag = analysis.red_flag
         items.append(
@@ -160,6 +162,7 @@ def clause_items(
                 "title": _title(clause, group, ruleset),
                 "page_number": clause.page_number,
                 "lang": clause.lang,
+                "work_areas": work_areas,
                 "primary_department": analysis.primary_department,
                 "reference_departments": list(analysis.reference_departments),
                 "priority": analysis.priority,

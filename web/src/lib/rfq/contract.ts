@@ -135,6 +135,7 @@ export const VisibleClause = z.object({
   title: z.string(),
   page_number: z.int().min(1),
   lang: Lang,
+  work_areas: z.array(z.string()).optional(),
   primary_department: z.string().min(1),
   reference_departments: z.array(z.string()),
   priority: Priority,
@@ -660,6 +661,7 @@ export const MetaResponse = envelope(
   z.object({
     teams: z.array(Team),
     departments: z.array(Department),
+    work_areas: z.array(z.object({ id: z.string(), label: z.string() })).optional(),
     assumption_note: z.string(),
     engines: Engines,
     /** Packages already on the server that can be opened without an upload. */

@@ -206,3 +206,18 @@ def test_a_removed_company_department_is_restricted_again(client: TestClient, or
     save(client)
     body = client.get(f"/rfqs/{rfq_id}/clauses", params={"team": gone["id"]}).json()
     assert body["data"]["group"] == "cost_restricted"
+
+
+def test_work_areas_route_matching_clauses(client: TestClient, org: Org):
+    catalog = client.get("/meta").json()["data"]["work_areas"]
+    assert len({a["id"] for a in catalog}) == len(catalog) == 34
+    team, = save(client, dept("견적 담당", ["quote"], cost_visible=True))
+    url = f"/rfqs/{org[1]}/clauses"
+    def rows(**params):
+        return client.get(url, params={"team": team["id"], **params}).json()["data"]["clauses"]
+
+    all_rows = rows()
+    selected = rows(department=team["id"])
+    assert 0 < len(selected) < len(all_rows)
+    assert all("quote" in row["work_areas"] for row in selected)
+    assert PACKAGE_SECRET in str(selected)

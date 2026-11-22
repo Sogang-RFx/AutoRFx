@@ -87,23 +87,6 @@ export default function StartPage() {
         <p className="flex flex-wrap items-center gap-2 text-label font-semibold text-ink-muted">
           AutoRFx · 자동차 부품 RFQ 분석
           {meta.status === "ok" && <EngineBadge engines={meta.data.data.engines} />}
-          <Link
-            href="/settings/departments"
-            data-testid="org-settings-link"
-            className="rounded-control border border-line-control px-2 py-0.5 font-medium text-ink transition-soft hover:bg-surface"
-          >
-            부서 설정
-          </Link>
-          <Link
-            href="/settings/company"
-            data-testid="company-settings-link"
-            aria-label="사전원가 기본 설정"
-            title="사전원가 기본 설정 (단가표 · 회사 프로필 · 비율)"
-            className="inline-flex items-center gap-1 rounded-control border border-line-control px-2 py-0.5 font-medium text-ink transition-soft hover:bg-surface"
-          >
-            <IconGear size={14} />
-            기본 설정
-          </Link>
         </p>
         <h1
           id="hero-title"
@@ -118,6 +101,25 @@ export default function StartPage() {
           요청서, 사양서, 물량표를 한 패키지로 읽어 조항을 주관·참조 부서로 나누고, 요건 강도와 독소조항을 표시하고, 파일
           사이에 어긋나는 값을 찾습니다. 모든 결과는 원문 문장에 연결되고, 금액 조항은 열람 권한이 있는 팀에만 보입니다.
         </p>
+        <nav aria-label="회사 설정" className="grid grid-cols-2 gap-3">
+          <Link
+            href="/settings/departments"
+            data-testid="org-settings-link"
+            className="flex min-h-14 items-center justify-center gap-2 rounded-control border border-accent bg-accent-tint px-4 py-3 text-body font-semibold text-accent transition-soft hover:bg-accent hover:text-white focus-visible:outline-2"
+          >
+            부서 설정
+          </Link>
+          <Link
+            href="/settings/company"
+            data-testid="company-settings-link"
+            aria-label="사전원가 기본 설정"
+            title="사전원가 기본 설정 (단가표 · 회사 프로필 · 비율)"
+            className="flex min-h-14 items-center justify-center gap-2 rounded-control border border-accent bg-accent-tint px-4 py-3 text-body font-semibold text-accent transition-soft hover:bg-accent hover:text-white focus-visible:outline-2"
+          >
+            <IconGear size={20} />
+            기본 설정
+          </Link>
+        </nav>
         <ol className="grid gap-4 border-t border-line pt-6 md:grid-cols-3">
           {PRINCIPLES.map((p, i) => (
             <li key={p.title} className="flex flex-col gap-1">
