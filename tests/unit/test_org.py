@@ -210,8 +210,8 @@ def test_a_removed_company_department_is_restricted_again(client: TestClient, or
 
 def test_work_areas_route_matching_clauses(client: TestClient, org: Org):
     catalog = client.get("/meta").json()["data"]["work_areas"]
-    assert len({a["id"] for a in catalog}) == len(catalog) == 34
-    (team,) = save(client, dept("견적 담당", ["quote"], cost_visible=True))
+    assert len({a["id"] for a in catalog}) == len(catalog) == 10
+    (team,) = save(client, dept("견적 담당", ["pricing"], cost_visible=True))
     url = f"/rfqs/{org[1]}/clauses"
 
     def rows(**params):
@@ -220,5 +220,11 @@ def test_work_areas_route_matching_clauses(client: TestClient, org: Org):
     all_rows = rows()
     selected = rows(department=team["id"])
     assert 0 < len(selected) < len(all_rows)
-    assert all("quote" in row["work_areas"] for row in selected)
+    assert all("pricing" in row["work_areas"] for row in selected)
     assert PACKAGE_SECRET in str(selected)
+
+
+def test_an_earlier_fine_grained_area_is_saved_as_its_group(client: TestClient, org: Org):
+    """Settings made with the first 34 areas keep working: each id becomes the group that holds it."""
+    (team,) = save(client, dept("견적 담당", ["quote", "breakdown", "packaging"]))
+    assert team["areas"] == ["pricing", "delivery"]

@@ -20,11 +20,11 @@ import threading
 from collections.abc import Sequence
 from pathlib import Path
 
-from pydantic import Field, ValidationError
+from pydantic import Field, ValidationError, field_validator
 
 from autorfx.models import Group, Model
 from autorfx.rules import Ruleset
-from autorfx.work_areas import CATALOG
+from autorfx.work_areas import CATALOG, canonical_area
 
 log = logging.getLogger(__name__)
 
@@ -43,6 +43,12 @@ class OrgDepartment(Model):
     label: str = Field(min_length=1, max_length=MAX_LABEL)
     areas: tuple[str, ...] = Field(min_length=1)
     cost_visible: bool = False
+
+    @field_validator("areas")
+    @classmethod
+    def _current_ids(cls, areas: tuple[str, ...]) -> tuple[str, ...]:
+        """Settings saved with the earlier fine-grained work areas load as the grouped ones."""
+        return tuple(dict.fromkeys(canonical_area(a) for a in areas))
 
     @property
     def group(self) -> Group:
@@ -81,7 +87,7 @@ def validate(
             raise OrgError(f"'{label}': 같은 이름의 부서가 두 번 있습니다.")
         seen_labels.add(label.casefold())
 
-        areas = tuple(dict.fromkeys(str(a) for a in item.get("areas") or ()))
+        areas = tuple(dict.fromkeys(canonical_area(str(a)) for a in item.get("areas") or ()))
         if not areas:
             raise OrgError(f"'{label}': 받을 업무 영역을 하나 이상 고르세요.")
         if unknown := [a for a in areas if a not in known_areas]:
