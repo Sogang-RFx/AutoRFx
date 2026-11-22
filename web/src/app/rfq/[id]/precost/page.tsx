@@ -122,6 +122,20 @@ type ItemRow = {
   price_id: string | null;
 };
 type VolumeRow = { key: string; year: string; quantity: string };
+/** One line item priced on its own (line-item pricing). */
+type LineRow = {
+  key: string;
+  item: string;
+  target: string;
+  volumes: VolumeRow[];
+  items: ItemRow[];
+  /** Process requirements of the RFQ this line needs. */
+  processes: string[];
+  included: boolean;
+};
+type AwardChoice = "rfq" | "split" | "all_or_none";
+/** Line-item pricing as entered, or null when the RFQ is priced as one item. */
+type LineSpec = { lines: LineRow[]; award: AwardChoice; shared: string } | null;
 type Form = {
   currency: string;
   target_price: string;
@@ -196,6 +210,33 @@ type FieldSpec = {
   edit: () => ReactNode;
 };
 
+function volumesProblem(rows: VolumeRow[], where: string): string | null {
+  return rows.length === 0 || rows.some((v) => !isInt(v.year) || !isInt(v.quantity)) ? `${where}연도별 물량을 정수로 넣으세요.` : null;
+}
+
+function itemsProblem(rows: ItemRow[], where: string): string | null {
+  if (rows.length === 0) return `${where}원가 항목을 하나 이상 넣으세요.`;
+  for (const [i, row] of rows.entries()) {
+    if (!row.label.trim()) return `${where}원가 항목 ${i + 1}행의 이름을 넣으세요.`;
+    if (!isDecimal(row.quantity)) return `${where}'${row.label}'의 수량을 넣으세요.`;
+    if (!row.unit_price.trim())
+      return `${where}'${row.label}'의 단가를 모릅니다. 단가를 넣기 전에는 계산하지 않습니다(0으로 대신하지 않음).`;
+    if (!isDecimal(row.unit_price)) return `${where}'${row.label}'의 단가는 숫자로 넣으세요.`;
+  }
+  return null;
+}
+
+const toVolumes = (rows: VolumeRow[]) => rows.map((v) => ({ year: Number(v.year), quantity: Number(v.quantity) }));
+const toItems = (rows: ItemRow[]) =>
+  rows.map((r) => ({
+    label: r.label.trim(),
+    category: r.category,
+    quantity: r.quantity.trim(),
+    unit: r.unit.trim() || "개",
+    unit_price: r.unit_price.trim(),
+    price_id: r.price_id,
+  }));
+
 /** The request body, or the first problem that stops the calculation. */
 function build(
   form: Form,
@@ -203,41 +244,56 @@ function build(
   items: ItemRow[],
   answers: Record<string, Answer>,
   item: string,
+  spec: LineSpec,
+  processValues: string[],
 ): { inputs: PrecostInputs } | { problem: string } {
   if (!/^[A-Z]{3}$/.test(form.currency)) return { problem: "통화는 영문 대문자 3자로 넣으세요." };
-  if (form.target_price && !isDecimal(form.target_price)) return { problem: "목표가는 숫자로 넣으세요." };
   if (!isDecimal(form.reduction)) return { problem: "연간 인하율은 숫자(%)로 넣으세요." };
-  if (volumes.length === 0 || volumes.some((v) => !isInt(v.year) || !isInt(v.quantity)))
-    return { problem: "연도별 물량을 정수로 넣으세요." };
-  for (const [i, row] of items.entries()) {
-    if (!row.label.trim()) return { problem: `원가 항목 ${i + 1}행의 이름을 넣으세요.` };
-    if (!isDecimal(row.quantity)) return { problem: `'${row.label}'의 수량을 넣으세요.` };
-    if (!row.unit_price.trim())
-      return { problem: `'${row.label}'의 단가를 모릅니다. 단가를 넣기 전에는 계산하지 않습니다(0으로 대신하지 않음).` };
-    if (!isDecimal(row.unit_price)) return { problem: `'${row.label}'의 단가는 숫자로 넣으세요.` };
+  if (spec) {
+    if (spec.lines.length === 0) return { problem: "품목을 하나 이상 넣으세요." };
+    if (!isDecimal(spec.shared)) return { problem: "공통비는 숫자로 넣으세요(없으면 0)." };
+    for (const [i, line] of spec.lines.entries()) {
+      const where = `품목 ${i + 1}: `;
+      if (!line.item.trim()) return { problem: `${where}이름을 넣으세요.` };
+      if (line.target && !isDecimal(line.target)) return { problem: `${where}목표가는 숫자로 넣으세요.` };
+      const found = volumesProblem(line.volumes, where) ?? itemsProblem(line.items, where);
+      if (found) return { problem: found };
+    }
+  } else {
+    if (form.target_price && !isDecimal(form.target_price)) return { problem: "목표가는 숫자로 넣으세요." };
+    const found = volumesProblem(volumes, "") ?? itemsProblem(items, "");
+    if (found) return { problem: found };
   }
   if (form.payment_days && !isInt(form.payment_days)) return { problem: "결제 기한은 일수로 넣으세요." };
   if (!isDecimal(form.tooling_amount)) return { problem: "금형비는 숫자로 넣으세요(없으면 0)." };
   if (form.capacity && !isDecimal(form.capacity)) return { problem: "가동률은 숫자(%)로 넣으세요." };
   if (form.strategic && (!isInt(form.strategic) || Number(form.strategic) > 100))
     return { problem: "전략 점수는 0~100 사이 정수로 넣으세요." };
+  const lines = spec
+    ? {
+        lines: spec.lines.map((l) => ({
+          item: l.item.trim(),
+          target_price: l.target.trim() || null,
+          volumes: toVolumes(l.volumes),
+          items: toItems(l.items),
+          // Every process ticked: the line needs all of them, which is what null says.
+          processes: l.processes.length === processValues.length ? null : l.processes,
+          included: l.included,
+        })),
+        award: spec.award === "rfq" ? null : spec.award,
+        shared_costs: spec.shared.trim(),
+      }
+    : {};
   return {
     inputs: {
       item,
       currency: form.currency,
-      target_price: form.target_price.trim() || null,
-      volumes: volumes.map((v) => ({ year: Number(v.year), quantity: Number(v.quantity) })),
+      target_price: spec ? null : form.target_price.trim() || null,
+      volumes: spec ? [] : toVolumes(volumes),
       annual_reduction_rate: percentToFraction(form.reduction),
       reduction_starts_at_index: Number(form.starts),
       payment_days: form.payment_days ? Number(form.payment_days) : null,
-      items: items.map((r) => ({
-        label: r.label.trim(),
-        category: r.category,
-        quantity: r.quantity.trim(),
-        unit: r.unit.trim() || "개",
-        unit_price: r.unit_price.trim(),
-        price_id: r.price_id,
-      })),
+      items: spec ? [] : toItems(items),
       tooling: {
         amount: form.tooling_amount.trim(),
         payment: form.tooling_payment,
@@ -248,6 +304,7 @@ function build(
       capacity_utilization: form.capacity ? percentToFraction(form.capacity) : null,
       strategic: form.strategic ? Number(form.strategic) : null,
       answers,
+      ...lines,
     },
   };
 }
@@ -301,6 +358,14 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
   const [result, setResult] = useState<PrecostResponse | null>(null);
   const [error, setError] = useState<{ message: string; forbidden: boolean } | null>(null);
   const [isBusy, setIsBusy] = useState(false);
+  const processValues = setup.requirements.filter((r) => r.requirement === "process").map((r) => r.value);
+  const [byLine, setByLine] = useState(setup.award.mode === "split");
+  const [award, setAward] = useState<AwardChoice>("rfq");
+  const [shared, setShared] = useState("0");
+  const [lines, setLines] = useState<LineRow[]>(() => [
+    { key: newKey(), item: setup.cost_inputs.item || "품목 1", target: "", volumes: initialVolumes(setup), items: initialItems(setup), processes: processValues, included: true },
+  ]);
+  const effectiveAward = award === "rfq" ? (setup.award.mode ?? "all_or_none") : award;
 
   const setForm = (patch: Partial<Form>) => setFormState((f) => ({ ...f, ...patch }));
   const { departments } = useTeamGroup();
@@ -311,7 +376,7 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
   const settled = setup.requirements.filter((r) => r.status !== "ask");
   const unanswered = asked.filter((r) => !answers[r.key]);
   const pickers = conflicts(setup.cost_inputs.candidates);
-  const built = build(form, volumes, items, answers, setup.cost_inputs.item);
+  const built = build(form, volumes, items, answers, setup.cost_inputs.item, byLine ? { lines, award, shared } : null, processValues);
   const problem = "problem" in built ? built.problem : unanswered.length > 0 ? `넉아웃 질문 ${unanswered.length}개에 답하세요.` : null;
 
   async function submit() {
@@ -444,8 +509,10 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
       edit: () => switchEdit("fx_adjusted"),
     },
   ];
-  const stated = fields.filter((f) => f.stated);
-  const missing = fields.filter((f) => !f.stated);
+  // Per line item, the target and the volumes are entered on each line.
+  const shown = byLine ? fields.filter((f) => f.id !== "target_price" && f.id !== "volumes") : fields;
+  const stated = shown.filter((f) => f.stated);
+  const missing = shown.filter((f) => !f.stated);
   const hints = (["material", "net_weight", "thickness", "incoterm"] as const)
     .map((field) => candidate(setup, field))
     .filter((c): c is CostInputCandidate => !!c && c.value !== null)
@@ -510,7 +577,44 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
           </ul>
         </Step>
 
-        <Step n="④" title="추가로 필요한 값">
+        <Step n="④" title="낙찰 방식·입찰 단위">
+          <p className="flex flex-wrap items-center gap-2 text-label text-ink-muted" data-testid="award-mode" data-mode={setup.award.mode ?? "none"}>
+            <span className="font-semibold text-ink">RFQ: {setup.award.label}</span>
+            <Cite evidence={setup.award.evidence} />
+          </p>
+          <div className="flex flex-wrap gap-x-4 gap-y-1.5" role="radiogroup" aria-label="입찰 단위">
+            <label className="flex items-center gap-1.5 text-dense text-ink">
+              <input type="radio" name="bid-unit" checked={!byLine} onChange={() => setByLine(false)} data-testid="bid-whole" />
+              RFQ 전체를 한 품목으로 계산
+            </label>
+            <label className="flex items-center gap-1.5 text-dense text-ink">
+              <input type="radio" name="bid-unit" checked={byLine} onChange={() => setByLine(true)} data-testid="bid-lines" />
+              품목별로 계산
+            </label>
+          </div>
+          {byLine && (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field
+                label="낙찰 방식"
+                hint={effectiveAward === "split" ? "품목마다 판정하고, 입찰할 품목만 골라 합계를 냅니다." : "모든 품목을 입찰하고 전체 합계로 판정합니다."}
+              >
+                <select className={input} value={award} data-testid="input-award" onChange={(e) => setAward(e.target.value as AwardChoice)}>
+                  <option value="rfq">
+                    RFQ대로 ({setup.award.mode === "split" ? "품목별 낙찰" : setup.award.mode === "all_or_none" ? "일괄 낙찰" : "명시 없음 → 일괄로 가정"})
+                  </option>
+                  <option value="split">품목별 낙찰</option>
+                  <option value="all_or_none">일괄 낙찰</option>
+                </select>
+              </Field>
+              <Field label={`공통비 (총액, ${form.currency})`} hint="여러 품목이 함께 쓰는 금형·셋업비. 입찰하는 품목의 물량 비율로 나눕니다.">
+                <input className={cx(input, "tabular")} value={shared} inputMode="decimal" data-testid="input-shared"
+                  onChange={(e) => setShared(e.target.value.trim())} />
+              </Field>
+            </div>
+          )}
+        </Step>
+
+        <Step n="⑤" title="추가로 필요한 값">
           {missing.length > 0 && (
             <div className="flex flex-col gap-3" data-testid="missing-values">
               <p className="text-label text-ink-muted">RFQ에 적혀 있지 않은 값입니다. 직접 넣어 주세요.</p>
@@ -566,6 +670,18 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
             </fieldset>
           )}
 
+          {byLine ? (
+            <LinesEditor
+              lines={lines}
+              setLines={setLines}
+              prices={prices}
+              currency={form.currency}
+              per={per}
+              processValues={processValues}
+              split={effectiveAward === "split"}
+              suggested={result?.data.summary?.suggested ?? null}
+            />
+          ) : (
           <div className="flex flex-col gap-1.5">
             <span className="text-label font-semibold text-ink-muted">원가 항목 ({per}당 수량 × 단가)</span>
             {hints.length > 0 && (
@@ -580,12 +696,16 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
             )}
             <ItemsEditor rows={items} prices={prices} currency={form.currency} per={per} patch={patchItem} setRows={setItems} />
           </div>
+          )}
 
           <div className="grid gap-3 sm:grid-cols-3">
+            {!byLine && (
             <Field label="금형비 (총액)" hint="없으면 0">
               <input className={cx(input, "tabular")} value={form.tooling_amount} inputMode="decimal" data-testid="input-tooling"
                 onChange={(e) => setForm({ tooling_amount: e.target.value.trim() })} />
             </Field>
+            )}
+            {!byLine && (
             <Field label="금형비 회수">
               <select className={input} value={form.tooling_payment}
                 onChange={(e) => setForm({ tooling_payment: e.target.value as Form["tooling_payment"] })}>
@@ -594,7 +714,8 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
                 <option value="deferred">후불(N년 뒤)</option>
               </select>
             </Field>
-            {form.tooling_payment === "deferred" && (
+            )}
+            {!byLine && form.tooling_payment === "deferred" && (
               <Field label="후불 연수">
                 <input className={cx(input, "tabular")} value={form.deferred_years} inputMode="numeric"
                   onChange={(e) => setForm({ deferred_years: e.target.value.trim() })} />
@@ -863,6 +984,123 @@ function ItemsEditor({
   );
 }
 
+function LinesEditor({
+  lines,
+  setLines,
+  prices,
+  currency,
+  per,
+  processValues,
+  split,
+  suggested,
+}: {
+  lines: LineRow[];
+  setLines: (fn: (rows: LineRow[]) => LineRow[]) => void;
+  prices: PriceRow[];
+  currency: string;
+  per: string;
+  processValues: string[];
+  /** Lines can be left out only when the award is split. */
+  split: boolean;
+  /** Indexes of the lines the last calculation found biddable, when it priced lines. */
+  suggested: number[] | null;
+}) {
+  const patch = (key: string, p: Partial<LineRow>) => setLines((list) => list.map((l) => (l.key === key ? { ...l, ...p } : l)));
+  return (
+    <div className="flex flex-col gap-3" data-testid="lines">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-label font-semibold text-ink-muted">품목 {lines.length}개</span>
+        {split && suggested && suggested.length > 0 && (
+          <Button
+            variant="ghost"
+            data-testid="lines-suggested"
+            onClick={() => setLines((list) => list.map((l, i) => ({ ...l, included: suggested.includes(i) })))}
+          >
+            추천 품목만 입찰
+          </Button>
+        )}
+      </div>
+      {lines.map((line, i) => (
+        <fieldset key={line.key} className={cx("flex flex-col gap-3 rounded-control border border-line p-3", split && !line.included && "opacity-60")}
+          data-testid="line">
+          <legend className="px-1 text-label font-semibold text-ink-muted">품목 {i + 1}</legend>
+          <div className="flex flex-wrap items-end gap-3">
+            <Field label="품목 이름">
+              <input className={cx(input, "w-64")} value={line.item} maxLength={200} aria-label={`품목 ${i + 1} 이름`}
+                onChange={(e) => patch(line.key, { item: e.target.value })} />
+            </Field>
+            <Field label={`목표가 (${per}당)`} hint="없으면 비워 두세요">
+              <input className={cx(input, "w-32 tabular")} value={line.target} inputMode="decimal" aria-label={`품목 ${i + 1} 목표가`}
+                onChange={(e) => patch(line.key, { target: e.target.value.trim() })} />
+            </Field>
+            <label className="flex min-h-9 items-center gap-1.5 text-dense text-ink">
+              <input type="checkbox" checked={split ? line.included : true} disabled={!split} aria-label={`품목 ${i + 1} 입찰 포함`}
+                onChange={(e) => patch(line.key, { included: e.target.checked })} />
+              입찰 포함{!split && " (일괄 낙찰)"}
+            </label>
+            {lines.length > 1 && (
+              <Button variant="ghost" className="ml-auto" aria-label={`품목 ${i + 1} 삭제`}
+                onClick={() => setLines((list) => list.filter((l) => l.key !== line.key))}>
+                품목 삭제
+              </Button>
+            )}
+          </div>
+          <VolumesEditor rows={line.volumes} setRows={(rows) => patch(line.key, { volumes: rows })} per={per} />
+          {processValues.length > 0 && (
+            <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+              <span className="text-label font-semibold text-ink-muted">필요한 공정</span>
+              {processValues.map((v) => (
+                <label key={v} className="flex items-center gap-1.5 text-dense text-ink">
+                  <input
+                    type="checkbox"
+                    aria-label={`품목 ${i + 1} 공정 ${v}`}
+                    checked={line.processes.includes(v)}
+                    onChange={(e) =>
+                      patch(line.key, { processes: e.target.checked ? [...line.processes, v] : line.processes.filter((x) => x !== v) })
+                    }
+                  />
+                  {v}
+                </label>
+              ))}
+            </div>
+          )}
+          <div className="flex flex-col gap-1.5">
+            <span className="text-label font-semibold text-ink-muted">원가 항목 ({per}당 수량 × 단가)</span>
+            <ItemsEditor
+              rows={line.items}
+              prices={prices}
+              currency={currency}
+              per={per}
+              patch={(key, p) => patch(line.key, { items: line.items.map((r) => (r.key === key ? { ...r, ...p } : r)) })}
+              setRows={(fn) => setLines((list) => list.map((l) => (l.key === line.key ? { ...l, items: fn(l.items) } : l)))}
+            />
+          </div>
+        </fieldset>
+      ))}
+      <Button
+        variant="ghost"
+        data-testid="line-add"
+        onClick={() =>
+          setLines((list) => [
+            ...list,
+            {
+              key: newKey(),
+              item: `품목 ${list.length + 1}`,
+              target: "",
+              volumes: (list[0]?.volumes ?? []).map((v) => ({ ...v, key: newKey() })),
+              items: [{ key: newKey(), label: "", category: "material", quantity: "", unit: "kg", unit_price: "", price_id: null }],
+              processes: processValues,
+              included: true,
+            },
+          ])
+        }
+      >
+        품목 추가
+      </Button>
+    </div>
+  );
+}
+
 // ── result ──────────────────────────────────────────────────────────────────
 const DECISION: Record<DecisionStatus, { label: string; className: string; icon: ReactNode }> = {
   go: { label: "Go", className: "border-ok bg-ok-tint text-ok", icon: <IconCheck size={16} /> },
@@ -882,9 +1120,9 @@ function grouped(value: string): string {
   return `${sign}${digits}${kept ? `.${kept}` : ""}`;
 }
 
-function QuoteTiles({ run }: { run: PrecostResponse }) {
-  const c = run.data.cost;
-  const cur = run.data.currency;
+type Cost = NonNullable<PrecostResponse["data"]["cost"]>;
+
+function QuoteTiles({ c, cur }: { c: Cost; cur: string }) {
   const resale = c.cost_basis === "resale";
   const tiles = [
     { key: "min", title: "최소 견적 (수명주기 평균 마진 유지)", unit: c.min_quote, total: c.totals.min_quote, markup: c.markup?.min_quote, tone: "bg-canvas", titleTone: "text-ink-muted" },
@@ -921,13 +1159,9 @@ function QuoteTiles({ run }: { run: PrecostResponse }) {
   );
 }
 
-function Result({ run }: { run: PrecostResponse }) {
-  const d = run.data;
-  const cur = d.currency;
+function DecisionBox({ d }: { d: PrecostResponse["data"] }) {
   const decision = DECISION[d.decision.status];
-  const resale = d.cost.cost_basis === "resale";
   return (
-    <div className="flex flex-col gap-4 p-4" data-testid="precost-result">
       <section
         aria-labelledby="decision-title"
         className={cx("flex flex-col gap-2 rounded-control border p-3", decision.className)}
@@ -957,22 +1191,167 @@ function Result({ run }: { run: PrecostResponse }) {
           결과이며, 입찰 여부는 원가 담당이 정합니다.
         </p>
       </section>
+  );
+}
 
-      <QuoteTiles run={run} />
+function ScoreTable({ score }: { score: NonNullable<PrecostResponse["data"]["score"]> }) {
+  return (
+    <table className="w-full text-left text-dense tabular" data-testid="score-items">
+      <caption className="pb-1 text-left text-label font-semibold text-ink-muted">
+        가중 점수 {score.total}점 (Go ≥ 70 · 조건부 50~70)
+      </caption>
+      <tbody>
+        {score.items.map((s) => (
+          <tr key={s.id} className="border-t border-line">
+            <td className="py-1.5 pr-2 text-ink">{s.label}</td>
+            <td className="py-1.5 pr-2 text-right text-label text-ink-muted">×{s.weight}%</td>
+            <td className="py-1.5 pr-2 text-right font-semibold text-ink">{s.score}</td>
+            <td className="py-1.5 text-label text-ink-muted">{s.note}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function KnockoutStatus({ k }: { k: PrecostResponse["data"]["knockout"] }) {
+  if (k.checks.length === 0) return null;
+  return (
+    <p className="text-label text-ink-muted" data-testid="knockout-status" data-status={k.status}>
+      1차 넉아웃:{" "}
+      <strong className="text-ink">{k.status === "passed" ? "모두 충족" : k.status === "failed" ? "불충족 있음" : "판단 불가 있음"}</strong> (
+      {k.checks.length}개 조건)
+    </p>
+  );
+}
+
+const AWARD_SOURCE = { input: "직접 고름", rfq: "RFQ에서 읽음", assumed: "RFQ에 없어 가정" } as const;
+
+function LinesResult({ d }: { d: PrecostResponse["data"] }) {
+  const cur = d.currency;
+  const lines = d.lines ?? [];
+  const summary = d.summary;
+  if (!summary) return null;
+  const split = d.award?.mode === "split";
+  return (
+    <div className="flex flex-col gap-4 p-4" data-testid="precost-result">
+      <DecisionBox d={d} />
+      {d.award && (
+        <p className="text-label text-ink-muted" data-testid="result-award">
+          낙찰 방식: <strong className="text-ink">{d.award.label}</strong> ({AWARD_SOURCE[d.award.source]}) · 입찰 품목 {summary.lines_bid}/
+          {lines.length}개
+        </p>
+      )}
+      <div className="grid grid-cols-2 gap-3">
+        <div className="flex flex-col gap-1 rounded-control bg-canvas p-3" data-testid="lines-min-total">
+          <span className="text-label text-ink-muted">최소 견적 총액 (입찰 품목 합계)</span>
+          <span className="text-heading font-semibold text-ink tabular">
+            {grouped(summary.totals.min_quote)} <span className="text-label">{cur}</span>
+          </span>
+        </div>
+        <div className="flex flex-col gap-1 rounded-control bg-accent-tint p-3" data-testid="lines-safe-total">
+          <span className="text-label text-accent">안전 견적 총액</span>
+          <span className="text-heading font-semibold text-ink tabular">
+            {grouped(summary.totals.safe_quote)} <span className="text-label">{cur}</span>
+          </span>
+        </div>
+      </div>
       <p className="-mt-2 text-label text-ink-muted tabular">
-        {resale ? "단위당 원가" : "개당 원가"} {d.cost.piece_cost}
-        {d.cost.tooling_per_piece && Number(d.cost.tooling_per_piece) > 0 ? ` + 금형 ${d.cost.tooling_per_piece}` : ""} · 수명주기 계수 {d.cost.lifetime_factor}
-        {d.cost.material_indexed ? " · 재료비 연동(인하 제외)" : ""}
+        전체 {summary.total_quantity.toLocaleString("ko-KR")}개
+        {summary.target_total !== null ? ` · 목표가 총액 ${grouped(summary.target_total)} ${cur}` : " · 목표가가 없는 품목이 있어 목표가 총액 없음"}
+        {Number(summary.shared_costs) > 0 ? ` · 공통비 ${grouped(summary.shared_costs)} ${cur} → 개당 ${summary.shared_per_unit} 배분` : ""}
+      </p>
+
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[640px] text-left text-dense tabular" data-testid="line-results">
+          <caption className="pb-1 text-left text-label font-semibold text-ink-muted">품목별 결과 (단가는 개당)</caption>
+          <thead className="text-label text-ink-muted">
+            <tr>
+              <th scope="col" className="py-1 pr-2">품목</th>
+              <th scope="col" className="px-1 py-1 text-right">목표가</th>
+              <th scope="col" className="px-1 py-1 text-right">최소</th>
+              <th scope="col" className="px-1 py-1 text-right">안전</th>
+              <th scope="col" className="px-1 py-1 text-right">총 견적 (최소)</th>
+              <th scope="col" className="py-1 pl-2">판정</th>
+            </tr>
+          </thead>
+          <tbody>
+            {lines.map((l, i) => {
+              const status = DECISION[l.decision.status];
+              return (
+                <tr key={`${l.item}-${i}`} className={cx("border-t border-line", !l.included && "text-ink-muted")} data-testid="line-result"
+                  data-status={l.decision.status} data-included={l.included}>
+                  <td className="py-1.5 pr-2">
+                    <span className={cx("font-medium", l.included ? "text-ink" : "line-through")}>{l.item}</span>
+                    {split && summary.suggested.includes(i) && <span className="ml-1.5 text-label text-ok">추천</span>}
+                    {!l.included && <span className="ml-1.5 text-label">입찰 제외</span>}
+                  </td>
+                  <td className="px-1 py-1.5 text-right">{l.target_price ?? "–"}</td>
+                  <td className="px-1 py-1.5 text-right">{l.min_quote}</td>
+                  <td className="px-1 py-1.5 text-right">{l.safe_quote}</td>
+                  <td className="px-1 py-1.5 text-right">{grouped(l.totals.min_quote)}</td>
+                  <td className="py-1.5 pl-2">
+                    <span className={cx("inline-flex rounded-control border px-1.5 text-label font-semibold", status.className)}>
+                      {status.label}
+                      {l.decision.score !== null ? ` ${l.decision.score}` : ""}
+                    </span>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <details className="text-dense">
+        <summary className="cursor-pointer text-label font-semibold text-ink-muted">품목별 판정 근거와 원가 구성</summary>
+        <ul className="mt-2 flex flex-col gap-3">
+          {lines.map((l, i) => (
+            <li key={`${l.item}-${i}`} className="flex flex-col gap-1">
+              <span className="font-semibold text-ink">{l.item}</span>
+              <ul className="list-disc pl-5 text-label text-ink">
+                {l.decision.reasons.map((r) => (
+                  <li key={r}>{r}</li>
+                ))}
+              </ul>
+              <p className="text-label text-ink-muted tabular">
+                {l.lines.map((c) => `${c.label} ${c.value}`).join(" · ")} → 개당 원가 {l.piece_cost} {cur}
+              </p>
+            </li>
+          ))}
+        </ul>
+      </details>
+      {d.score && <ScoreTable score={d.score} />}
+      <KnockoutStatus k={d.knockout} />
+    </div>
+  );
+}
+
+function Result({ run }: { run: PrecostResponse }) {
+  const d = run.data;
+  if (d.lines) return <LinesResult d={d} />;
+  if (!d.cost) return null;
+  const cost = d.cost;
+  const cur = d.currency;
+  const resale = cost.cost_basis === "resale";
+  return (
+    <div className="flex flex-col gap-4 p-4" data-testid="precost-result">
+      <DecisionBox d={d} />
+
+      <QuoteTiles c={cost} cur={cur} />
+      <p className="-mt-2 text-label text-ink-muted tabular">
+        {resale ? "단위당 원가" : "개당 원가"} {cost.piece_cost}
+        {cost.tooling_per_piece && Number(cost.tooling_per_piece) > 0 ? ` + 금형 ${cost.tooling_per_piece}` : ""} · 수명주기 계수 {cost.lifetime_factor}
+        {cost.material_indexed ? " · 재료비 연동(인하 제외)" : ""}
         {resale ? " · 유통 산식: 불량·판관비 가산 없음, 운영비는 원가 항목으로 직접 반영" : ""}
       </p>
 
-      {d.cost.lines.length > 0 && (
+      {cost.lines.length > 0 && (
         <table className="w-full text-left text-dense tabular" data-testid="cost-lines">
           <caption className="pb-1 text-left text-label font-semibold text-ink-muted">
             원가 구성 ({resale ? "단위당" : "개당"}, 가장 불리한 경우)
           </caption>
           <tbody>
-            {d.cost.lines.map((l) => (
+            {cost.lines.map((l) => (
               <tr key={l.category} className="border-t border-line" data-category={l.category}>
                 <td className="py-1.5 pr-2 text-ink">{l.label}</td>
                 <td className="py-1.5 text-right font-semibold text-ink">
@@ -984,39 +1363,14 @@ function Result({ run }: { run: PrecostResponse }) {
         </table>
       )}
 
-      {d.score && (
-        <table className="w-full text-left text-dense tabular" data-testid="score-items">
-          <caption className="pb-1 text-left text-label font-semibold text-ink-muted">
-            가중 점수 {d.score.total}점 (Go ≥ 70 · 조건부 50~70)
-          </caption>
-          <tbody>
-            {d.score.items.map((s) => (
-              <tr key={s.id} className="border-t border-line">
-                <td className="py-1.5 pr-2 text-ink">{s.label}</td>
-                <td className="py-1.5 pr-2 text-right text-label text-ink-muted">×{s.weight}%</td>
-                <td className="py-1.5 pr-2 text-right font-semibold text-ink">{s.score}</td>
-                <td className="py-1.5 text-label text-ink-muted">{s.note}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
+      {d.score && <ScoreTable score={d.score} />}
+      <KnockoutStatus k={d.knockout} />
 
-      {d.knockout.checks.length > 0 && (
-        <p className="text-label text-ink-muted" data-testid="knockout-status" data-status={d.knockout.status}>
-          1차 넉아웃:{" "}
-          <strong className="text-ink">
-            {d.knockout.status === "passed" ? "모두 충족" : d.knockout.status === "failed" ? "불충족 있음" : "판단 불가 있음"}
-          </strong>{" "}
-          ({d.knockout.checks.length}개 조건)
-        </p>
-      )}
-
-      <details className="text-dense" open={d.cost.scenarios.length > 1}>
+      <details className="text-dense" open={cost.scenarios.length > 1}>
         <summary className="cursor-pointer text-label font-semibold text-ink-muted">충격과 충돌 경우</summary>
         <table className="mt-1 w-full text-left tabular" data-testid="shocks">
           <tbody>
-            {d.cost.shocks.map((s) => (
+            {cost.shocks.map((s) => (
               <tr key={s.id} className="border-t border-line">
                 <td className={cx("py-1.5 pr-2", s.applied ? "text-ink" : "text-ink-muted line-through")}>{s.label}</td>
                 <td className="py-1.5 pr-2 text-right font-semibold text-ink">
@@ -1027,11 +1381,11 @@ function Result({ run }: { run: PrecostResponse }) {
             ))}
           </tbody>
         </table>
-        {d.cost.scenarios.length > 1 && (
+        {cost.scenarios.length > 1 && (
           <table className="mt-3 w-full text-left tabular" data-testid="scenarios">
             <caption className="pb-1 text-left text-label text-ink-muted">충돌 값별 최소 견적 (가장 불리한 값을 씀)</caption>
             <tbody>
-              {d.cost.scenarios.map((s) => (
+              {cost.scenarios.map((s) => (
                 <tr key={s.label} className="border-t border-line">
                   <td className="py-1.5 pr-2 text-ink">{s.label}</td>
                   <td className="py-1.5 text-right font-semibold text-ink">
@@ -1045,9 +1399,9 @@ function Result({ run }: { run: PrecostResponse }) {
       </details>
 
       <p className="text-label text-ink-muted tabular" data-testid="npv">
-        참고 NPV ({d.cost.npv.price_basis === "target_price" ? "목표가" : "최소 견적"} 기준, 할인율{" "}
-        {fractionToPercent(d.cost.npv.discount_rate)}%): <strong className="text-ink">{d.cost.npv.value} {cur}</strong>
-        {d.cost.npv.payback_year !== null ? ` · 회수 ${d.cost.npv.payback_year}년` : " · 기간 내 회수 안 됨"} · 판정에는 쓰지
+        참고 NPV ({cost.npv.price_basis === "target_price" ? "목표가" : "최소 견적"} 기준, 할인율{" "}
+        {fractionToPercent(cost.npv.discount_rate)}%): <strong className="text-ink">{cost.npv.value} {cur}</strong>
+        {cost.npv.payback_year !== null ? ` · 회수 ${cost.npv.payback_year}년` : " · 기간 내 회수 안 됨"} · 판정에는 쓰지
         않습니다.
       </p>
     </div>

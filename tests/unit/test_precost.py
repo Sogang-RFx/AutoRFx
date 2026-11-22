@@ -33,7 +33,7 @@ from autorfx.precost import (
 from autorfx.precost.calc import cash_flows, lifetime_factor, npv, payback, piece_costs
 from autorfx.precost.company import CompanyStore, PriceRow, defaults, validate
 from autorfx.precost.inputs import reduction
-from autorfx.precost.setup import suggested_items
+from autorfx.precost.setup import award_mode, suggested_items
 from autorfx.rules import COST_FIELDS, Ruleset
 from contract_schema import assert_valid
 from factories import make_clause, make_locus, make_manifest
@@ -717,3 +717,112 @@ def test_the_year_the_reduction_starts_is_read_from_the_sentence(text: str, rate
         text=text,
     )
     assert reduction([mention]) == (D(rate) / 100, starts)
+
+
+# ── line items (split or all-or-none award) ─────────────────────────────────
+def line(item: str, target: str | None, **change: object) -> dict:
+    return {
+        "item": item,
+        "target_price": target,
+        "volumes": [{"year": 2028, "quantity": 100_000}, {"year": 2029, "quantity": 100_000}],
+        "items": [i.model_dump() for i in ITEMS],
+        **change,
+    }
+
+
+def run_lines(ruleset: Ruleset, company: Company, *lines: dict, context=None, **change: object) -> dict:
+    base = {"item": "RFQ", "currency": "EUR", "volumes": [], "items": [], "lines": list(lines)}
+    result = evaluate(
+        PrecostInput.model_validate({**base, **change}),
+        context=context or RfqCostContext(classification=MANUFACTURING),
+        company=company,
+        resolved={},
+        ruleset=ruleset,
+        today=TODAY,
+    )
+    assert_valid("precost", {"data": result, "provenance": {"precost": "real"}})
+    return result
+
+
+def test_a_split_award_judges_each_line_and_suggests_the_ones_that_pass(ruleset: Ruleset, company: Company):
+    both = run_lines(ruleset, company, line("A", "4"), line("B", "2"), award="split")
+    a, b = both["lines"]
+    assert a["decision"]["status"] in {"go", "conditional"}
+    assert (b["decision"]["status"], b["decision"]["rule"]) == ("no_go", "price_knockout")
+    assert both["summary"]["suggested"] == [0]
+    assert both["award"] == {"mode": "split", "label": "품목별 낙찰", "source": "input"}
+
+    only_a = run_lines(ruleset, company, line("A", "4"), line("B", "2", included=False), award="split")
+    assert only_a["summary"]["lines_bid"] == 1
+    assert only_a["summary"]["totals"] == only_a["lines"][0]["totals"]
+    assert only_a["decision"]["status"] in {"go", "conditional"}
+    assert only_a["lines"][1]["included"] is False
+
+
+def test_an_all_or_none_award_bids_every_line_and_lets_margins_cover_a_loss(
+    ruleset: Ruleset, company: Company
+):
+    result = run_lines(ruleset, company, line("A", "6"), line("B", "3", included=False), award="all_or_none")
+    assert all(row["included"] for row in result["lines"])
+    assert result["lines"][1]["decision"]["rule"] == "price_knockout"
+    assert result["decision"]["rule"] == "score"
+    assert any("다른 품목의 마진" in r for r in result["decision"]["reasons"])
+    minimum = sum(D(row["totals"]["min_quote"]) for row in result["lines"])
+    assert result["summary"]["totals"]["min_quote"] == format(minimum, "f")
+
+
+def test_shared_costs_are_split_by_volume_over_the_lines_bid(ruleset: Ruleset, company: Company):
+    plain = run_lines(ruleset, company, line("A", "4"), line("B", "4"), award="split")
+    shared = run_lines(
+        ruleset, company, line("A", "4"), line("B", "4", included=False), award="split", shared_costs="4000"
+    )
+    assert shared["summary"]["shared_per_unit"] == "0.0200"  # 4 000 over A's 200 000 pieces
+    added = D(shared["lines"][0]["piece_cost"]) - D(plain["lines"][0]["piece_cost"])
+    assert abs(added - D("0.02") * UPLIFT) < D("0.0001")
+
+
+def test_a_process_knocks_out_only_the_lines_that_need_it(ruleset: Ruleset, company: Company):
+    clauses = rfq_clauses()
+    checks = requirements(clauses, [payment_mention(clauses)], company, ruleset)
+    context = RfqCostContext(requirements=checks, classification=MANUFACTURING)
+    die_cast = next(c["key"] for c in checks if c["value"] == "다이캐스팅")
+    answers = {c["key"]: "yes" for c in checks if c["status"] == "ask"} | {die_cast: "no"}
+    lines = (line("주조 하우징", "4", processes=["다이캐스팅"]), line("브래킷", "4", processes=[]))
+    result = run_lines(ruleset, company, *lines, context=context, award="split", answers=answers)
+    housing, bracket = result["lines"]
+    assert housing["decision"]["rule"] == "knockout"
+    assert bracket["decision"]["rule"] != "knockout"
+    assert result["summary"]["suggested"] == [1]
+    assert result["decision"]["status"] == "no_go" and "빼세요" in result["decision"]["reasons"][0]
+
+    kept = run_lines(
+        ruleset,
+        company,
+        lines[0] | {"included": False},
+        lines[1],
+        context=context,
+        award="split",
+        answers=answers,
+    )
+    assert kept["decision"]["rule"] != "knockout"
+
+
+def test_without_a_stated_award_all_or_none_is_assumed(ruleset: Ruleset, company: Company):
+    result = run_lines(ruleset, company, line("A", "4"), line("B", "4"))
+    assert result["award"]["source"] == "assumed" and result["award"]["mode"] == "all_or_none"
+    assert any("일괄 낙찰로 가정" in r for r in result["decision"]["reasons"])
+
+
+@pytest.mark.parametrize(
+    ("text", "mode"),
+    [
+        ("The County reserves the right to award by line item.", "split"),
+        ("Die Vergabe erfolgt losweise.", "split"),
+        ("Partial bids will not be accepted; award by lot is not possible.", "all_or_none"),
+        ("Payment within 30 days.", None),
+    ],
+)
+def test_the_award_mode_is_read_from_the_rfq(ruleset: Ruleset, text: str, mode: str | None):
+    found = award_mode([make_clause("1", [text])], ruleset)
+    assert found["mode"] == mode
+    assert (found["evidence"] is not None) == (mode is not None)

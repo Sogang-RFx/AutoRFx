@@ -31,6 +31,7 @@ from autorfx.precost import (
     PrecostInputError,
     RfqCostContext,
     StoredAnswer,
+    award_mode,
     classify,
     evaluate,
     pass_through,
@@ -377,6 +378,7 @@ def _context(state: AppState, rfq_id: str | None) -> RfqCostContext:
         requirements=tuple(requirements(data.clauses, data.mentions, company, state.ruleset)),
         pass_through=tuple(k for k, v in found.items() if v),
         red_flag_types=tuple(sorted({a.red_flag.type for a in data.analyses if a.red_flag})),
+        award=award_mode(data.clauses, state.ruleset)["mode"],
     )
 
 

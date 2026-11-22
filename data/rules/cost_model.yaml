@@ -237,6 +237,39 @@ pass_through:
       ko:
         - '환율 (변동 )?(조정|연동)'
 
+# 낙찰 방식. 품목별 낙찰이 가능하면 품목마다 판정하고 입찰할 품목을 고른다.
+# 일괄 낙찰만 가능하면 품목별로 계산하되 전체 합계로 한 번 판정한다.
+# 둘 다 맞지 않으면 "명시 없음"으로 두고, 안전하게 일괄로 가정한 뒤 화면에서 바꿀 수 있게 한다.
+award:
+  split:
+    label: 품목별 낙찰 가능
+    patterns:
+      en:
+        - 'award(ed)? (on a |by |per )?(line[- ]item|item[- ]by[- ]item|individual item|lot)'
+        - '(partial|split|multiple) awards?'
+        - 'award .{0,40}(in part|in whole or in part|any or all items?)'
+        - 'bid (on )?(any|one) or (more|all) (items|lots)'
+      de:
+        - 'Teil(vergabe|lose?)'
+        - 'losweise'
+        - 'Vergabe nach Losen'
+      ko:
+        - '품목별 (낙찰|계약|입찰)'
+        - '부분 낙찰'
+  all_or_none:
+    label: 일괄 낙찰만 가능
+    patterns:
+      en:
+        - 'all[- ]or[- ]none'
+        - 'award(ed)? .{0,30}(as a whole|to a single (bidder|supplier|vendor))'
+        - 'bid (on )?all items'
+        - 'partial (bids|offers|quotations) (will|shall) not be (accepted|considered)'
+      de:
+        - 'Gesamtvergabe'
+        - 'Teilangebote (sind )?(nicht zugelassen|unzulässig)'
+      ko:
+        - '일괄 (낙찰|계약|입찰)'
+
 # ⑧ 가중 점수. 가중치 합은 100이어야 한다.
 scoring:
   weights:

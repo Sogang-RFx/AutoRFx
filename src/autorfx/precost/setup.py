@@ -66,7 +66,7 @@ def classify(clauses: Sequence[Clause], ruleset: Ruleset) -> dict:
         "manufacturing": "부품 제조 RFQ입니다. 목표가와 비교해 판정합니다.",
         "distribution": "유통·재판매 RFQ입니다. 목표가가 없어 판정 대신 최소 입찰가를 냅니다. "
         "유통 산식으로 계산합니다: 매입가 + 운영비(인건비·물류 등)에 마진만 붙이고 "
-        "불량·판관비 가산은 하지 않습니다. 품목별 판정은 아직 지원하지 않습니다.",
+        "불량·판관비 가산은 하지 않습니다. 품목별 입찰은 ④에서 고릅니다.",
     }.get(best.id, f"{best.label} RFQ입니다.")
     if not best.automatic:
         note = f"{best.label} RFQ입니다. 자동 판정 대상이 아니므로 수기로 원가를 검토하세요."
@@ -203,6 +203,30 @@ def pass_through(clauses: Sequence[Clause], ruleset: Ruleset) -> dict[str, dict 
     return found
 
 
+def award_mode(clauses: Sequence[Clause], ruleset: Ruleset) -> dict:
+    """How the RFQ awards: per line item, the whole RFQ only, or not stated (cited when found).
+
+    "all or none" wins when both are found: it is the restrictive one, and a split
+    pattern such as "award by lot" can appear in a sentence that rules it out.
+    """
+    rules = ruleset.cost_model.award
+    for mode in ("all_or_none", "split"):
+        rule = rules.get(mode)
+        if rule is None:
+            continue
+        regexes = [re.compile(p, re.IGNORECASE) for p in rule.patterns.all()]
+        for sentence in _sentences(clauses):
+            if any(r.search(sentence.text) for r in regexes):
+                return {
+                    "mode": mode,
+                    "label": rule.label,
+                    "evidence": _cite(
+                        "cost_input", f"{rule.label}: {sentence.text}", sentence.locus, "sales", clauses
+                    ),
+                }
+    return {"mode": None, "label": "낙찰 방식 명시 없음", "evidence": None}
+
+
 def suggested_items(cost_inputs: dict, company: Company, today: date) -> list[dict]:
     """⑤ Cost items the price table can already price for this RFQ (material named in the RFQ).
 
@@ -251,6 +275,7 @@ def prepare(
     """The ``data`` object of ``contract/precost-setup.schema.json``."""
     return {
         "classification": classify(clauses, ruleset),
+        "award": award_mode(clauses, ruleset),
         "requirements": requirements(clauses, mentions, company, ruleset),
         "pass_through": [
             {
@@ -266,4 +291,4 @@ def prepare(
     }
 
 
-__all__ = ["classify", "pass_through", "prepare", "requirements", "suggested_items"]
+__all__ = ["award_mode", "classify", "pass_through", "prepare", "requirements", "suggested_items"]

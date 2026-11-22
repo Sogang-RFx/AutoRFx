@@ -36,7 +36,7 @@ from datetime import date
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from itertools import product
 
-from autorfx.models import ConsistencyIssue, CostItem, Model, PrecostInput
+from autorfx.models import ConsistencyIssue, CostItem, Model, PrecostInput, PrecostLine
 from autorfx.precost.company import Company
 from autorfx.rules import DriverRule, Ruleset, ShockRule
 
@@ -66,6 +66,12 @@ class RfqCostContext(Model):
     pass_through: tuple[str, ...] = ()
     """Ids of pass-through clauses found in the RFQ (indexation, fx_adjustment)."""
     red_flag_types: tuple[str, ...] = ()
+    award: str | None = None
+    """How the RFQ awards (split | all_or_none), None when it does not say."""
+
+
+def D(text: str) -> Decimal:
+    return Decimal(text)
 
 
 def money(value: Decimal) -> str:
@@ -395,6 +401,10 @@ def evaluate(
     today: date,
 ) -> dict:
     """The ``data`` object of ``contract/precost.schema.json``."""
+    if inputs.lines:
+        return evaluate_lines(
+            inputs, context=context, company=company, resolved=resolved, ruleset=ruleset, today=today
+        )
     model = ruleset.cost_model
     settings = company.settings
     warnings: list[str] = []
@@ -635,5 +645,202 @@ def evaluate(
             "rule": rule,
             "reasons": reasons,
             "score": scored["total"] if scored else None,
+        },
+        "award": None,
+        "lines": None,
+        "summary": None,
+    }
+
+
+# ── line items ──────────────────────────────────────────────────────────────
+AWARD_LABEL = {"split": "품목별 낙찰", "all_or_none": "일괄 낙찰"}
+BIDDABLE = {"go", "conditional", "baseline_undefined"}
+
+
+def _line_input(inputs: PrecostInput, line: PrecostLine, shared_per_unit: Decimal) -> PrecostInput:
+    items = line.items
+    if shared_per_unit > 0:
+        items = (
+            *items,
+            CostItem(
+                label="공통비 배분", category="other", quantity=ONE, unit="개", unit_price=shared_per_unit
+            ),
+        )
+    return PrecostInput.model_validate(
+        {
+            **inputs.model_dump(exclude={"lines", "award", "shared_costs"}),
+            "item": line.item,
+            "target_price": line.target_price,
+            "volumes": [v.model_dump() for v in line.volumes],
+            "items": [i.model_dump() for i in items],
+            "tooling": line.tooling.model_dump(),
+        }
+    )
+
+
+def _line_context(context: RfqCostContext, line: PrecostLine) -> RfqCostContext:
+    """A line answers only the process requirements it needs; every other requirement is shared."""
+    if line.processes is None:
+        return context
+    needed = set(line.processes)
+    kept = tuple(r for r in context.requirements if r["requirement"] != "process" or r["value"] in needed)
+    return context.model_copy(update={"requirements": kept})
+
+
+def evaluate_lines(
+    inputs: PrecostInput,
+    *,
+    context: RfqCostContext,
+    company: Company,
+    resolved: Mapping[str, str],
+    ruleset: Ruleset,
+    today: date,
+) -> dict:
+    """Each line item priced on its own, then the lines that are bid judged together.
+
+    A split award bids only the lines the user keeps (the lines that pass are suggested);
+    an all-or-none award bids every line, so one line's margin can carry another's loss.
+    Shared costs are split over the bid lines by volume: a per-unit rate on every line.
+    """
+    award = inputs.award or context.award or "all_or_none"
+    source = "input" if inputs.award else ("rfq" if context.award else "assumed")
+    bid = [line.included or award == "all_or_none" for line in inputs.lines]
+    if not any(bid):
+        raise PrecostInputError("입찰할 품목을 하나 이상 고르세요.")
+    bid_volume = sum(
+        sum(v.quantity for v in line.volumes) for line, b in zip(inputs.lines, bid, strict=True) if b
+    )
+    if bid_volume <= 0:
+        raise PrecostInputError("입찰하는 품목의 물량 합이 0입니다.")
+    shared_per_unit = inputs.shared_costs / Decimal(bid_volume)
+
+    results = []
+    for line in inputs.lines:
+        line_inputs = _line_input(inputs, line, shared_per_unit)
+        result = evaluate(
+            line_inputs,
+            context=_line_context(context, line),
+            company=company,
+            resolved=resolved,
+            ruleset=ruleset,
+            today=today,
+        )
+        results.append((line, line_inputs, result))
+
+    chosen = [r for r, b in zip(results, bid, strict=True) if b]
+    min_total = sum((D(res["cost"]["totals"]["min_quote"]) for _, _, res in chosen), Decimal(0))
+    safe_total = sum((D(res["cost"]["totals"]["safe_quote"]) for _, _, res in chosen), Decimal(0))
+    quantity = sum(res["cost"]["total_quantity"] for _, _, res in chosen)
+    targets = [contract_total(li.target_price, li) for _, li, _ in chosen if li.target_price is not None]
+    target_total = sum(targets, Decimal(0)) if len(targets) == len(chosen) else None
+
+    checks, knockout = answer_requirements(context.requirements, inputs.answers)
+    shared_failed = [c for c in checks if c["status"] == "fail" and c["requirement"] != "process"]
+    open_checks = [c for c in checks if c["status"] == "unknown"]
+    classification = context.classification
+    reasons: list[str] = []
+    scored = None
+    line_knockouts = [res for _, _, res in chosen if res["decision"]["rule"] == "knockout"]
+    holds = [res for _, _, res in chosen if res["decision"]["status"] == "hold"]
+
+    def names(rs: Sequence[dict]) -> str:
+        return ", ".join(f"'{r['item']}'" for r in rs)
+
+    if shared_failed:
+        status, rule = "no_go", "knockout"
+        reasons += [f"1차 넉아웃: {c['label']} — {c['question']} → 아니오" for c in shared_failed]
+    elif classification is not None and not classification.get("automatic", True):
+        status, rule = "not_applicable", "rfq_type"
+        reasons.append(classification.get("note", ""))
+    elif line_knockouts:
+        status, rule = "no_go", "knockout"
+        reasons.append(
+            f"공정 조건을 충족하지 못하는 품목 {names(line_knockouts)}이(가) 입찰에 들어 있습니다."
+            + (" 일괄 낙찰이라 이 품목을 뺄 수 없습니다." if award == "all_or_none" else " 이 품목을 빼세요.")
+        )
+    elif holds:
+        status, rule = "hold", holds[0]["decision"]["rule"]
+        reasons.append(f"품목 {names(holds)}의 문서 간 충돌을 먼저 해소해야 합니다.")
+    elif target_total is None:
+        status, rule = "baseline_undefined", "no_target"
+        reasons.append(
+            "목표가가 없는 품목이 있어 판정하지 않습니다. "
+            f"입찰 품목 {len(chosen)}개, 전체 {quantity:,}단위의 "
+            f"총 견적 {_grouped(min_total)} ~ {_grouped(safe_total)} {inputs.currency}."
+        )
+    elif target_total < min_total:
+        status, rule = "no_go", "price_knockout"
+        reasons.append(
+            f"2차 넉아웃: 입찰 품목 목표가 총액 {_grouped(target_total)}이 최소견적 총액 "
+            f"{_grouped(min_total)}보다 낮습니다."
+        )
+    else:
+        scored = score(
+            target=target_total,
+            min_quote=min_total,
+            safe_quote=safe_total,
+            inputs=inputs,
+            checks=checks,
+            red_flag_types=context.red_flag_types,
+            ruleset=ruleset,
+        )
+        status, rule = scored["band"], "score"
+        losing = [res for _, _, res in chosen if res["decision"]["rule"] == "price_knockout"]
+        if losing:
+            reasons.append(
+                f"품목 {names(losing)}은(는) 단독으로는 목표가가 최소견적보다 낮지만, "
+                "다른 품목의 마진으로 전체 합계는 최소견적을 넘습니다."
+            )
+        if open_checks and status == "go":
+            status = "conditional"
+            reasons.append("1차 넉아웃에 '모름'으로 남은 질문이 있어 조건부로 낮췄습니다.")
+    reasons += [f"판단 불가(모름): {c['question']}" for c in open_checks]
+    if source == "assumed":
+        reasons.append("RFQ에 낙찰 방식이 없어 일괄 낙찰로 가정했습니다. 품목별 낙찰이면 바꿔 주세요.")
+
+    lines_out = []
+    for (line, _, res), is_bid in zip(results, bid, strict=True):
+        c = res["cost"]
+        lines_out.append(
+            {
+                "item": line.item,
+                "included": is_bid,
+                "target_price": exact(line.target_price) if line.target_price is not None else None,
+                "total_quantity": c["total_quantity"],
+                "piece_cost": c["piece_cost"],
+                "min_quote": c["min_quote"],
+                "safe_quote": c["safe_quote"],
+                "totals": c["totals"],
+                "markup": c["markup"],
+                "lines": c["lines"],
+                "decision": res["decision"],
+            }
+        )
+    return {
+        "item": inputs.item,
+        "currency": inputs.currency,
+        "classification": classification,
+        "knockout": {"status": knockout, "checks": checks},
+        "cost": None,
+        "score": scored,
+        "decision": {
+            "status": status,
+            "label": STATUS_LABEL[status],
+            "rule": rule,
+            "reasons": reasons,
+            "score": scored["total"] if scored else None,
+        },
+        "award": {"mode": award, "label": AWARD_LABEL[award], "source": source},
+        "lines": lines_out,
+        "summary": {
+            "lines_bid": len(chosen),
+            "total_quantity": quantity,
+            "totals": {"min_quote": money(min_total), "safe_quote": money(safe_total)},
+            "target_total": money(target_total) if target_total is not None else None,
+            "shared_costs": exact(inputs.shared_costs),
+            "shared_per_unit": money(shared_per_unit),
+            "suggested": [
+                i for i, (_, _, res) in enumerate(results) if res["decision"]["status"] in BIDDABLE
+            ],
         },
     }

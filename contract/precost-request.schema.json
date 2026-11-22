@@ -36,7 +36,6 @@
           ]
         },
         "volumes": {
-          "minItems": 1,
           "maxItems": 30,
           "type": "array",
           "items": {
@@ -82,7 +81,6 @@
           ]
         },
         "items": {
-          "minItems": 1,
           "maxItems": 60,
           "type": "array",
           "items": {
@@ -214,6 +212,182 @@
               "unknown"
             ]
           }
+        },
+        "lines": {
+          "maxItems": 50,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "item": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "target_price": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^\\d+(\\.\\d+)?$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "volumes": {
+                "minItems": 1,
+                "maxItems": 30,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "year": {
+                      "type": "integer",
+                      "minimum": 2000,
+                      "maximum": 2100
+                    },
+                    "quantity": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    }
+                  },
+                  "required": [
+                    "year",
+                    "quantity"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "items": {
+                "minItems": 1,
+                "maxItems": 60,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "label": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 80
+                    },
+                    "category": {
+                      "type": "string",
+                      "enum": [
+                        "material",
+                        "process",
+                        "labor",
+                        "purchased",
+                        "outsourced",
+                        "logistics",
+                        "freight",
+                        "other",
+                        "credit"
+                      ]
+                    },
+                    "quantity": {
+                      "type": "string",
+                      "pattern": "^\\d+(\\.\\d+)?$"
+                    },
+                    "unit": {
+                      "type": "string",
+                      "minLength": 1,
+                      "maxLength": 16
+                    },
+                    "unit_price": {
+                      "type": "string",
+                      "pattern": "^\\d+(\\.\\d+)?$"
+                    },
+                    "price_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "label",
+                    "category",
+                    "quantity",
+                    "unit",
+                    "unit_price",
+                    "price_id"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "tooling": {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "string",
+                    "pattern": "^\\d+(\\.\\d+)?$"
+                  },
+                  "payment": {
+                    "type": "string",
+                    "enum": [
+                      "lump_sum",
+                      "amortized",
+                      "deferred"
+                    ]
+                  },
+                  "deferred_years": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 10
+                  }
+                },
+                "required": [
+                  "amount",
+                  "payment",
+                  "deferred_years"
+                ],
+                "additionalProperties": false
+              },
+              "processes": {
+                "anyOf": [
+                  {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "included": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "item",
+              "target_price",
+              "volumes",
+              "items"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "award": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "split",
+                "all_or_none"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "shared_costs": {
+          "type": "string",
+          "pattern": "^\\d+(\\.\\d+)?$"
         }
       },
       "required": [

@@ -349,77 +349,63 @@
           "additionalProperties": false
         },
         "cost": {
-          "type": "object",
-          "properties": {
-            "lines": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "category": {
-                    "type": "string"
-                  },
-                  "label": {
-                    "type": "string"
-                  },
-                  "value": {
-                    "type": "string",
-                    "pattern": "^-?\\d+(\\.\\d+)?$"
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "lines": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "category": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "value": {
+                        "type": "string",
+                        "pattern": "^-?\\d+(\\.\\d+)?$"
+                      }
+                    },
+                    "required": [
+                      "category",
+                      "label",
+                      "value"
+                    ],
+                    "additionalProperties": false
                   }
                 },
-                "required": [
-                  "category",
-                  "label",
-                  "value"
-                ],
-                "additionalProperties": false
-              }
-            },
-            "cost_basis": {
-              "type": "string",
-              "enum": [
-                "manufacturing",
-                "resale"
-              ]
-            },
-            "piece_cost": {
-              "type": "string",
-              "pattern": "^\\d+(\\.\\d+)?$"
-            },
-            "tooling_per_piece": {
-              "anyOf": [
-                {
+                "cost_basis": {
+                  "type": "string",
+                  "enum": [
+                    "manufacturing",
+                    "resale"
+                  ]
+                },
+                "piece_cost": {
                   "type": "string",
                   "pattern": "^\\d+(\\.\\d+)?$"
                 },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "lifetime_factor": {
-              "type": "string",
-              "pattern": "^\\d+(\\.\\d+)?$"
-            },
-            "material_indexed": {
-              "type": "boolean"
-            },
-            "min_quote": {
-              "type": "string",
-              "pattern": "^\\d+(\\.\\d+)?$"
-            },
-            "safe_quote": {
-              "type": "string",
-              "pattern": "^\\d+(\\.\\d+)?$"
-            },
-            "total_quantity": {
-              "type": "integer",
-              "minimum": -9007199254740991,
-              "maximum": 9007199254740991
-            },
-            "totals": {
-              "type": "object",
-              "properties": {
+                "tooling_per_piece": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^\\d+(\\.\\d+)?$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "lifetime_factor": {
+                  "type": "string",
+                  "pattern": "^\\d+(\\.\\d+)?$"
+                },
+                "material_indexed": {
+                  "type": "boolean"
+                },
                 "min_quote": {
                   "type": "string",
                   "pattern": "^\\d+(\\.\\d+)?$"
@@ -427,214 +413,235 @@
                 "safe_quote": {
                   "type": "string",
                   "pattern": "^\\d+(\\.\\d+)?$"
-                }
-              },
-              "required": [
-                "min_quote",
-                "safe_quote"
-              ],
-              "additionalProperties": false
-            },
-            "markup": {
-              "anyOf": [
-                {
+                },
+                "total_quantity": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "totals": {
                   "type": "object",
                   "properties": {
-                    "purchased": {
+                    "min_quote": {
                       "type": "string",
                       "pattern": "^\\d+(\\.\\d+)?$"
                     },
-                    "min_quote": {
-                      "type": "string",
-                      "pattern": "^-?\\d+(\\.\\d+)?$"
-                    },
                     "safe_quote": {
                       "type": "string",
-                      "pattern": "^-?\\d+(\\.\\d+)?$"
+                      "pattern": "^\\d+(\\.\\d+)?$"
                     }
                   },
                   "required": [
-                    "purchased",
                     "min_quote",
                     "safe_quote"
                   ],
                   "additionalProperties": false
                 },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "scenarios": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "label": {
-                    "type": "string"
-                  },
-                  "choices": {
-                    "type": "array",
-                    "items": {
+                "markup": {
+                  "anyOf": [
+                    {
                       "type": "object",
                       "properties": {
-                        "issue_id": {
-                          "type": "string"
+                        "purchased": {
+                          "type": "string",
+                          "pattern": "^\\d+(\\.\\d+)?$"
                         },
-                        "value": {
-                          "type": "string"
+                        "min_quote": {
+                          "type": "string",
+                          "pattern": "^-?\\d+(\\.\\d+)?$"
+                        },
+                        "safe_quote": {
+                          "type": "string",
+                          "pattern": "^-?\\d+(\\.\\d+)?$"
                         }
                       },
                       "required": [
-                        "issue_id",
-                        "value"
+                        "purchased",
+                        "min_quote",
+                        "safe_quote"
                       ],
                       "additionalProperties": false
-                    }
-                  },
-                  "piece_cost": {
-                    "type": "string",
-                    "pattern": "^\\d+(\\.\\d+)?$"
-                  },
-                  "min_quote": {
-                    "type": "string",
-                    "pattern": "^\\d+(\\.\\d+)?$"
-                  }
-                },
-                "required": [
-                  "label",
-                  "choices",
-                  "piece_cost",
-                  "min_quote"
-                ],
-                "additionalProperties": false
-              }
-            },
-            "shocks": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "id": {
-                    "type": "string"
-                  },
-                  "label": {
-                    "type": "string"
-                  },
-                  "applied": {
-                    "type": "boolean"
-                  },
-                  "note": {
-                    "type": "string"
-                  },
-                  "min_quote_delta": {
-                    "anyOf": [
-                      {
-                        "type": "string",
-                        "pattern": "^-?\\d+(\\.\\d+)?$"
-                      },
-                      {
-                        "type": "null"
-                      }
-                    ]
-                  }
-                },
-                "required": [
-                  "id",
-                  "label",
-                  "applied",
-                  "note",
-                  "min_quote_delta"
-                ],
-                "additionalProperties": false
-              }
-            },
-            "npv": {
-              "type": "object",
-              "properties": {
-                "value": {
-                  "type": "string",
-                  "pattern": "^-?\\d+(\\.\\d+)?$"
-                },
-                "discount_rate": {
-                  "type": "string",
-                  "pattern": "^\\d+(\\.\\d+)?$"
-                },
-                "price_basis": {
-                  "type": "string",
-                  "enum": [
-                    "target_price",
-                    "min_quote"
-                  ]
-                },
-                "payback_year": {
-                  "anyOf": [
-                    {
-                      "type": "integer",
-                      "minimum": -9007199254740991,
-                      "maximum": 9007199254740991
                     },
                     {
                       "type": "null"
                     }
                   ]
+                },
+                "scenarios": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "label": {
+                        "type": "string"
+                      },
+                      "choices": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "issue_id": {
+                              "type": "string"
+                            },
+                            "value": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "issue_id",
+                            "value"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "piece_cost": {
+                        "type": "string",
+                        "pattern": "^\\d+(\\.\\d+)?$"
+                      },
+                      "min_quote": {
+                        "type": "string",
+                        "pattern": "^\\d+(\\.\\d+)?$"
+                      }
+                    },
+                    "required": [
+                      "label",
+                      "choices",
+                      "piece_cost",
+                      "min_quote"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "shocks": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "id": {
+                        "type": "string"
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "applied": {
+                        "type": "boolean"
+                      },
+                      "note": {
+                        "type": "string"
+                      },
+                      "min_quote_delta": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^-?\\d+(\\.\\d+)?$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "id",
+                      "label",
+                      "applied",
+                      "note",
+                      "min_quote_delta"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "npv": {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "pattern": "^-?\\d+(\\.\\d+)?$"
+                    },
+                    "discount_rate": {
+                      "type": "string",
+                      "pattern": "^\\d+(\\.\\d+)?$"
+                    },
+                    "price_basis": {
+                      "type": "string",
+                      "enum": [
+                        "target_price",
+                        "min_quote"
+                      ]
+                    },
+                    "payback_year": {
+                      "anyOf": [
+                        {
+                          "type": "integer",
+                          "minimum": -9007199254740991,
+                          "maximum": 9007199254740991
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "discount_rate",
+                    "price_basis",
+                    "payback_year"
+                  ],
+                  "additionalProperties": false
+                },
+                "yearly": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "year": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "quantity": {
+                        "type": "integer",
+                        "minimum": -9007199254740991,
+                        "maximum": 9007199254740991
+                      },
+                      "price": {
+                        "type": "string",
+                        "pattern": "^\\d+(\\.\\d+)?$"
+                      }
+                    },
+                    "required": [
+                      "year",
+                      "quantity",
+                      "price"
+                    ],
+                    "additionalProperties": false
+                  }
                 }
               },
               "required": [
-                "value",
-                "discount_rate",
-                "price_basis",
-                "payback_year"
+                "lines",
+                "cost_basis",
+                "piece_cost",
+                "tooling_per_piece",
+                "lifetime_factor",
+                "material_indexed",
+                "min_quote",
+                "safe_quote",
+                "total_quantity",
+                "totals",
+                "markup",
+                "scenarios",
+                "shocks",
+                "npv",
+                "yearly"
               ],
               "additionalProperties": false
             },
-            "yearly": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "properties": {
-                  "year": {
-                    "type": "integer",
-                    "minimum": -9007199254740991,
-                    "maximum": 9007199254740991
-                  },
-                  "quantity": {
-                    "type": "integer",
-                    "minimum": -9007199254740991,
-                    "maximum": 9007199254740991
-                  },
-                  "price": {
-                    "type": "string",
-                    "pattern": "^\\d+(\\.\\d+)?$"
-                  }
-                },
-                "required": [
-                  "year",
-                  "quantity",
-                  "price"
-                ],
-                "additionalProperties": false
-              }
+            {
+              "type": "null"
             }
-          },
-          "required": [
-            "lines",
-            "cost_basis",
-            "piece_cost",
-            "tooling_per_piece",
-            "lifetime_factor",
-            "material_indexed",
-            "min_quote",
-            "safe_quote",
-            "total_quantity",
-            "totals",
-            "markup",
-            "scenarios",
-            "shocks",
-            "npv",
-            "yearly"
-          ],
-          "additionalProperties": false
+          ]
         },
         "score": {
           "anyOf": [
@@ -749,6 +756,302 @@
             "score"
           ],
           "additionalProperties": false
+        },
+        "award": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "mode": {
+                  "type": "string",
+                  "enum": [
+                    "split",
+                    "all_or_none"
+                  ]
+                },
+                "label": {
+                  "type": "string"
+                },
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "input",
+                    "rfq",
+                    "assumed"
+                  ]
+                }
+              },
+              "required": [
+                "mode",
+                "label",
+                "source"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lines": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "item": {
+                    "type": "string"
+                  },
+                  "included": {
+                    "type": "boolean"
+                  },
+                  "target_price": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^\\d+(\\.\\d+)?$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "total_quantity": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "piece_cost": {
+                    "type": "string",
+                    "pattern": "^\\d+(\\.\\d+)?$"
+                  },
+                  "min_quote": {
+                    "type": "string",
+                    "pattern": "^\\d+(\\.\\d+)?$"
+                  },
+                  "safe_quote": {
+                    "type": "string",
+                    "pattern": "^\\d+(\\.\\d+)?$"
+                  },
+                  "totals": {
+                    "type": "object",
+                    "properties": {
+                      "min_quote": {
+                        "type": "string",
+                        "pattern": "^\\d+(\\.\\d+)?$"
+                      },
+                      "safe_quote": {
+                        "type": "string",
+                        "pattern": "^\\d+(\\.\\d+)?$"
+                      }
+                    },
+                    "required": [
+                      "min_quote",
+                      "safe_quote"
+                    ],
+                    "additionalProperties": false
+                  },
+                  "markup": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "purchased": {
+                            "type": "string",
+                            "pattern": "^\\d+(\\.\\d+)?$"
+                          },
+                          "min_quote": {
+                            "type": "string",
+                            "pattern": "^-?\\d+(\\.\\d+)?$"
+                          },
+                          "safe_quote": {
+                            "type": "string",
+                            "pattern": "^-?\\d+(\\.\\d+)?$"
+                          }
+                        },
+                        "required": [
+                          "purchased",
+                          "min_quote",
+                          "safe_quote"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "lines": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "category": {
+                          "type": "string"
+                        },
+                        "label": {
+                          "type": "string"
+                        },
+                        "value": {
+                          "type": "string",
+                          "pattern": "^-?\\d+(\\.\\d+)?$"
+                        }
+                      },
+                      "required": [
+                        "category",
+                        "label",
+                        "value"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "decision": {
+                    "type": "object",
+                    "properties": {
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "go",
+                          "conditional",
+                          "no_go",
+                          "hold",
+                          "baseline_undefined",
+                          "not_applicable"
+                        ]
+                      },
+                      "label": {
+                        "type": "string"
+                      },
+                      "rule": {
+                        "type": "string"
+                      },
+                      "reasons": {
+                        "type": "array",
+                        "items": {
+                          "type": "string"
+                        }
+                      },
+                      "score": {
+                        "anyOf": [
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 100
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "status",
+                      "label",
+                      "rule",
+                      "reasons",
+                      "score"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "required": [
+                  "item",
+                  "included",
+                  "target_price",
+                  "total_quantity",
+                  "piece_cost",
+                  "min_quote",
+                  "safe_quote",
+                  "totals",
+                  "markup",
+                  "lines",
+                  "decision"
+                ],
+                "additionalProperties": false
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "lines_bid": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "total_quantity": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "totals": {
+                  "type": "object",
+                  "properties": {
+                    "min_quote": {
+                      "type": "string",
+                      "pattern": "^\\d+(\\.\\d+)?$"
+                    },
+                    "safe_quote": {
+                      "type": "string",
+                      "pattern": "^\\d+(\\.\\d+)?$"
+                    }
+                  },
+                  "required": [
+                    "min_quote",
+                    "safe_quote"
+                  ],
+                  "additionalProperties": false
+                },
+                "target_total": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^\\d+(\\.\\d+)?$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "shared_costs": {
+                  "type": "string",
+                  "pattern": "^\\d+(\\.\\d+)?$"
+                },
+                "shared_per_unit": {
+                  "type": "string",
+                  "pattern": "^\\d+(\\.\\d+)?$"
+                },
+                "suggested": {
+                  "type": "array",
+                  "items": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  }
+                }
+              },
+              "required": [
+                "lines_bid",
+                "total_quantity",
+                "totals",
+                "target_total",
+                "shared_costs",
+                "shared_per_unit",
+                "suggested"
+              ],
+              "additionalProperties": false
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -758,7 +1061,10 @@
         "knockout",
         "cost",
         "score",
-        "decision"
+        "decision",
+        "award",
+        "lines",
+        "summary"
       ],
       "additionalProperties": false
     },

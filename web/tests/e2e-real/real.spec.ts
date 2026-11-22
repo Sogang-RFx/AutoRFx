@@ -247,7 +247,8 @@ test.describe.serial("real backend with user-supplied files", () => {
       return ((await res.json()) as PrecostResponse).data;
     };
     const assertShown = async (d: PrecostResponse["data"]) => {
-      await expect(page.getByTestId("min-quote")).toContainText(d.cost.min_quote);
+      // The tile drops trailing zeros (1.2100 → 1.21); S1 quotes are below 1 000, so no grouping commas.
+      await expect(page.getByTestId("min-quote")).toContainText(String(Number(d.cost?.min_quote)));
       await expect(page.getByTestId("decision")).toHaveAttribute("data-status", d.decision.status);
       await expect(page.getByTestId("decision-rule")).toContainText(d.decision.rule);
     };
