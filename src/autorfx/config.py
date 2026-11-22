@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     embedding_model: str | None = Field(default=None, validation_alias="EMBEDDING_MODEL")
     """Dense retrieval is added to BM25 when this is set: a sentence-transformers id (``BAAI/bge-m3``,
     local, ``uv sync --extra embedding``) or ``openai:<model>`` (needs the LLM key)."""
-    embedding_min_score: float = Field(default=0.45, ge=-1.0, le=1.0, validation_alias="EMBEDDING_MIN_SCORE")
+    embedding_min_score: float = Field(default=0.55, ge=-1.0, le=1.0, validation_alias="EMBEDDING_MIN_SCORE")
     """Cosine similarity a sentence needs to count as evidence in dense search. Model-dependent."""
 
     confirm_policy: ConfirmPolicy = Field(default="ambiguous_only", validation_alias="AUTORFX_CONFIRM_POLICY")
