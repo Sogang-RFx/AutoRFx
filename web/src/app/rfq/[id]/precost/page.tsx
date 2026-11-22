@@ -661,7 +661,10 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
           )}
           {byLine && sheet.length > 0 && (
             <SheetPicker sheet={sheet} total={setup.lines.total} limit={setup.lines.limit}
-              apply={(rows) => setLines(linesFromRfq(rows, sheetYear, processValues))} />
+              apply={(rows) =>
+                // Lines added by hand are kept: the sheet reading missed them.
+                setLines((list) => [...linesFromRfq(rows, sheetYear, processValues), ...list.filter((l) => l.group === MANUAL)])
+              } />
           )}
         </Step>
 
@@ -1052,7 +1055,7 @@ function SheetPicker({ sheet, total, limit, apply }: { sheet: RfqLine[]; total: 
     <div className="flex flex-col gap-2 rounded-control border border-line p-3" data-testid="sheet-picker">
       <p className="text-label text-ink-muted">
         <span className="font-semibold text-ink">RFQ 가격표에서 품목 {sheet.length}개를 찾았습니다</span> ({pages[0]}
-        {pages.length > 1 ? `–${pages[pages.length - 1]}` : ""}쪽). 품목 이름과 수량은 RFQ에 적힌 그대로이고, 매입가만 넣으면 됩니다.
+        {pages.length > 1 ? `–${pages[pages.length - 1]}` : ""}쪽). 품목 이름과 수량은 RFQ에 적힌 그대로이고, 매입가만 넣으면 됩니다. 빠진 품목은 아래에서 직접 추가하세요(다시 채워도 유지됩니다).
         {total > limit && ` 품목이 많아 앞의 ${limit}개만 불러왔습니다(전체 ${total}개).`}
       </p>
       {groups.length > 1 && (
@@ -1145,10 +1148,19 @@ function LinesEditor({
                   <tr key={line.key} className={cx(split && !line.included && "opacity-60")}>
                     <td className="px-2 py-1 whitespace-nowrap text-ink-muted tabular">{i + 1}</td>
                     <td className="px-2 py-1 text-ink">
-                      {line.item}
-                      {line.group && <span className="ml-1.5 text-label text-ink-muted">{line.group}{line.page ? ` · ${line.page}쪽` : ""}</span>}
+                      <input className={cx(input, "w-full min-w-48")} value={line.item} maxLength={200} aria-label={`품목 ${i + 1} 이름`}
+                        onChange={(e) => patch(line.key, { item: e.target.value })} />
+                      {line.group && <span className="text-label text-ink-muted">{line.group}{line.page ? ` · ${line.page}쪽` : ""}</span>}
                     </td>
-                    <td className="px-2 py-1 text-right tabular">{quantity.toLocaleString()}</td>
+                    <td className="px-2 py-1 text-right tabular">
+                      {line.volumes.length === 1 && line.volumes[0] ? (
+                        <input className={cx(input, "w-24 text-right tabular")} value={line.volumes[0].quantity} inputMode="numeric"
+                          aria-label={`품목 ${i + 1} 물량`}
+                          onChange={(e) => patch(line.key, { volumes: [{ ...line.volumes[0]!, quantity: e.target.value.trim() }] })} />
+                      ) : (
+                        quantity.toLocaleString()
+                      )}
+                    </td>
                     <td className="px-2 py-1">
                       {line.items.length === 1 && first ? (
                         <input className={cx(input, "w-28 tabular")} value={first.unit_price} inputMode="decimal"
@@ -1239,6 +1251,12 @@ function LinesEditor({
           </div>
         </fieldset>
       ))}
+      <AddLineForm
+        currency={currency}
+        per={per}
+        year={lines[0]?.volumes[0]?.year ?? String(new Date().getFullYear() + 1)}
+        add={(line) => setLines((list) => [...list, { ...line, processes: processValues }])}
+      />
       <Button
         variant="ghost"
         data-testid="line-add"
@@ -1257,9 +1275,73 @@ function LinesEditor({
           ])
         }
       >
-        품목 추가
+        빈 품목 추가 (원가 항목 직접 구성)
       </Button>
     </div>
+  );
+}
+
+const MANUAL = "직접 추가";
+
+/** A line the price-sheet reading missed, added by hand: name, part number, quantity and prices. */
+function AddLineForm({ currency, per, year, add }: { currency: string; per: string; year: string; add: (line: LineRow) => void }) {
+  const empty = { name: "", part: "", quantity: "", price: "", target: "" };
+  const [draft, setDraft] = useState(empty);
+  const set = (p: Partial<typeof empty>) => setDraft((d) => ({ ...d, ...p }));
+  const problem = !draft.name.trim()
+    ? "품목 이름을 넣으세요."
+    : !isInt(draft.quantity) || Number(draft.quantity) <= 0
+      ? "물량을 1 이상의 정수로 넣으세요."
+      : draft.price && !isDecimal(draft.price)
+        ? "매입가는 숫자로 넣으세요."
+        : draft.target && !isDecimal(draft.target)
+          ? "목표가는 숫자로 넣으세요."
+          : null;
+  function submit() {
+    if (problem) return;
+    const part = draft.part.trim();
+    add({
+      key: newKey(),
+      item: part ? `${draft.name.trim()} (${part})` : draft.name.trim(),
+      target: draft.target,
+      volumes: [{ key: newKey(), year, quantity: draft.quantity }],
+      items: [{ key: newKey(), label: "매입가", category: "purchased", quantity: "1", unit: "개", unit_price: draft.price, price_id: null }],
+      processes: [],
+      included: true,
+      group: MANUAL,
+    });
+    setDraft(empty);
+  }
+  return (
+    <fieldset className="flex flex-col gap-2 rounded-control border border-dashed border-line-control p-3" data-testid="line-add-form">
+      <legend className="px-1 text-label font-semibold text-ink-muted">빠진 품목 직접 추가</legend>
+      <div className="flex flex-wrap items-end gap-3">
+        <Field label="품목 이름">
+          <input className={cx(input, "w-64")} value={draft.name} maxLength={160} data-testid="add-name"
+            onChange={(e) => set({ name: e.target.value })} />
+        </Field>
+        <Field label="부품 번호" hint="선택">
+          <input className={cx(input, "w-40")} value={draft.part} maxLength={38} data-testid="add-part"
+            onChange={(e) => set({ part: e.target.value })} />
+        </Field>
+        <Field label={`물량 (${year}년)`}>
+          <input className={cx(input, "w-28 tabular")} value={draft.quantity} inputMode="numeric" data-testid="add-quantity"
+            onChange={(e) => set({ quantity: e.target.value.trim() })} />
+        </Field>
+        <Field label={`매입가 (${currency}/${per})`} hint="나중에 넣어도 됩니다">
+          <input className={cx(input, "w-28 tabular")} value={draft.price} inputMode="decimal" data-testid="add-price"
+            onChange={(e) => set({ price: e.target.value.trim() })} />
+        </Field>
+        <Field label="목표가" hint="선택">
+          <input className={cx(input, "w-24 tabular")} value={draft.target} inputMode="decimal" data-testid="add-target"
+            onChange={(e) => set({ target: e.target.value.trim() })} />
+        </Field>
+        <Button data-testid="add-submit" disabled={problem !== null} onClick={submit}>
+          목록에 추가
+        </Button>
+      </div>
+      {problem && (draft.name || draft.quantity || draft.price || draft.target) && <p className="text-label text-ink-muted">{problem}</p>}
+    </fieldset>
   );
 }
 
