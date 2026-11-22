@@ -393,7 +393,7 @@ class PrecostInput(Model):
     strategic: int | None = Field(default=None, ge=0, le=100)
     answers: dict[str, Answer] = Field(default_factory=dict)
     """Answers to the knockout questions of this RFQ, by question key."""
-    lines: tuple[PrecostLine, ...] = Field(default=(), max_length=50)
+    lines: tuple[PrecostLine, ...] = Field(default=(), max_length=200)
     award: Literal["split", "all_or_none"] | None = None
     """How the customer awards the lines; None: as found in the RFQ (all or none when not stated)."""
     shared_costs: Decimal = Field(default=Decimal(0), ge=0)

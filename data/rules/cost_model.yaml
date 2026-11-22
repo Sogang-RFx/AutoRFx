@@ -245,9 +245,11 @@ award:
     label: 품목별 낙찰 가능
     patterns:
       en:
-        - 'award(ed)? (on a |by |per )?(line[- ]item|item[- ]by[- ]item|individual item|lot)'
+        - 'award(s|ed)? (on an? |by |per )?(line[- ]item|item[- ]by[- ]item|individual item|lot)'
+        - '\bitem[- ]by[- ]item\b'
+        - '(line[- ]item|item[- ]by[- ]item) (basis|award)'
         - '(partial|split|multiple) awards?'
-        - 'award .{0,40}(in part|in whole or in part|any or all items?)'
+        - 'awards? .{0,40}(in part|in whole or in part|any or all items?)'
         - 'bid (on )?(any|one) or (more|all) (items|lots)'
       de:
         - 'Teil(vergabe|lose?)'
@@ -260,8 +262,9 @@ award:
     label: 일괄 낙찰만 가능
     patterns:
       en:
-        - 'all[- ]or[- ]none'
-        - 'award(ed)? .{0,30}(as a whole|to a single (bidder|supplier|vendor))'
+        - 'all[- ]or[- ](none|nothing)'
+        - 'awards? .{0,30}(as a whole|to a single (bidder|supplier|vendor))'
+        - 'awarded .{0,30}(as a whole|to a single (bidder|supplier|vendor))'
         - 'bid (on )?all items'
         - 'partial (bids|offers|quotations) (will|shall) not be (accepted|considered)'
       de:

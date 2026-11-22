@@ -47,6 +47,7 @@
                 "type": "string",
                 "enum": [
                   "rfq",
+                  "inferred",
                   "assumption",
                   "missing"
                 ]

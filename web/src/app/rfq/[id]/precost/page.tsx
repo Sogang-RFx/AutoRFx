@@ -36,6 +36,7 @@ import {
   type PrecostSetupResponse,
   type PriceRow,
   type RequirementCheck,
+  type RfqLine,
   type VerifiedFinding,
 } from "@/lib/rfq/contract";
 import {
@@ -127,11 +128,20 @@ type LineRow = {
   key: string;
   item: string;
   target: string;
+  /** Price-sheet group and page, when the line came from the RFQ. */
+  group?: string | null;
+  page?: number;
   volumes: VolumeRow[];
   items: ItemRow[];
   /** Process requirements of the RFQ this line needs. */
   processes: string[];
   included: boolean;
+};
+const AWARD_RFQ: Record<string, string> = {
+  split: "품목별 낙찰",
+  all_or_none: "일괄 낙찰",
+  either: "발주처가 선택 → 품목별로 판정",
+  none: "명시 없음 → 일괄로 가정",
 };
 type AwardChoice = "rfq" | "split" | "all_or_none";
 /** Line-item pricing as entered, or null when the RFQ is priced as one item. */
@@ -197,6 +207,21 @@ function initialItems(setup: Setup): ItemRow[] {
     : [{ key: newKey(), label: "", category: "material", quantity: "", unit: "kg", unit_price: "", price_id: null }];
 }
 
+/** Lines priced from the RFQ's price sheet: name and printed quantity; the user adds the purchase price. */
+function linesFromRfq(rows: RfqLine[], year: string, processes: string[]): LineRow[] {
+  return rows.map((r) => ({
+    key: newKey(),
+    item: r.part ? `${r.name} (${r.part})` : r.name,
+    target: "",
+    volumes: [{ key: newKey(), year, quantity: String(r.quantity) }],
+    items: [{ key: newKey(), label: "매입가", category: "purchased", quantity: "1", unit: "개", unit_price: "", price_id: null }],
+    processes,
+    included: true,
+    group: r.group,
+    page: r.page,
+  }));
+}
+
 const SWITCH = { auto: null, yes: true, no: false } as const;
 const STARTS: Record<string, string> = { "0": "첫해부터", "1": "2년차부터", "2": "3년차부터" };
 
@@ -205,6 +230,8 @@ type FieldSpec = {
   label: string;
   hint?: string;
   stated: boolean;
+  /** Read from a sentence that does not state it plainly: shown as inferred, with the reason. */
+  inferred?: string | null;
   evidence: VerifiedFinding | null;
   show: () => ReactNode;
   edit: () => ReactNode;
@@ -359,13 +386,19 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
   const [error, setError] = useState<{ message: string; forbidden: boolean } | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const processValues = setup.requirements.filter((r) => r.requirement === "process").map((r) => r.value);
-  const [byLine, setByLine] = useState(setup.award.mode === "split");
+  const sheet = setup.lines.items;
+  const sheetYear = initialVolumes(setup)[0]?.year ?? String(new Date().getFullYear() + 1);
+  const [byLine, setByLine] = useState(setup.award.mode === "split" || setup.award.mode === "either" || sheet.length > 0);
   const [award, setAward] = useState<AwardChoice>("rfq");
   const [shared, setShared] = useState("0");
-  const [lines, setLines] = useState<LineRow[]>(() => [
-    { key: newKey(), item: setup.cost_inputs.item || "품목 1", target: "", volumes: initialVolumes(setup), items: initialItems(setup), processes: processValues, included: true },
-  ]);
-  const effectiveAward = award === "rfq" ? (setup.award.mode ?? "all_or_none") : award;
+  const [lines, setLines] = useState<LineRow[]>(() =>
+    sheet.length > 0
+      ? linesFromRfq(sheet, sheetYear, processValues)
+      : [{ key: newKey(), item: setup.cost_inputs.item || "품목 1", target: "", volumes: initialVolumes(setup), items: initialItems(setup), processes: processValues, included: true }],
+  );
+  // "Either": the customer chooses after the bids, so every line is judged on its own as under a split award.
+  const rfqAward = setup.award.mode === "either" ? "split" : (setup.award.mode ?? "all_or_none");
+  const effectiveAward = award === "rfq" ? rfqAward : award;
 
   const setForm = (patch: Partial<Form>) => setFormState((f) => ({ ...f, ...patch }));
   const { departments } = useTeamGroup();
@@ -403,9 +436,14 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
     });
 
   // ③/④: each RFQ condition is either stated in the RFQ (shown with its citation, editable on request)
-  // or missing (an input in ④). Nothing is guessed.
+  // or missing (an input in ④). A value read from a sentence that does not state it plainly is filled
+  // in, marked as inferred, with that sentence: the user confirms it.
   const evidenceOf = (field: string) => candidate(setup, field)?.evidence ?? null;
   const statedIn = (field: string) => candidate(setup, field)?.value != null;
+  const inferredIn = (field: string) => {
+    const c = candidate(setup, field);
+    return c?.source === "inferred" ? c.note : null;
+  };
   const clause = (id: string) => setup.pass_through.find((p) => p.id === id)?.evidence ?? null;
   const switchLabel = (value: Form["material_indexed"], found: boolean, shock: string) =>
     value === "yes" || (value === "auto" && found) ? `있음 · ${shock} 충격 제외` : `없음 · ${shock} 충격 반영`;
@@ -421,6 +459,7 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
       id: "currency",
       label: "통화",
       stated: statedIn("currency"),
+      inferred: inferredIn("currency"),
       evidence: evidenceOf("currency"),
       show: () => form.currency,
       edit: () => (
@@ -451,6 +490,7 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
       label: "결제 기한 (일)",
       hint: "모르면 비워 두세요.",
       stated: statedIn("payment_days"),
+      inferred: inferredIn("payment_days"),
       evidence: evidenceOf("payment_days"),
       show: () => (form.payment_days ? `${form.payment_days}일` : "없음"),
       edit: () => (
@@ -565,12 +605,19 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="w-28 shrink-0 text-label font-semibold text-ink-muted">{f.label}</span>
                   <span className="text-dense font-semibold text-ink tabular">{f.show()}</span>
+                  {f.inferred && (
+                    <span className="rounded-control border border-warn bg-warn-tint px-1.5 text-label font-semibold text-warn"
+                      data-testid={`inferred-${f.id}`}>
+                      추정
+                    </span>
+                  )}
                   <Cite evidence={f.evidence} />
                   <button type="button" className="ml-auto text-label text-accent hover:underline" onClick={() => toggle(f.id)}
                     data-testid={`edit-${f.id}`}>
                     {editing.has(f.id) ? "닫기" : "수정"}
                   </button>
                 </div>
+                {f.inferred && <p className="text-label text-ink-muted sm:pl-30">{f.inferred}</p>}
                 {editing.has(f.id) && <div className="pl-0 sm:pl-30">{f.edit()}</div>}
               </li>
             ))}
@@ -600,7 +647,7 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
               >
                 <select className={input} value={award} data-testid="input-award" onChange={(e) => setAward(e.target.value as AwardChoice)}>
                   <option value="rfq">
-                    RFQ대로 ({setup.award.mode === "split" ? "품목별 낙찰" : setup.award.mode === "all_or_none" ? "일괄 낙찰" : "명시 없음 → 일괄로 가정"})
+                    RFQ대로 ({AWARD_RFQ[setup.award.mode ?? "none"]})
                   </option>
                   <option value="split">품목별 낙찰</option>
                   <option value="all_or_none">일괄 낙찰</option>
@@ -611,6 +658,10 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
                   onChange={(e) => setShared(e.target.value.trim())} />
               </Field>
             </div>
+          )}
+          {byLine && sheet.length > 0 && (
+            <SheetPicker sheet={sheet} total={setup.lines.total} limit={setup.lines.limit}
+              apply={(rows) => setLines(linesFromRfq(rows, sheetYear, processValues))} />
           )}
         </Step>
 
@@ -984,6 +1035,45 @@ function ItemsEditor({
   );
 }
 
+/** Which price-sheet groups to price: the lines are filled from the RFQ, the user only adds prices. */
+function SheetPicker({ sheet, total, limit, apply }: { sheet: RfqLine[]; total: number; limit: number; apply: (rows: RfqLine[]) => void }) {
+  const groups = [...new Set(sheet.map((r) => r.group ?? "기타"))];
+  const [chosen, setChosen] = useState<Set<string>>(() => new Set(groups));
+  const picked = sheet.filter((r) => chosen.has(r.group ?? "기타"));
+  const pages = [...new Set(sheet.map((r) => r.page))];
+  const toggle = (g: string, on: boolean) =>
+    setChosen((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(g);
+      else next.delete(g);
+      return next;
+    });
+  return (
+    <div className="flex flex-col gap-2 rounded-control border border-line p-3" data-testid="sheet-picker">
+      <p className="text-label text-ink-muted">
+        <span className="font-semibold text-ink">RFQ 가격표에서 품목 {sheet.length}개를 찾았습니다</span> ({pages[0]}
+        {pages.length > 1 ? `–${pages[pages.length - 1]}` : ""}쪽). 품목 이름과 수량은 RFQ에 적힌 그대로이고, 매입가만 넣으면 됩니다.
+        {total > limit && ` 품목이 많아 앞의 ${limit}개만 불러왔습니다(전체 ${total}개).`}
+      </p>
+      {groups.length > 1 && (
+        <div className="flex flex-wrap gap-x-4 gap-y-1.5" aria-label="가격표 분류">
+          {groups.map((g) => (
+            <label key={g} className="flex items-center gap-1.5 text-dense text-ink">
+              <input type="checkbox" checked={chosen.has(g)} onChange={(e) => toggle(g, e.target.checked)} />
+              {g} ({sheet.filter((r) => (r.group ?? "기타") === g).length})
+            </label>
+          ))}
+        </div>
+      )}
+      <div>
+        <Button variant="ghost" data-testid="sheet-apply" disabled={picked.length === 0} onClick={() => apply(picked)}>
+          선택한 {picked.length}개로 품목 다시 채우기
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function LinesEditor({
   lines,
   setLines,
@@ -1006,10 +1096,23 @@ function LinesEditor({
   suggested: number[] | null;
 }) {
   const patch = (key: string, p: Partial<LineRow>) => setLines((list) => list.map((l) => (l.key === key ? { ...l, ...p } : l)));
+  // Many lines (a price sheet) are shown one row each; a line opens to its full editor.
+  const compact = lines.length > 5;
+  const [open, setOpen] = useState<Set<string>>(() => new Set());
+  const toggleOpen = (key: string) =>
+    setOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  const unpriced = lines.filter((l) => l.items.some((r) => !r.unit_price.trim())).length;
   return (
     <div className="flex flex-col gap-3" data-testid="lines">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-label font-semibold text-ink-muted">품목 {lines.length}개</span>
+        <span className="text-label font-semibold text-ink-muted">
+          품목 {lines.length}개{unpriced > 0 && ` · 단가를 넣을 품목 ${unpriced}개`}
+        </span>
         {split && suggested && suggested.length > 0 && (
           <Button
             variant="ghost"
@@ -1020,7 +1123,66 @@ function LinesEditor({
           </Button>
         )}
       </div>
-      {lines.map((line, i) => (
+      {compact && (
+        <div className="overflow-x-auto rounded-control border border-line">
+          <table className="w-full text-dense" data-testid="lines-table">
+            <thead className="border-b border-line bg-surface-source text-label text-ink-muted">
+              <tr>
+                <th className="px-2 py-1.5 text-left font-semibold">#</th>
+                <th className="px-2 py-1.5 text-left font-semibold">품목</th>
+                <th className="px-2 py-1.5 text-right font-semibold">물량</th>
+                <th className="px-2 py-1.5 text-left font-semibold">매입가 ({currency}/{per})</th>
+                <th className="px-2 py-1.5 text-left font-semibold">목표가</th>
+                <th className="px-2 py-1.5 text-left font-semibold">입찰</th>
+                <th className="px-2 py-1.5" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-line">
+              {lines.map((line, i) => {
+                const first = line.items[0];
+                const quantity = line.volumes.reduce((n, v) => n + (Number(v.quantity) || 0), 0);
+                return (
+                  <tr key={line.key} className={cx(split && !line.included && "opacity-60")}>
+                    <td className="px-2 py-1 whitespace-nowrap text-ink-muted tabular">{i + 1}</td>
+                    <td className="px-2 py-1 text-ink">
+                      {line.item}
+                      {line.group && <span className="ml-1.5 text-label text-ink-muted">{line.group}{line.page ? ` · ${line.page}쪽` : ""}</span>}
+                    </td>
+                    <td className="px-2 py-1 text-right tabular">{quantity.toLocaleString()}</td>
+                    <td className="px-2 py-1">
+                      {line.items.length === 1 && first ? (
+                        <input className={cx(input, "w-28 tabular")} value={first.unit_price} inputMode="decimal"
+                          aria-label={`품목 ${i + 1} ${first.label} 단가`}
+                          onChange={(e) => patch(line.key, { items: [{ ...first, unit_price: e.target.value.trim(), price_id: null }] })} />
+                      ) : (
+                        <span className="text-label text-ink-muted">원가 항목 {line.items.length}개</span>
+                      )}
+                    </td>
+                    <td className="px-2 py-1">
+                      <input className={cx(input, "w-24 tabular")} value={line.target} inputMode="decimal" aria-label={`품목 ${i + 1} 목표가`}
+                        onChange={(e) => patch(line.key, { target: e.target.value.trim() })} />
+                    </td>
+                    <td className="px-2 py-1">
+                      <input type="checkbox" checked={split ? line.included : true} disabled={!split} aria-label={`품목 ${i + 1} 입찰 포함`}
+                        onChange={(e) => patch(line.key, { included: e.target.checked })} />
+                    </td>
+                    <td className="px-2 py-1 text-right whitespace-nowrap">
+                      <button type="button" className="text-label text-accent hover:underline" onClick={() => toggleOpen(line.key)}>
+                        {open.has(line.key) ? "닫기" : "자세히"}
+                      </button>
+                      <button type="button" className="ml-2 text-label text-danger hover:underline" aria-label={`품목 ${i + 1} 삭제`}
+                        onClick={() => setLines((list) => list.filter((l) => l.key !== line.key))}>
+                        삭제
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {lines.map((line, i) => (compact && !open.has(line.key)) ? null : (
         <fieldset key={line.key} className={cx("flex flex-col gap-3 rounded-control border border-line p-3", split && !line.included && "opacity-60")}
           data-testid="line">
           <legend className="px-1 text-label font-semibold text-ink-muted">품목 {i + 1}</legend>

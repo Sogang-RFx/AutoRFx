@@ -37,6 +37,7 @@ from autorfx.precost import (
     pass_through,
     prepare,
     requirements,
+    rfq_lines,
 )
 from autorfx.retrieval import answer_question
 from autorfx.work_areas import CATALOG
@@ -394,6 +395,11 @@ def precost_setup(rfq_id: str, state: State, team: Team = None) -> dict:
         company=state.company.company,
         ruleset=state.ruleset,
         today=date.today(),
+        lines=rfq_lines(
+            data.manifest,
+            data.parsed,
+            {f.id: data.workspace.canonical_pdf(f.id) for f in data.manifest.files},
+        ),
     )
     return envelope(result, precost="real")
 

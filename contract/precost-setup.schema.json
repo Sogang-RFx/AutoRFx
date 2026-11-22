@@ -67,7 +67,8 @@
                   "type": "string",
                   "enum": [
                     "split",
-                    "all_or_none"
+                    "all_or_none",
+                    "either"
                   ]
                 },
                 {
@@ -739,6 +740,7 @@
                     "type": "string",
                     "enum": [
                       "rfq",
+                      "inferred",
                       "assumption",
                       "missing"
                     ]
@@ -1236,6 +1238,80 @@
         },
         "assumption_note": {
           "type": "string"
+        },
+        "lines": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "no": {
+                    "type": "string"
+                  },
+                  "part": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "quantity": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "yearly": {
+                    "type": "boolean"
+                  },
+                  "group": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "source_doc": {
+                    "type": "string"
+                  },
+                  "page": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "no",
+                  "part",
+                  "name",
+                  "quantity",
+                  "yearly",
+                  "group",
+                  "source_doc",
+                  "page"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "total": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "limit": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "items",
+            "total",
+            "limit"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
@@ -1245,7 +1321,8 @@
         "pass_through",
         "cost_inputs",
         "suggested_items",
-        "assumption_note"
+        "assumption_note",
+        "lines"
       ],
       "additionalProperties": false
     },

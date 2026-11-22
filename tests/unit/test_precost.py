@@ -813,10 +813,38 @@ def test_without_a_stated_award_all_or_none_is_assumed(ruleset: Ruleset, company
     assert any("일괄 낙찰로 가정" in r for r in result["decision"]["reasons"])
 
 
+def test_when_the_customer_chooses_the_award_each_line_is_judged_on_its_own(
+    ruleset: Ruleset, company: Company
+):
+    context = RfqCostContext(classification=MANUFACTURING, award="either")
+    result = run_lines(ruleset, company, line("A", "6"), line("B", "3"), context=context)
+    assert result["award"]["mode"] == "split" and result["award"]["source"] == "rfq"
+    assert "발주처가 선택" in result["award"]["label"]
+    assert any("품목마다 따로 판정" in r for r in result["decision"]["reasons"])
+    # Line B loses money alone: under all-or-none A's margin would carry it, here it is not suggested.
+    assert result["summary"]["suggested"] == [0]
+
+
+EVERETT = (
+    "The City will choose between two methods: “All or Nothing”: "
+    "The City awards all bid items to a single bidder, with the award made to the lowest bidder."
+)
+EVERETT_ITEM = "“Item by Item”: The City awards on an item-by-item basis to one or more bidders."
+
+
+def test_two_methods_the_customer_chooses_between_are_read_as_either(ruleset: Ruleset):
+    found = award_mode([make_clause("1.8", [EVERETT, EVERETT_ITEM])], ruleset)
+    assert found["mode"] == "either" and found["label"] == "둘 다 가능 (발주처가 선택)"
+    assert found["evidence"] is not None
+
+
 @pytest.mark.parametrize(
     ("text", "mode"),
     [
         ("The County reserves the right to award by line item.", "split"),
+        (EVERETT, "all_or_none"),
+        (EVERETT_ITEM, "split"),
+        ("Bids are evaluated on an all-or-nothing basis.", "all_or_none"),
         ("Die Vergabe erfolgt losweise.", "split"),
         ("Partial bids will not be accepted; award by lot is not possible.", "all_or_none"),
         ("Payment within 30 days.", None),
@@ -826,3 +854,43 @@ def test_the_award_mode_is_read_from_the_rfq(ruleset: Ruleset, text: str, mode: 
     found = award_mode([make_clause("1", [text])], ruleset)
     assert found["mode"] == mode
     assert (found["evidence"] is not None) == (mode is not None)
+
+
+# ── inferred inputs: filled in with the sentence they come from ─────────────
+EVERETT_PAYMENT = (
+    "Within thirty (30) days after delivery, acceptance of items ordered and a properly prepared invoice "
+    "but not more often than once per month the City of Everett will pay the Supplier."
+)
+
+
+def test_payment_days_written_before_the_payment_word_are_inferred():
+    from autorfx.precost.inputs import inferred_payment_days
+
+    titled = make_clause("2.13", ["2.13 PAYMENT", EVERETT_PAYMENT], title="PAYMENT")
+    days, _, text = inferred_payment_days([titled])
+    assert days == "30" and text == EVERETT_PAYMENT
+    plain = make_clause("9", ["County will use best efforts to make payment within 45 days of the invoice."])
+    assert inferred_payment_days([plain])[0] == "45"
+
+
+def test_days_far_from_any_payment_word_are_not_a_payment_term():
+    from autorfx.precost.inputs import inferred_payment_days
+
+    other = make_clause(
+        "3",
+        [
+            "The Contracting Officer will determine whether the invoice is proper within 7 days.",
+            "All stock orders must be delivered within one (1) business day of order placement.",
+        ],
+    )
+    assert inferred_payment_days([other]) is None
+
+
+def test_usd_is_inferred_from_the_dollar_sign_only_when_no_currency_is_named():
+    from autorfx.precost.inputs import inferred_currency
+
+    sheet = make_clause("4", ["13 DB5Z-2078-F BRAKE LINE $ 2 $"])
+    assert inferred_currency([sheet])[0] == "USD"
+    named = make_clause("5", ["All prices in CAD.", "Brake line $ 2"])
+    assert inferred_currency([sheet, named]) is None
+    assert inferred_currency([make_clause("6", ["Payment within 30 days."])]) is None

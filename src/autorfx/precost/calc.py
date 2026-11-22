@@ -67,7 +67,7 @@ class RfqCostContext(Model):
     """Ids of pass-through clauses found in the RFQ (indexation, fx_adjustment)."""
     red_flag_types: tuple[str, ...] = ()
     award: str | None = None
-    """How the RFQ awards (split | all_or_none), None when it does not say."""
+    """How the RFQ awards (split | all_or_none | either), None when it does not say."""
 
 
 def D(text: str) -> Decimal:
@@ -654,6 +654,7 @@ def evaluate(
 
 # ── line items ──────────────────────────────────────────────────────────────
 AWARD_LABEL = {"split": "품목별 낙찰", "all_or_none": "일괄 낙찰"}
+EITHER = "일괄·품목별 중 발주처가 선택 → 품목별로 판정"
 BIDDABLE = {"go", "conditional", "baseline_undefined"}
 
 
@@ -702,8 +703,11 @@ def evaluate_lines(
     an all-or-none award bids every line, so one line's margin can carry another's loss.
     Shared costs are split over the bid lines by volume: a per-unit rate on every line.
     """
-    award = inputs.award or context.award or "all_or_none"
-    source = "input" if inputs.award else ("rfq" if context.award else "assumed")
+    stated = context.award
+    # When the customer chooses after the bids, any line may be awarded alone: each must stand on its own.
+    either = inputs.award is None and stated == "either"
+    award = inputs.award or ("split" if either else stated) or "all_or_none"
+    source = "input" if inputs.award else ("rfq" if stated else "assumed")
     bid = [line.included or award == "all_or_none" for line in inputs.lines]
     if not any(bid):
         raise PrecostInputError("입찰할 품목을 하나 이상 고르세요.")
@@ -797,6 +801,11 @@ def evaluate_lines(
     reasons += [f"판단 불가(모름): {c['question']}" for c in open_checks]
     if source == "assumed":
         reasons.append("RFQ에 낙찰 방식이 없어 일괄 낙찰로 가정했습니다. 품목별 낙찰이면 바꿔 주세요.")
+    if either:
+        reasons.append(
+            "RFQ상 발주처가 입찰 뒤 일괄·품목별 낙찰 중에서 고릅니다. 어느 품목이든 단독으로 낙찰될 수 있어 "
+            "품목마다 따로 판정했습니다."
+        )
 
     lines_out = []
     for (line, _, res), is_bid in zip(results, bid, strict=True):
@@ -830,7 +839,7 @@ def evaluate_lines(
             "reasons": reasons,
             "score": scored["total"] if scored else None,
         },
-        "award": {"mode": award, "label": AWARD_LABEL[award], "source": source},
+        "award": {"mode": award, "label": EITHER if either else AWARD_LABEL[award], "source": source},
         "lines": lines_out,
         "summary": {
             "lines_bid": len(chosen),

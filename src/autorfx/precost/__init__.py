@@ -4,6 +4,7 @@ shock range, NPV for reference, weighted score. Deterministic; no number comes f
 from autorfx.precost.calc import PrecostInputError, RfqCostContext, evaluate, money
 from autorfx.precost.company import Company, CompanyError, CompanyStore, StoredAnswer
 from autorfx.precost.inputs import extract_cost_inputs
+from autorfx.precost.lines import rfq_lines
 from autorfx.precost.setup import award_mode, classify, pass_through, prepare, requirements
 
 __all__ = [
@@ -21,4 +22,5 @@ __all__ = [
     "pass_through",
     "prepare",
     "requirements",
+    "rfq_lines",
 ]

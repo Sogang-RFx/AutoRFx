@@ -214,7 +214,7 @@
           }
         },
         "lines": {
-          "maxItems": 50,
+          "maxItems": 200,
           "type": "array",
           "items": {
             "type": "object",

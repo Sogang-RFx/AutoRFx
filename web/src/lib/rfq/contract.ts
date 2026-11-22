@@ -335,8 +335,11 @@ export const CostInputCandidate = z.object({
   unit: z.string().nullable(),
   /** Decimal or code as string; null when the RFQ does not state it or the files disagree. */
   value: z.string().nullable(),
-  /** "rfq": stated in the RFQ. "missing": not stated. ("assumption" is kept for old artifacts.) */
-  source: z.enum(["rfq", "assumption", "missing"]),
+  /**
+   * "rfq": stated in the RFQ. "inferred": read from a sentence that does not state it plainly
+   * (shown with that sentence, to confirm). "missing": not stated. ("assumption" is kept for old artifacts.)
+   */
+  source: z.enum(["rfq", "inferred", "assumption", "missing"]),
   note: z.string(),
   evidence: VerifiedFinding.nullable(),
   /** More than one entry when files state different values. */
@@ -405,13 +408,29 @@ export const CostItem = z.object({
 });
 export type CostItem = z.infer<typeof CostItem>;
 
-/** How the customer awards the lines: split (per line item) or all_or_none; null mode when the RFQ does not say. */
+/**
+ * How the customer awards the lines: split (per line item), all_or_none, or either (the customer
+ * chooses after the bids, so each line must stand alone); null mode when the RFQ does not say.
+ */
 export const AwardMode = z.object({
-  mode: z.enum(["split", "all_or_none"]).nullable(),
+  mode: z.enum(["split", "all_or_none", "either"]).nullable(),
   label: z.string(),
   evidence: VerifiedFinding.nullable(),
 });
 export type AwardMode = z.infer<typeof AwardMode>;
+
+/** A row of the RFQ's price sheet: what is bought and its printed quantity (yearly when the sheet says so). */
+export const RfqLine = z.object({
+  no: z.string(),
+  part: z.string().nullable(),
+  name: z.string(),
+  quantity: z.number().int().positive(),
+  yearly: z.boolean(),
+  group: z.string().nullable(),
+  source_doc: z.string(),
+  page: z.number().int().positive(),
+});
+export type RfqLine = z.infer<typeof RfqLine>;
 
 export const PrecostSetupResponse = envelope(
   z.object({
@@ -423,6 +442,8 @@ export const PrecostSetupResponse = envelope(
     cost_inputs: CostInputs,
     suggested_items: z.array(CostItem.extend({ expired: z.boolean(), note: z.string() })),
     assumption_note: z.string(),
+    /** Price-sheet rows found in the RFQ; total counts rows beyond the limit too. */
+    lines: z.object({ items: z.array(RfqLine), total: z.number().int().nonnegative(), limit: z.number().int().positive() }),
   }),
 );
 export type PrecostSetupResponse = z.infer<typeof PrecostSetupResponse>;
@@ -516,7 +537,7 @@ export const PrecostInputs = z.object({
   /** Knockout answers by question key. */
   answers: z.record(z.string(), z.enum(["yes", "no", "unknown"])),
   /** Price per line item; the top-level volumes, items, target and tooling are then not used. */
-  lines: z.array(PrecostLine).max(50).optional(),
+  lines: z.array(PrecostLine).max(200).optional(),
   /** null or absent: as found in the RFQ (all or none when it does not say). */
   award: z.enum(["split", "all_or_none"]).nullable().optional(),
   /** Whole-contract costs every line shares, split by volume. */

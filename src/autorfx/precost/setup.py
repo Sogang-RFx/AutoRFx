@@ -22,6 +22,7 @@ from autorfx.analysis.citation import verify
 from autorfx.consistency.normalize import parse_number
 from autorfx.models import Clause, EntityMention, Finding, Locus, ParsedSentence
 from autorfx.precost.company import Company, canonical
+from autorfx.precost.lines import MAX_LINES
 from autorfx.rules import RequirementRule, Ruleset
 
 MIO = re.compile(r"\b(Mio\.?|million|Millionen|M)\b", re.IGNORECASE)
@@ -203,27 +204,49 @@ def pass_through(clauses: Sequence[Clause], ruleset: Ruleset) -> dict[str, dict 
     return found
 
 
-def award_mode(clauses: Sequence[Clause], ruleset: Ruleset) -> dict:
-    """How the RFQ awards: per line item, the whole RFQ only, or not stated (cited when found).
+EITHER_LABEL = "둘 다 가능 (발주처가 선택)"
 
-    "all or none" wins when both are found: it is the restrictive one, and a split
-    pattern such as "award by lot" can appear in a sentence that rules it out.
+
+def award_mode(clauses: Sequence[Clause], ruleset: Ruleset) -> dict:
+    """How the RFQ awards: per line item, the whole RFQ only, either, or not stated (cited when found).
+
+    When one sentence names both, "all or none" wins: it is the restrictive one, and a split
+    pattern such as "award by lot" can appear in a sentence that rules it out. When separate
+    sentences name each, the customer chooses between them after the bids (``either``): every
+    line must then stand on its own, as under a split award.
     """
     rules = ruleset.cost_model.award
+    sentences = list(_sentences(clauses))
+    first: dict[str, int] = {}
     for mode in ("all_or_none", "split"):
         rule = rules.get(mode)
         if rule is None:
             continue
         regexes = [re.compile(p, re.IGNORECASE) for p in rule.patterns.all()]
-        for sentence in _sentences(clauses):
-            if any(r.search(sentence.text) for r in regexes):
-                return {
-                    "mode": mode,
-                    "label": rule.label,
-                    "evidence": _cite(
-                        "cost_input", f"{rule.label}: {sentence.text}", sentence.locus, "sales", clauses
-                    ),
-                }
+        at = next((i for i, s in enumerate(sentences) if any(r.search(s.text) for r in regexes)), None)
+        if at is not None:
+            first[mode] = at
+    whole, split = first.get("all_or_none"), first.get("split")
+    if whole is not None and split is not None and whole != split:
+        sentence = sentences[min(whole, split)]
+        return {
+            "mode": "either",
+            "label": EITHER_LABEL,
+            "evidence": _cite(
+                "cost_input", f"{EITHER_LABEL}: {sentence.text}", sentence.locus, "sales", clauses
+            ),
+        }
+    for mode, at in (("all_or_none", whole), ("split", split)):
+        if at is not None:
+            label = rules[mode].label
+            sentence = sentences[at]
+            return {
+                "mode": mode,
+                "label": label,
+                "evidence": _cite(
+                    "cost_input", f"{label}: {sentence.text}", sentence.locus, "sales", clauses
+                ),
+            }
     return {"mode": None, "label": "낙찰 방식 명시 없음", "evidence": None}
 
 
@@ -271,6 +294,7 @@ def prepare(
     company: Company,
     ruleset: Ruleset,
     today: date,
+    lines: dict | None = None,
 ) -> dict:
     """The ``data`` object of ``contract/precost-setup.schema.json``."""
     return {
@@ -288,7 +312,16 @@ def prepare(
         "cost_inputs": cost_inputs,
         "suggested_items": suggested_items(cost_inputs, company, today),
         "assumption_note": ruleset.cost_model.assumption_note,
+        "lines": lines or {"items": [], "total": 0, "limit": MAX_LINES},
     }
 
 
-__all__ = ["award_mode", "classify", "pass_through", "prepare", "requirements", "suggested_items"]
+__all__ = [
+    "EITHER_LABEL",
+    "award_mode",
+    "classify",
+    "pass_through",
+    "prepare",
+    "requirements",
+    "suggested_items",
+]
