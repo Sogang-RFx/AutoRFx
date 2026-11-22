@@ -211,8 +211,9 @@ def test_a_removed_company_department_is_restricted_again(client: TestClient, or
 def test_work_areas_route_matching_clauses(client: TestClient, org: Org):
     catalog = client.get("/meta").json()["data"]["work_areas"]
     assert len({a["id"] for a in catalog}) == len(catalog) == 34
-    team, = save(client, dept("견적 담당", ["quote"], cost_visible=True))
+    (team,) = save(client, dept("견적 담당", ["quote"], cost_visible=True))
     url = f"/rfqs/{org[1]}/clauses"
+
     def rows(**params):
         return client.get(url, params={"team": team["id"], **params}).json()["data"]["clauses"]
 

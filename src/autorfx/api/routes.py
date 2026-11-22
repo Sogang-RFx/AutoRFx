@@ -25,7 +25,6 @@ from autorfx.export import rtm_workbook
 from autorfx.ingest import ACCEPT, IngestError
 from autorfx.models import Answer, FileRecord, Group, Model, PrecostInput
 from autorfx.org import OrgError
-from autorfx.work_areas import CATALOG
 from autorfx.pipeline import RfqData
 from autorfx.precost import (
     CompanyError,
@@ -39,6 +38,7 @@ from autorfx.precost import (
     requirements,
 )
 from autorfx.retrieval import answer_question
+from autorfx.work_areas import CATALOG
 
 router = APIRouter()
 CHUNK = 1024 * 1024

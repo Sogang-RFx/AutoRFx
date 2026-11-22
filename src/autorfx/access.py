@@ -33,8 +33,8 @@ from autorfx.models import (
     ParsedFile,
     ParsedSentence,
 )
-from autorfx.work_areas import matching_areas
 from autorfx.rules import Ruleset
+from autorfx.work_areas import matching_areas
 from autorfx.workspace import Workspace
 
 Key = tuple[str, int, int]
