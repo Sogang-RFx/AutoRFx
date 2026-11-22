@@ -56,6 +56,31 @@ export function currencyOptions(...extra: string[]): { code: string; label: stri
   return [...CURRENCIES, ...more.map((code) => ({ code, label: code }))];
 }
 
+/** Units for the price table and cost items: what a quantity per piece is counted in. */
+export const UNITS: { code: string; label: string }[] = [
+  { code: "개", label: "개 (부품 수)" },
+  { code: "세트", label: "세트" },
+  { code: "묶음", label: "묶음" },
+  { code: "kg", label: "kg · 킬로그램" },
+  { code: "g", label: "g · 그램" },
+  { code: "t", label: "t · 톤" },
+  { code: "m", label: "m · 미터" },
+  { code: "m²", label: "m² · 제곱미터" },
+  { code: "L", label: "L · 리터" },
+  { code: "kWh", label: "kWh · 전력량" },
+  { code: "h", label: "h · 시간" },
+  { code: "분", label: "분" },
+  { code: "회", label: "회 (작업 횟수)" },
+  { code: "km", label: "km · 운송 거리" },
+];
+
+/** The unit picker, with `extra` units (a saved row or an RFQ value) kept when they are not in the list. */
+export function unitOptions(...extra: string[]): { code: string; label: string }[] {
+  const known = new Set(UNITS.map((u) => u.code));
+  const more = [...new Set(extra.map((u) => u.trim()).filter((u) => u && !known.has(u)))];
+  return [...UNITS, ...more.map((code) => ({ code, label: code }))];
+}
+
 const DECIMAL = /^\d+(\.\d+)?$/;
 export const isDecimal = (v: string) => DECIMAL.test(v.trim());
 export const isInt = (v: string) => /^\d+$/.test(v.trim());

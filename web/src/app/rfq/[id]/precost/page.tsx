@@ -45,6 +45,7 @@ import {
   isDecimal,
   isInt,
   percentToFraction,
+  unitOptions,
 } from "@/lib/rfq/precost";
 import { describeError, isForbidden, rfqApi } from "@/lib/rfq/provider";
 import { useSession } from "@/lib/rfq/session";
@@ -822,8 +823,14 @@ function ItemsEditor({
                     onChange={(e) => patch(r.key, { quantity: e.target.value.trim() })} />
                 </td>
                 <td className="w-16 px-1 py-1">
-                  <input aria-label={`${i + 1}행 단위`} className={cell} value={r.unit} maxLength={16} readOnly={!!priced}
-                    onChange={(e) => patch(r.key, { unit: e.target.value })} />
+                  <select aria-label={`${i + 1}행 단위`} className={cell} value={r.unit} disabled={!!priced}
+                    onChange={(e) => patch(r.key, { unit: e.target.value })}>
+                    {unitOptions(r.unit).map((u) => (
+                      <option key={u.code} value={u.code}>
+                        {u.label}
+                      </option>
+                    ))}
+                  </select>
                 </td>
                 <td className="w-28 px-1 py-1">
                   <input aria-label={`${i + 1}행 단가`} className={cx(cell, "tabular", !r.unit_price && "border-warn")}
