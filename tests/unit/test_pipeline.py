@@ -255,3 +255,26 @@ def test_held_out_keys_are_never_read(processed, tmp_path: Path):
     _, data = processed
     write_key(tmp_path / "eval", data.manifest.sha256)
     assert scoring.find_key(data.manifest, tmp_path / "eval") is None
+
+
+class _OneVectorEncoder:
+    """Test double for an embedding model: every text maps to the same unit vector."""
+
+    name = "test-encoder"
+
+    def encode(self, texts):
+        import numpy as np
+
+        return np.ones((len(texts), 2), dtype=np.float32) / np.sqrt(2)
+
+
+def test_served_engines_name_the_search_actually_used(processed, ruleset: Ruleset):
+    """ENGINE-01, rule 6: results stored under BM25 but loaded with an embedding model are searched
+    hybrid, so the engines served with them say so; without a model they still say BM25."""
+    workspace, _ = processed
+    stored = json.loads(workspace.run_path.read_text())["engines"]["retrieval"]
+    assert stored == "bm25-glossary"
+    hybrid = load_rfq(workspace, ruleset, encoder=_OneVectorEncoder())
+    assert hybrid.index.dense is not None
+    assert hybrid.engines["retrieval"] == "bm25-glossary+dense:test-encoder"
+    assert load_rfq(workspace, ruleset).engines["retrieval"] == "bm25-glossary"

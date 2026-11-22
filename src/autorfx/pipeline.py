@@ -219,7 +219,9 @@ def load_rfq(
         mentions=workspace.mentions(),
         consistency=workspace.read_model(workspace.consistency_path, ConsistencyReport),
         cost_inputs=cost_inputs,
-        engines=run["engines"],
+        # Retrieval runs when a question is asked, with the encoder loaded now, not the one recorded at
+        # analysis time; the served engines say which (rule 6: no result shown as another engine's).
+        engines={**run["engines"], "retrieval": retrieval_engine(encoder)},
         index=SearchIndex(clauses, ruleset, dense=_dense(clauses, encoder, min_score)),
     )
 
