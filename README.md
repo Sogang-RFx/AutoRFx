@@ -57,7 +57,11 @@ uv run autorfx compare-search --sample <id>      # 질문 10개로 BM25 · 임�
 uv run autorfx compare-search --sample <id> --model openai:text-embedding-3-small   # API 키로 비교
 ```
 
-질문은 `data/questions/retrieval_ko.yaml`에 있습니다. 결과(`.md`, 채점용 `.csv`)는 `data/work/_compare/`에 생기며 RFQ 원문이 들어 있으니 커밋하지 않습니다.
+질문은 `data/questions/retrieval_ko.yaml`에 있습니다. 질문별 정답 표(`data/answer_keys/retrieval_ko.yaml`, 커밋하지 않음)가 있으면 사람이 O/X를 매기지 않고 자동으로 채점합니다:
+
+```bash
+uv run autorfx score-search --model BAAI/bge-m3          # BM25 · 임베딩 · 하이브리드 × 근거 기준 0.45~0.65
+``` 결과(`.md`, 채점용 `.csv`)는 `data/work/_compare/`에 생기며 RFQ 원문이 들어 있으니 커밋하지 않습니다.
 
 개발용 RFQ는 저장소에 없습니다. 팀 공유 폴더에서 받아 `data/raw/dev/<RFQ 이름>/`에 폴더째 둡니다. 평가용 세트는 개발에 쓰지 않으며, 코드가 `eval`로 시작하는 경로를 읽지 않습니다.
 
