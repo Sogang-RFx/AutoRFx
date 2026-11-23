@@ -238,6 +238,16 @@ def test_llm_that_finds_no_answer_in_the_evidence_gives_no_evidence(index: Searc
     assert len(provider.answer_calls) == 1, "a judged non-answer is not retried"
 
 
+def test_llm_that_finds_no_answer_on_the_retry_gives_no_evidence(index: SearchIndex):
+    """RAG-03: a non-answer after a rejected first reply is still no_evidence, not quoted sentences."""
+    wrong = Answer(text="보증 기간은 24개월입니다.", citations=(1,), answered=True)
+    no_answer = Answer(text="제공된 문장에는 그 정보가 없습니다.", citations=(), answered=False)
+    provider = ScriptedProvider(answers=[wrong, no_answer])
+    data = ask(index, "보증 기간은?", provider=provider)
+    assert (data["status"], data["mode"], data["answer"]) == ("no_evidence", "generative", None)
+    assert len(provider.answer_calls) == 2
+
+
 def test_answer_prompt_asks_the_model_to_say_when_nothing_answers():
     """RAG-03: the model reports a non-answer as a flag, not only in prose."""
     prompt = answer_prompt("보증 기간은?", [], None)
