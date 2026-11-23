@@ -25,22 +25,21 @@ from autorfx.export import rtm_workbook
 from autorfx.ingest import ACCEPT, IngestError
 from autorfx.models import Answer, FileRecord, Group, Model, PrecostInput
 from autorfx.org import OrgError
+from autorfx.work_areas import CATALOG
 from autorfx.pipeline import RfqData
+from autorfx.precost.price_sheet import extract_price_sheet
 from autorfx.precost import (
     CompanyError,
     PrecostInputError,
     RfqCostContext,
     StoredAnswer,
-    award_mode,
     classify,
     evaluate,
     pass_through,
     prepare,
     requirements,
-    rfq_lines,
 )
 from autorfx.retrieval import answer_question
-from autorfx.work_areas import CATALOG
 
 router = APIRouter()
 CHUNK = 1024 * 1024
@@ -379,7 +378,6 @@ def _context(state: AppState, rfq_id: str | None) -> RfqCostContext:
         requirements=tuple(requirements(data.clauses, data.mentions, company, state.ruleset)),
         pass_through=tuple(k for k, v in found.items() if v),
         red_flag_types=tuple(sorted({a.red_flag.type for a in data.analyses if a.red_flag})),
-        award=award_mode(data.clauses, state.ruleset)["mode"],
     )
 
 
@@ -395,12 +393,14 @@ def precost_setup(rfq_id: str, state: State, team: Team = None) -> dict:
         company=state.company.company,
         ruleset=state.ruleset,
         today=date.today(),
-        lines=rfq_lines(
-            data.manifest,
-            data.parsed,
-            {f.id: data.workspace.canonical_pdf(f.id) for f in data.manifest.files},
-        ),
     )
+    sheets = []
+    for file in data.manifest.files:
+        if file.kind == "pdf":
+            sheet = extract_price_sheet(data.workspace.original_path(file.name), file.sha256)
+            if sheet["items"]:
+                sheets.append(sheet)
+    result["price_sheets"] = sheets
     return envelope(result, precost="real")
 
 

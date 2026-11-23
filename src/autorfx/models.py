@@ -15,7 +15,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 Priority = Literal["must", "should", "optional", "info"]
 CitationStatus = Literal["verified", "unverified"]
@@ -352,37 +352,18 @@ class ToolingInput(Model):
     deferred_years: int = Field(default=0, ge=0, le=10)
 
 
-class PrecostLine(Model):
-    """One line item of an RFQ priced on its own (its own target, volumes and cost items)."""
-
-    item: str = Field(min_length=1, max_length=200)
-    target_price: Decimal | None = Field(default=None, ge=0)
-    volumes: tuple[VolumeYear, ...] = Field(min_length=1, max_length=30)
-    items: tuple[CostItem, ...] = Field(min_length=1, max_length=60)
-    tooling: ToolingInput = ToolingInput()
-    processes: tuple[str, ...] | None = None
-    """Process requirements of the RFQ this line needs (by value, e.g. "다이캐스팅"); None: all of them."""
-    included: bool = True
-    """Whether the line is bid. Only a split award lets a line be left out."""
-
-
 class PrecostInput(Model):
-    """What the user confirmed for one calculation. Rates are fractions: 0.03 is 3 %.
-
-    With ``lines`` the RFQ is priced per line item: ``item``, ``currency`` and the shared
-    terms (reduction, payment, pass-through, capacity, answers) apply to every line, and
-    the top-level ``volumes``, ``items``, ``target_price`` and ``tooling`` are not used.
-    """
+    """What the user confirmed for one calculation. Rates are fractions: 0.03 is 3 %."""
 
     item: str = Field(min_length=1, max_length=200)
     currency: str = Field(pattern=r"^[A-Z]{3}$")
     target_price: Decimal | None = Field(default=None, ge=0)
-    volumes: tuple[VolumeYear, ...] = Field(default=(), max_length=30)
+    volumes: tuple[VolumeYear, ...] = Field(min_length=1, max_length=30)
     annual_reduction_rate: Decimal = Field(default=Decimal(0), ge=0, lt=1)
     reduction_starts_at_index: int = Field(default=1, ge=0, le=30)
     """Index of the first delivery year that is reduced; 1 means "from the second year"."""
     payment_days: int | None = Field(default=None, ge=0, le=365)
-    items: tuple[CostItem, ...] = Field(default=(), max_length=60)
+    items: tuple[CostItem, ...] = Field(min_length=1, max_length=60)
     tooling: ToolingInput = ToolingInput()
     material_indexed: bool | None = None
     """True when raw material prices are passed to the customer; None: as found in the RFQ."""
@@ -393,17 +374,6 @@ class PrecostInput(Model):
     strategic: int | None = Field(default=None, ge=0, le=100)
     answers: dict[str, Answer] = Field(default_factory=dict)
     """Answers to the knockout questions of this RFQ, by question key."""
-    lines: tuple[PrecostLine, ...] = Field(default=(), max_length=200)
-    award: Literal["split", "all_or_none"] | None = None
-    """How the customer awards the lines; None: as found in the RFQ (all or none when not stated)."""
-    shared_costs: Decimal = Field(default=Decimal(0), ge=0)
-    """Whole-contract costs every line shares (common tooling, set-up), split by volume."""
-
-    @model_validator(mode="after")
-    def _priced(self) -> PrecostInput:
-        if not self.lines and (not self.volumes or not self.items):
-            raise ValueError("연도별 물량과 원가 항목을 넣거나, 품목(lines)을 넣어야 합니다")
-        return self
 
 
 class CostAlternative(Model):

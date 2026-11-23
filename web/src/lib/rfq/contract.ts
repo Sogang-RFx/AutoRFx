@@ -335,11 +335,8 @@ export const CostInputCandidate = z.object({
   unit: z.string().nullable(),
   /** Decimal or code as string; null when the RFQ does not state it or the files disagree. */
   value: z.string().nullable(),
-  /**
-   * "rfq": stated in the RFQ. "inferred": read from a sentence that does not state it plainly
-   * (shown with that sentence, to confirm). "missing": not stated. ("assumption" is kept for old artifacts.)
-   */
-  source: z.enum(["rfq", "inferred", "assumption", "missing"]),
+  /** "rfq": stated in the RFQ. "missing": not stated. ("assumption" is kept for old artifacts.) */
+  source: z.enum(["rfq", "assumption", "missing"]),
   note: z.string(),
   evidence: VerifiedFinding.nullable(),
   /** More than one entry when files state different values. */
@@ -408,42 +405,25 @@ export const CostItem = z.object({
 });
 export type CostItem = z.infer<typeof CostItem>;
 
-/**
- * How the customer awards the lines: split (per line item), all_or_none, or either (the customer
- * chooses after the bids, so each line must stand alone); null mode when the RFQ does not say.
- */
-export const AwardMode = z.object({
-  mode: z.enum(["split", "all_or_none", "either"]).nullable(),
-  label: z.string(),
-  evidence: VerifiedFinding.nullable(),
+const PriceSheet = z.object({
+  source: z.string(), revised: z.boolean(), tax: z.string().nullable(),
+  items: z.array(z.object({
+    category: z.string(), item: z.string(), part: z.string(), updated_part: z.string(),
+    description: z.string(), quantity: z.int().nonnegative(), page: z.int().positive(), location: z.string().nullable().optional(),
+  })),
 });
-export type AwardMode = z.infer<typeof AwardMode>;
-
-/** A row of the RFQ's price sheet: what is bought and its printed quantity (yearly when the sheet says so). */
-export const RfqLine = z.object({
-  no: z.string(),
-  part: z.string().nullable(),
-  name: z.string(),
-  quantity: z.number().int().positive(),
-  yearly: z.boolean(),
-  group: z.string().nullable(),
-  source_doc: z.string(),
-  page: z.number().int().positive(),
-});
-export type RfqLine = z.infer<typeof RfqLine>;
+export type PriceSheet = z.infer<typeof PriceSheet>;
 
 export const PrecostSetupResponse = envelope(
   z.object({
+    price_sheets: z.array(PriceSheet).optional(),
     classification: Classification,
-    award: AwardMode,
     requirements: z.array(RequirementCheck),
     /** Clauses that pass a shock to the customer; evidence is null when the RFQ has none. */
     pass_through: z.array(z.object({ id: z.string(), label: z.string(), evidence: VerifiedFinding.nullable() })),
     cost_inputs: CostInputs,
     suggested_items: z.array(CostItem.extend({ expired: z.boolean(), note: z.string() })),
     assumption_note: z.string(),
-    /** Price-sheet rows found in the RFQ; total counts rows beyond the limit too. */
-    lines: z.object({ items: z.array(RfqLine), total: z.number().int().nonnegative(), limit: z.number().int().positive() }),
   }),
 );
 export type PrecostSetupResponse = z.infer<typeof PrecostSetupResponse>;
@@ -495,39 +475,21 @@ export const CompanyRequest = z.object({
 });
 export type CompanyRequest = z.infer<typeof CompanyRequest>;
 
-const VolumeYears = z.array(z.object({ year: z.int().min(2000).max(2100), quantity: z.int().min(0) })).max(30);
-const Tooling = z.object({
-  amount: decimalString,
-  payment: z.enum(["lump_sum", "amortized", "deferred"]),
-  deferred_years: z.int().min(0).max(10),
-});
-
-/** One line item priced on its own. */
-export const PrecostLine = z.object({
-  item: z.string().min(1).max(200),
-  target_price: decimalString.nullable(),
-  volumes: VolumeYears.min(1),
-  items: z.array(CostItem).min(1).max(60),
-  tooling: Tooling.optional(),
-  /** Process requirements this line needs (by value); null or absent: all of them. */
-  processes: z.array(z.string()).nullable().optional(),
-  /** Bid this line. Only a split award lets a line be left out. */
-  included: z.boolean().optional(),
-});
-export type PrecostLine = z.infer<typeof PrecostLine>;
-
 export const PrecostInputs = z.object({
   item: z.string().min(1).max(200),
   currency: z.string().regex(/^[A-Z]{3}$/),
   target_price: decimalString.nullable(),
-  /** Empty when the RFQ is priced per line item (`lines`). */
-  volumes: VolumeYears,
+  volumes: z.array(z.object({ year: z.int().min(2000).max(2100), quantity: z.int().min(0) })).min(1).max(30),
   /** Fraction: 0.03 = 3 % per year. */
   annual_reduction_rate: decimalString,
   reduction_starts_at_index: z.int().min(0).max(30),
   payment_days: z.int().min(0).max(365).nullable(),
-  items: z.array(CostItem).max(60),
-  tooling: Tooling,
+  items: z.array(CostItem).min(1).max(60),
+  tooling: z.object({
+    amount: decimalString,
+    payment: z.enum(["lump_sum", "amortized", "deferred"]),
+    deferred_years: z.int().min(0).max(10),
+  }),
   /** null: as found in the RFQ. */
   material_indexed: z.boolean().nullable(),
   fx_adjusted: z.boolean().nullable(),
@@ -536,12 +498,6 @@ export const PrecostInputs = z.object({
   strategic: z.int().min(0).max(100).nullable(),
   /** Knockout answers by question key. */
   answers: z.record(z.string(), z.enum(["yes", "no", "unknown"])),
-  /** Price per line item; the top-level volumes, items, target and tooling are then not used. */
-  lines: z.array(PrecostLine).max(200).optional(),
-  /** null or absent: as found in the RFQ (all or none when it does not say). */
-  award: z.enum(["split", "all_or_none"]).nullable().optional(),
-  /** Whole-contract costs every line shares, split by volume. */
-  shared_costs: decimalString.optional(),
 });
 export type PrecostInputs = z.infer<typeof PrecostInputs>;
 
@@ -559,15 +515,6 @@ export type PrecostRequest = z.infer<typeof PrecostRequest>;
 
 export const DecisionStatus = z.enum(["go", "conditional", "no_go", "hold", "baseline_undefined", "not_applicable"]);
 export type DecisionStatus = z.infer<typeof DecisionStatus>;
-
-const Decision = z.object({
-  status: DecisionStatus,
-  label: z.string(),
-  /** What decided: knockout | rfq_type | unmodelled_conflict | no_target | price_knockout | conflict_dependent | score */
-  rule: z.string(),
-  reasons: z.array(z.string()),
-  score: z.int().min(0).max(100).nullable(),
-});
 
 export const PrecostResponse = envelope(
   z.object({
@@ -613,9 +560,7 @@ export const PrecostResponse = envelope(
         payback_year: z.int().nullable(),
       }),
       yearly: z.array(z.object({ year: z.int(), quantity: z.int(), price: decimalString })),
-    })
-      /** null when the RFQ is priced per line item: see `lines` and `summary`. */
-      .nullable(),
+    }),
     score: z
       .object({
         total: z.int().min(0).max(100),
@@ -623,50 +568,14 @@ export const PrecostResponse = envelope(
         items: z.array(z.object({ id: z.string(), label: z.string(), weight: z.int(), score: z.int(), note: z.string() })),
       })
       .nullable(),
-    decision: Decision,
-    /** Line-item pricing only (null otherwise): how the lines are awarded. */
-    award: z
-      .object({
-        mode: z.enum(["split", "all_or_none"]),
-        label: z.string(),
-        /** input: chosen on screen · rfq: found in the RFQ · assumed: not stated, all or none assumed */
-        source: z.enum(["input", "rfq", "assumed"]),
-      })
-      .nullable(),
-    /** Each line item priced on its own, in input order. */
-    lines: z
-      .array(
-        z.object({
-          item: z.string(),
-          /** Bid: always true for an all-or-none award. */
-          included: z.boolean(),
-          target_price: decimalString.nullable(),
-          total_quantity: z.int(),
-          piece_cost: decimalString,
-          min_quote: decimalString,
-          safe_quote: decimalString,
-          totals: z.object({ min_quote: decimalString, safe_quote: decimalString }),
-          markup: z.object({ purchased: decimalString, min_quote: signedDecimal, safe_quote: signedDecimal }).nullable(),
-          lines: z.array(z.object({ category: z.string(), label: z.string(), value: signedDecimal })),
-          decision: Decision,
-        }),
-      )
-      .nullable(),
-    /** The lines that are bid, together. */
-    summary: z
-      .object({
-        lines_bid: z.int(),
-        total_quantity: z.int(),
-        totals: z.object({ min_quote: decimalString, safe_quote: decimalString }),
-        /** Σ yearly quantity × target after reductions; null when a bid line has no target. */
-        target_total: decimalString.nullable(),
-        shared_costs: decimalString,
-        /** Shared costs ÷ the bid lines' total volume, added to every line. */
-        shared_per_unit: decimalString,
-        /** Indexes of the lines that pass on their own (Go, conditional, or no target to judge). */
-        suggested: z.array(z.int()),
-      })
-      .nullable(),
+    decision: z.object({
+      status: DecisionStatus,
+      label: z.string(),
+      /** What decided: knockout | rfq_type | unmodelled_conflict | no_target | price_knockout | conflict_dependent | score */
+      rule: z.string(),
+      reasons: z.array(z.string()),
+      score: z.int().min(0).max(100).nullable(),
+    }),
   }),
 );
 export type PrecostResponse = z.infer<typeof PrecostResponse>;

@@ -16,7 +16,6 @@ import {
   CATEGORY_DEPARTMENT,
   CATEGORY_LABEL,
   currencyOptions,
-  unitOptions,
   defaultValidUntil,
   fractionToPercent,
   isDecimal,
@@ -330,15 +329,9 @@ export default function CompanySettingsPage() {
                             <input aria-label={`${i + 1}행 이름`} value={r.name} maxLength={80}
                               placeholder="예: 고장력강판 HC420LA" onChange={(e) => patch({ name: e.target.value })} className={cell} />
                           </td>
-                          <td className="w-32 px-2 py-1.5">
-                            <select aria-label={`${i + 1}행 단위`} value={r.unit}
-                              onChange={(e) => patch({ unit: e.target.value })} className={cell}>
-                              {unitOptions(r.unit).map((u) => (
-                                <option key={u.code} value={u.code}>
-                                  {u.label}
-                                </option>
-                              ))}
-                            </select>
+                          <td className="w-20 px-2 py-1.5">
+                            <input aria-label={`${i + 1}행 단위`} value={r.unit} maxLength={16}
+                              onChange={(e) => patch({ unit: e.target.value })} className={cell} />
                           </td>
                           <td className="w-28 px-2 py-1.5">
                             <input aria-label={`${i + 1}행 단가`} value={r.price} inputMode="decimal"

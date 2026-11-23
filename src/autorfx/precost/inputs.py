@@ -51,54 +51,6 @@ NOT_BINDING = re.compile(
 FROM_SECOND = re.compile(r"\b(?:2nd|second|zweite[nmr]?)\b|(?<![\d.,])2\.(?=\s)", re.IGNORECASE)
 
 
-# Inferred values: filled in for the user with the sentence they come from, marked as inferred.
-# "Within thirty (30) days after delivery … the City will pay the Supplier": the days come first.
-PAY_WORD = re.compile(r"\b(?:pay|paid|payment|zahlung|zahlbar|bezahlt)\b|지급|결제", re.IGNORECASE)
-NEAR = 60
-PAY_TITLE = re.compile(r"payment|zahlung|결제|지급", re.IGNORECASE)
-DAYS = re.compile(
-    r"(?:\((\d{1,3})\)|(?<![\d.,])(\d{1,3}))\s*(?:calendar\s+|business\s+|working\s+)?(?:days?|tage[n]?)\b|(\d{1,3})\s*일",
-    re.IGNORECASE,
-)
-NAMED_CURRENCY = re.compile(r"\b(?:EUR|USD|KRW|GBP|JPY|CNY|CAD|AUD|CHF)\b|€|£|¥|₩")
-DOLLAR = re.compile(r"\$")
-
-
-def inferred_payment_days(clauses: Sequence[Clause]) -> tuple[str, Locus, str] | None:
-    """Days of a payment sentence that names the days before (or without) a payment label.
-
-    In a clause titled "payment" any number of days counts. Elsewhere the days must stand
-    within a few words of paying ("make payment within 30 days"); an invoice-checking period
-    or a notice period is not a payment term.
-    """
-    ranked = sorted(clauses, key=lambda c: not PAY_TITLE.search(c.title or ""))
-    for clause in ranked:
-        titled = bool(PAY_TITLE.search(clause.title or ""))
-        for sentence in clause.sentences:
-            text = sentence.text
-            pays = [m.start() for m in PAY_WORD.finditer(text)]
-            for found in DAYS.finditer(text):
-                near = any(abs(at - found.start()) <= NEAR for at in pays)
-                if not (titled or near):
-                    continue
-                days = next(g for g in found.groups() if g)
-                if 0 < int(days) <= 365:
-                    return days, sentence.locus, text
-    return None
-
-
-def inferred_currency(clauses: Sequence[Clause]) -> tuple[str, Locus, str] | None:
-    """USD when the RFQ names no currency and its only money sign is "$" (it may also be CAD or AUD)."""
-    first = None
-    for clause in clauses:
-        for sentence in clause.sentences:
-            if NAMED_CURRENCY.search(sentence.text):
-                return None
-            if first is None and DOLLAR.search(sentence.text):
-                first = sentence
-    return ("USD", first.locus, first.text) if first else None
-
-
 def evidence(
     label: str, raw: str, locus: Locus, department: str, clauses: Sequence[Clause]
 ) -> VerifiedFinding:
@@ -144,16 +96,6 @@ def reduction(mentions: Sequence[EntityMention]) -> tuple[Decimal | None, int]:
                 continue
             return rate, 1 if FROM_SECOND.search(mention.text) else 0
     return None, 1
-
-
-INFER = {"payment_days": inferred_payment_days, "currency": inferred_currency}
-INFER_NOTE = {
-    "payment_days": "결제 조항의 문장에서 읽은 일수입니다(라벨 없이 적혀 있어 추정). 근거 문장을 확인하세요.",
-    "currency": (
-        "RFQ에 통화가 적혀 있지 않아 금액 기호 $로 미국 달러를 추정했습니다. "
-        "캐나다·호주 달러일 수 있으니 확인하세요."
-    ),
-}
 
 
 def extract_cost_inputs(
@@ -230,14 +172,6 @@ def extract_cost_inputs(
                 "source": "rfq",
                 "note": note,
                 "evidence": evidence(label, text, locus, "sales", clauses).model_dump(mode="json"),
-            }
-        elif field in INFER and (guess := INFER[field](clauses)) is not None:
-            value, locus, text = guess
-            base |= {
-                "value": value,
-                "source": "inferred",
-                "note": INFER_NOTE[field],
-                "evidence": evidence(label, text, locus, "costing", clauses).model_dump(mode="json"),
             }
         candidates.append(base)
     return {

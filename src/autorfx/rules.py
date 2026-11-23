@@ -282,8 +282,6 @@ class CostModelRules(Model):
     shocks: tuple[ShockRule, ...] = ()
     combined: tuple[str, ...] = ()
     pass_through: dict[str, PassThroughRule] = Field(default_factory=dict)
-    award: dict[Literal["split", "all_or_none"], PassThroughRule] = Field(default_factory=dict)
-    """How the customer awards: per line item (split) or the whole RFQ only (all_or_none)."""
     scoring: ScoringRules
     company_defaults: CompanyDefaults
 
