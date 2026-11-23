@@ -133,7 +133,7 @@ test.describe.serial("real backend with user-supplied files", () => {
     await page.goto("/settings/departments");
     await page.getByTestId("org-add").click();
     await page.getByTestId("org-label-0").fill(label);
-    await page.getByTestId("org-area-0-production_engineering").check({ force: true });
+    await page.getByTestId("org-area-0-production").check({ force: true });
     await page.getByTestId("org-save").click();
     await expect(page.getByTestId("org-ok")).toBeVisible();
 
@@ -233,7 +233,7 @@ test.describe.serial("real backend with user-supplied files", () => {
     await first.getByRole("combobox").first().selectOption("");
     await first.getByLabel("1행 이름").fill("테스트 재료");
     await first.getByLabel("1행 수량").fill("1");
-    await first.getByLabel("1행 단가").fill("2");
+    await first.getByLabel("1행 단가", { exact: true }).fill("2");
     for (const q of await page.getByTestId("knockout-questions").getByRole("radiogroup").all()) {
       await q.getByRole("radio", { name: "예" }).click();
     }
