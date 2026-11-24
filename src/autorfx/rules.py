@@ -28,6 +28,7 @@ RULE_FILES = (
     "sensitivity",
     "cost_model",
     "work_areas",
+    "price_sheet",
 )
 
 # Same list, same order, as COST_FIELDS in web/src/lib/rfq/contract.ts.
@@ -315,16 +316,19 @@ class CostModelRules(Model):
         return self
 
 
-def work_area_pattern(term: str) -> str:
-    """Expression for a work-area keyword (rules in the header of ``work_areas.yaml``).
+def keyword_pattern(term: str) -> str:
+    """Expression for a keyword of ``work_areas.yaml`` or ``price_sheet.yaml`` (rules in their header).
 
     ``re:`` is a regular expression as written; a Latin word matches as a whole word with an
     optional plural or inflection ending; Korean takes particles and compounds, so it matches as is.
+    Digits or punctuation-only tokens get word boundaries so ``1`` does not match inside ``2027``.
     """
     if term.startswith("re:"):
         return term[3:]
     if re.search(r"[a-zäöüß]", term, re.IGNORECASE):
         return rf"(?<!\w){re.escape(term)}(?:s|es|e|n|en)?(?!\w)"
+    if re.search(r"\d", term) or not re.search(r"[^\W\d_]", term, re.UNICODE):
+        return rf"(?<!\w){re.escape(term)}(?!\w)"
     return re.escape(term)
 
 
@@ -354,7 +358,7 @@ class WorkAreaRules(Model):
             for terms in area.topics.values():
                 for term in terms:
                     try:
-                        pattern = re.compile(work_area_pattern(term), re.IGNORECASE)
+                        pattern = re.compile(keyword_pattern(term), re.IGNORECASE)
                     except re.error as exc:
                         raise ValueError(f"work_areas.yaml '{area.id}': 정규식 오류 '{term}': {exc}") from exc
                     # A longer keyword is more specific: it weighs more when areas are ranked.
@@ -368,6 +372,65 @@ class WorkAreaRules(Model):
         return self._patterns
 
 
+ColumnRole = Literal["no", "part", "description", "spec", "quantity", "unit", "months", "price", "total"]
+COLUMN_ROLES: tuple[ColumnRole, ...] = (
+    "no",
+    "part",
+    "description",
+    "spec",
+    "quantity",
+    "unit",
+    "months",
+    "price",
+    "total",
+)
+
+
+def _compiled(terms: tuple[str, ...], where: str) -> tuple[tuple[re.Pattern[str], int], ...]:
+    """(expression, weight) per keyword; a longer keyword is more specific and weighs more."""
+    found = []
+    for term in terms:
+        try:
+            found.append((re.compile(keyword_pattern(term), re.IGNORECASE), len(term.removeprefix("re:"))))
+        except re.error as exc:
+            raise ValueError(f"{where}: 정규식 오류 '{term}': {exc}") from exc
+    return tuple(found)
+
+
+class PriceSheetRules(Model):
+    """Words that name the columns of an RFQ price sheet (price_sheet.yaml)."""
+
+    roles: dict[ColumnRole, tuple[str, ...]]
+    yearly: tuple[str, ...] = ()
+    monthly: tuple[str, ...] = ()
+    group: tuple[str, ...] = ()
+    total_row: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _consistent(self) -> PriceSheetRules:
+        if missing := {"quantity", "description"} - set(self.roles):
+            raise ValueError(f"price_sheet.yaml: 역할 {sorted(missing)}의 단어가 없습니다")
+        for role, terms in self.roles.items():
+            _compiled(terms, f"price_sheet.yaml '{role}'")
+        for name in ("yearly", "monthly", "group", "total_row"):
+            _compiled(getattr(self, name), f"price_sheet.yaml '{name}'")
+        return self
+
+    def compiled(self, extra: dict[str, tuple[str, ...]] | None = None) -> dict[str, tuple]:
+        """Compiled keywords per role, plus ``yearly``, ``monthly``, ``group`` and ``total_row``.
+
+        ``extra`` adds approved header words per role (literal phrases, kept in the work folder).
+        """
+        extra = extra or {}
+        found: dict[str, tuple] = {
+            role: _compiled(self.roles.get(role, ()) + tuple(extra.get(role, ())), role)
+            for role in COLUMN_ROLES
+        }
+        for name in ("yearly", "monthly", "group", "total_row"):
+            found[name] = _compiled(getattr(self, name), name)
+        return found
+
+
 class Ruleset(Model):
     departments: tuple[DepartmentRule, ...] = Field(min_length=1)
     priority: tuple[PriorityRule, ...]
@@ -377,6 +440,7 @@ class Ruleset(Model):
     sensitivity: SensitivityRules
     cost_model: CostModelRules
     work_areas: WorkAreaRules
+    price_sheet: PriceSheetRules
     assumption_note: str = ""
     digest: str
     """SHA-256 over the rule files' content; part of every analysis cache key."""
@@ -451,6 +515,7 @@ def load_ruleset(rules_dir: Path) -> Ruleset:
             sensitivity=raw["sensitivity"],
             cost_model=raw["cost_model"],
             work_areas=raw["work_areas"],
+            price_sheet=raw["price_sheet"],
             digest=digest,
         )
     except KeyError as exc:

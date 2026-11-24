@@ -20,10 +20,14 @@ import {
   PrecostSetupResponse,
   RtmResponse,
   SentencesResponse,
+  SheetColumnsResponse,
+  SheetWordsResponse,
   UploadResponse,
   type CompanyRequest,
   type OrgDepartmentsRequest,
   type PrecostRequest,
+  type SheetColumnsRequest,
+  type SheetWordRequest,
 } from "./contract";
 
 export type RequestCtx = { team: string | null };
@@ -178,6 +182,22 @@ export const rfqApi = {
       buildUrl("cost_inputs", `${rfq(id)}/precost-setup`, { team: ctx.team }),
       { signal },
     ),
+
+  /** Read one price-sheet table by columns assigned by hand; the same header is read this way from now on. */
+  assignSheetColumns: (id: string, body: SheetColumnsRequest, ctx: RequestCtx) =>
+    request(
+      "cost_inputs",
+      SheetColumnsResponse,
+      buildUrl("cost_inputs", `${rfq(id)}/price-sheet/columns`, { team: ctx.team }),
+      post(body),
+    ),
+
+  /** Header words assigned by hand: candidates for the price-sheet dictionary, and the approved ones. */
+  sheetWords: (ctx: RequestCtx, signal?: AbortSignal) =>
+    request("precost", SheetWordsResponse, buildUrl("precost", "/price-sheet/words", { team: ctx.team }), { signal }),
+
+  decideSheetWord: (body: SheetWordRequest, ctx: RequestCtx) =>
+    request("precost", SheetWordsResponse, buildUrl("precost", "/price-sheet/words", { team: ctx.team }), post(body)),
 
   /** Company settings: price table, knockout profile and rates (cost-visible teams only). */
   company: (ctx: RequestCtx, signal?: AbortSignal) =>

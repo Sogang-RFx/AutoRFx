@@ -251,6 +251,8 @@ award:
         - '(partial|split|multiple) awards?'
         - 'awards? .{0,40}(in part|in whole or in part|any or all items?)'
         - 'bid (on )?(any|one) or (more|all) (items|lots)'
+        - '\bon an? per[- ](lot|item|line[- ]item) basis'
+        - '\bon any (or|and/or) all (items|lots)\b'
       de:
         - 'Teil(vergabe|lose?)'
         - 'losweise'

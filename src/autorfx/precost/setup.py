@@ -21,6 +21,7 @@ from decimal import Decimal
 from autorfx.analysis.citation import verify
 from autorfx.consistency.normalize import parse_number
 from autorfx.models import Clause, EntityMention, Finding, Locus, ParsedSentence
+from autorfx.precost.calc import EITHER_LABEL
 from autorfx.precost.company import Company, canonical
 from autorfx.precost.lines import MAX_LINES
 from autorfx.rules import RequirementRule, Ruleset
@@ -204,9 +205,6 @@ def pass_through(clauses: Sequence[Clause], ruleset: Ruleset) -> dict[str, dict 
     return found
 
 
-EITHER_LABEL = "둘 다 가능 (발주처가 선택)"
-
-
 def award_mode(clauses: Sequence[Clause], ruleset: Ruleset) -> dict:
     """How the RFQ awards: per line item, the whole RFQ only, either, or not stated (cited when found).
 
@@ -312,7 +310,7 @@ def prepare(
         "cost_inputs": cost_inputs,
         "suggested_items": suggested_items(cost_inputs, company, today),
         "assumption_note": ruleset.cost_model.assumption_note,
-        "lines": lines or {"items": [], "total": 0, "limit": MAX_LINES},
+        "lines": lines or {"items": [], "total": 0, "limit": MAX_LINES, "tables": [], "lists": []},
     }
 
 

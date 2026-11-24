@@ -4,7 +4,8 @@
  * package at a time: its canonical PDF as the server chose it for this team
  * (restricted teams get the cost-redacted PDF), with highlight boxes from the
  * sentence coordinates of the same PDF. A citation opens its own file, page and
- * sentence. PDF.js is loaded on demand so it stays out of the first-load bundle.
+ * sentence. A region (a price-sheet table) opens its page with the region outlined.
+ * PDF.js is loaded on demand so it stays out of the first-load bundle.
  */
 import { useEffect, useRef, useState } from "react";
 import type { Locus, SentencesResponse } from "@/lib/rfq/contract";
@@ -48,15 +49,26 @@ async function loadPdf(url: () => string, signal: AbortSignal): Promise<PdfDoc> 
 
 type Loaded = { key: string; doc: PdfDoc | null; error: string | null; forbidden: boolean };
 
+/** A part of a page to outline, as fractions of the page (a table found by the price-sheet reader). */
+export type SourceRegion = {
+  source_doc: string;
+  /** The page opened first. */
+  page: number;
+  /** Boxes on any page of the file; each page shows its own. */
+  boxes: { page: number; x: number; y: number; w: number; h: number }[];
+  label: string;
+};
+
 type Props = {
   rfqId: string;
   ctx: RequestCtx;
   restricted: boolean;
   target: Locus | null;
+  region?: SourceRegion | null;
   className?: string;
 };
 
-export function SourceViewer({ rfqId, ctx, restricted, target, className }: Props) {
+export function SourceViewer({ rfqId, ctx, restricted, target, region = null, className }: Props) {
   const files = usePackageFiles();
   const locusLabel = useLocusLabel();
   const [chosen, setChosen] = useState<string | null>(null);
@@ -75,6 +87,14 @@ export function SourceViewer({ rfqId, ctx, restricted, target, className }: Prop
     if (target) {
       setChosen(target.source_doc);
       setPage(target.page_number);
+    }
+  }
+  const [followedRegion, setFollowedRegion] = useState<SourceRegion | null>(null);
+  if (region !== followedRegion) {
+    setFollowedRegion(region);
+    if (region) {
+      setChosen(region.source_doc);
+      setPage(region.page);
     }
   }
   const fileId = chosen ?? files[0]?.id ?? null;
@@ -151,15 +171,17 @@ export function SourceViewer({ rfqId, ctx, restricted, target, className }: Prop
       ? (sentences.data.data.sentences.find((s) => s.locus.sentence_index === target.sentence_index) ?? null)
       : null;
   const targetMissing = onTargetPage && sentences.status === "ok" && !marked;
+  const outlined = region && region.source_doc === fileId ? region.boxes.filter((b) => b.page === page) : [];
 
+  const markKey = marked ? `s:${marked.locus.sentence_index}` : outlined.length && size ? `r:${page}:${outlined[0].y}` : null;
   useEffect(() => {
     // Scroll only the viewer, never the page around it.
     const holder = holderRef.current;
     const mark = markRef.current;
-    if (!marked || !holder || !mark) return;
-    const delta = mark.getBoundingClientRect().top - holder.getBoundingClientRect().top - holder.clientHeight / 2;
+    if (!markKey || !holder || !mark) return;
+    const delta = mark.getBoundingClientRect().top - holder.getBoundingClientRect().top - holder.clientHeight / 3;
     holder.scrollBy({ top: delta, behavior: "smooth" });
-  }, [marked]);
+  }, [markKey]);
 
   const pageCount = doc?.numPages ?? current?.page_count ?? 0;
 
@@ -222,6 +244,10 @@ export function SourceViewer({ rfqId, ctx, restricted, target, className }: Prop
           <span className="font-semibold text-ink tabular" data-testid="source-locator">
             {locusLabel(target)}
           </span>
+        ) : region ? (
+          <span className="font-semibold text-ink" data-testid="source-locator">
+            {region.label}
+          </span>
         ) : (
           <span className="text-ink-muted">인용을 누르면 해당 파일의 문장으로 이동합니다.</span>
         )}
@@ -281,6 +307,17 @@ export function SourceViewer({ rfqId, ctx, restricted, target, className }: Prop
               }}
             />
           ))}
+          {!marked &&
+            outlined.map((r, i) => (
+              <div
+                key={`region-${i}`}
+                ref={i === 0 ? markRef : undefined}
+                data-testid="source-region"
+                aria-hidden="true"
+                className="pointer-events-none absolute rounded-chip border-2 border-accent bg-accent/10"
+                style={{ left: `${r.x * 100}%`, top: `${r.y * 100}%`, width: `${r.w * 100}%`, height: `${r.h * 100}%` }}
+              />
+            ))}
         </div>
         {marked && <p className="sr-only">강조된 문장: {marked.text}</p>}
       </div>
