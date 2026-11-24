@@ -476,8 +476,14 @@ def assign_columns(rfq_id: str, body: ColumnsBody, state: State, team: Team = No
     if body.header_row >= len(grid.rows):
         raise ApiError(400, "invalid_request", "머리글 줄이 표 밖입니다.")
     header = grid.rows[body.header_row]
+    if sum(1 for c in header if c and str(c).strip()) < 2:
+        raise ApiError(
+            400, "invalid_request", "머리글 줄에 열이 너무 적습니다. 빈 줄이나 제목 줄은 머리글이 아닙니다."
+        )
+    # Row lengths can differ (ragged PDF tables); use the grid width, not this header alone.
+    width = max((len(row) for row in grid.rows), default=len(header))
     try:
-        columns = check_columns(body.columns, len(header))
+        columns = check_columns(body.columns, width)
     except PriceSheetError as exc:
         raise ApiError(400, "invalid_request", str(exc)) from exc
     # Header words the rules would have given another role (or none) are dictionary candidates.

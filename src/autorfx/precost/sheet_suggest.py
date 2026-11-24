@@ -62,7 +62,12 @@ def suggest_columns(grid: Grid, provider: AnalysisProvider, compiled: Mapping[st
     sampled = min(len(grid.rows), LAYOUT_SCAN)
     if header is None or not 0 <= header < sampled:
         raise SuggestError("AI가 고른 머리글 줄이 표 밖입니다. 열을 직접 지정하세요.")
-    width = max(len(row) for row in grid.rows)
+    header_cells = grid.rows[header]
+    if sum(1 for c in header_cells if c and str(c).strip()) < 2:
+        raise SuggestError(
+            "AI가 고른 머리글 줄에 열이 너무 적습니다. 빈 줄이나 제목 줄이 아닙니다. 열을 직접 지정하세요."
+        )
+    width = max((len(row) for row in grid.rows), default=0)
     proposed = {role: getattr(found, role) for role in COLUMN_ROLES if getattr(found, role) is not None}
     try:
         columns = check_columns(proposed, width)
@@ -76,7 +81,7 @@ def suggest_columns(grid: Grid, provider: AnalysisProvider, compiled: Mapping[st
         spans=grid.spans[header:] if grid.spans else (),
         part=False,
     )
-    (reading, *_) = read_grids([below], compiled, {signature(grid.rows[header]): columns})
+    (reading, *_) = read_grids([below], compiled, {signature(header_cells): columns})
     if not reading.lines:
         raise SuggestError(
             "AI가 고른 열로는 품목을 하나도 읽지 못했습니다. "

@@ -98,6 +98,16 @@ def test_without_a_model_there_is_no_suggestion(rules: PriceSheetRules) -> None:
         suggest_columns(_grid(), RuleOnlyProvider(), rules.compiled())
 
 
+def test_a_blank_or_title_header_row_is_refused(rules: PriceSheetRules) -> None:
+    """A one-cell title or empty row must not become a remembered layout signature."""
+    blank = _map(description=2, quantity=3).model_copy(update={"header_row": 1})
+    with pytest.raises(SuggestError, match="열이 너무 적"):
+        suggest_columns(_grid(), ScriptedProvider(sheet_maps=[blank]), rules.compiled())
+    title = _map(description=2, quantity=3).model_copy(update={"header_row": 0})
+    with pytest.raises(SuggestError, match="열이 너무 적"):
+        suggest_columns(_grid(), ScriptedProvider(sheet_maps=[title]), rules.compiled())
+
+
 def test_an_accepted_suggestion_reads_a_header_below_the_notes(rules: PriceSheetRules) -> None:
     columns = {"no": 1, "description": 2, "quantity": 3, "price": 4}
     (reading,) = read_grids([_grid()], rules.compiled(), {signature(HEADER): columns})
@@ -182,6 +192,14 @@ def test_the_api_suggests_and_the_user_accepts(api: tuple[TestClient, str]) -> N
     assert_valid("sheet-suggest", got.json())
     data = got.json()["data"]
     assert (data["header_row"], data["lines"]) == (10, 2)
+
+    blank = client.post(
+        f"/rfqs/{rfq_id}/price-sheet/columns",
+        params={"team": "sales"},
+        json={"table": table["id"], "header_row": 0, "columns": {"description": 2, "quantity": 3}},
+    )
+    assert blank.status_code == 400
+    assert "열이 너무 적" in blank.json()["error"]["message"]
 
     body = {"table": table["id"], "header_row": data["header_row"], "columns": data["columns"]}
     accepted = client.post(f"/rfqs/{rfq_id}/price-sheet/columns", params={"team": "sales"}, json=body)

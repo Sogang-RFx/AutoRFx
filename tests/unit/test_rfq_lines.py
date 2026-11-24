@@ -19,7 +19,18 @@ from fastapi.testclient import TestClient
 from autorfx.analysis import RuleOnlyProvider
 from autorfx.api import create_app
 from autorfx.config import Settings
-from autorfx.models import FileRecord, Locus, PackageManifest, ParsedFile, Table
+from autorfx.models import (
+    FileLayout,
+    FileRecord,
+    Locus,
+    PackageManifest,
+    ParsedFile,
+    Rect,
+    SheetCell,
+    SheetRow,
+    Table,
+)
+from autorfx.parser.sheets import parse_sheets
 from autorfx.precost import lines as lines_mod
 from autorfx.precost.lines import find_grid, pdf_grids, read_grids, rfq_lines, signature, table_grids
 from autorfx.precost.sheet_store import (
@@ -862,6 +873,126 @@ def test_a_sheet_with_quantities_keeps_its_rows_strict(rules: PriceSheetRules) -
     (reading,) = read_grids(table_grids("d01", [table], rules.compiled()), rules.compiled(), {})
     assert not reading.open
     assert [(r["name"], r["quantity"]) for r in reading.lines] == [("Brake pad", 4)]
+
+
+def _layout_row(sheet: str, index: int, cells: list[tuple[str, str]]) -> SheetRow:
+    rect = Rect(x=0.05, y=min(0.05 + 0.03 * index, 0.9), w=0.9, h=0.02)
+    return SheetRow(
+        sheet=sheet,
+        row_index=index,
+        page_number=1,
+        rect=rect,
+        cells=tuple(
+            SheetCell(anchor=f"{sheet}!{col}{index}", column=col, text=text, rect=rect) for col, text in cells
+        ),
+    )
+
+
+def test_parse_sheets_keeps_header_aligned_with_empty_columns(rules: PriceSheetRules) -> None:
+    """Empty column B is dropped by the parser; header_anchors put Quantity back over column C."""
+    layout = FileLayout(
+        file_id="d05",
+        rows=(
+            _layout_row("Parts", 1, [("A", "Item"), ("C", "Quantity"), ("D", "Unit Price")]),
+            _layout_row("Parts", 2, [("A", "Brake Pad"), ("C", "10"), ("D", "25")]),
+        ),
+    )
+    parsed = parse_sheets("d05", layout, page_count=1)
+    (table,) = parsed.tables
+    assert table.header == ("Item", "Quantity", "Unit Price")
+    assert table.header_anchors == ("Parts!A1", "Parts!C1", "Parts!D1")
+    compiled = rules.compiled()
+    (grid,) = table_grids("d05", parsed.tables, compiled)
+    assert grid.rows[0] == ("Item", "", "Quantity", "Unit Price")
+    assert grid.rows[1] == ("Brake Pad", "", "10", "25")
+    (reading,) = read_grids([grid], compiled, {})
+    assert [(r["name"], r["quantity"]) for r in reading.lines] == [("Brake Pad", 10)]
+
+
+def test_header_without_anchors_is_estimated_from_data_cells(rules: PriceSheetRules) -> None:
+    """A table stored before header_anchors existed still lines up via data-cell columns."""
+    table = Table(
+        source_doc="d05",
+        page_number=1,
+        section_id="Parts",
+        title="Parts",
+        header=("Item", "Quantity", "Unit Price"),
+        rows=(("Brake Pad", "10", "25"),),
+        row_loci=(
+            Locus(
+                source_doc="d05",
+                page_number=1,
+                section_id="Parts",
+                paragraph_index=1,
+                sentence_index=1,
+                anchor="Parts!A2",
+            ),
+        ),
+        cell_anchors=(("Parts!A2", "Parts!C2", "Parts!D2"),),
+        header_anchors=(),
+    )
+    compiled = rules.compiled()
+    (grid,) = table_grids("d05", [table], compiled)
+    assert grid.rows[0] == ("Item", "", "Quantity", "Unit Price")
+    (reading,) = read_grids([grid], compiled, {})
+    assert [(r["name"], r["quantity"]) for r in reading.lines] == [("Brake Pad", 10)]
+
+
+def _two_close_tables() -> Table:
+    """Two price tables on one sheet with only a few rows between their headers."""
+    rows = [
+        ("Item", "Description", "Qty", "Unit Price"),
+        ("1", "Brake pad", "4", "25"),
+        ("2", "Brake disc", "2", "80"),
+        ("Options", "", "", ""),
+        ("Option", "Description", "Qty", "Unit Price"),
+        ("1", "Ceramic upgrade", "1", "40"),
+        ("2", "Dust shield", "1", "15"),
+    ]
+    locus = Locus(source_doc="d06", page_number=1, section_id="Form", paragraph_index=1, sentence_index=1)
+    return Table(
+        source_doc="d06",
+        page_number=1,
+        section_id="Form",
+        title="Form",
+        header=(),
+        rows=tuple(rows),
+        row_loci=tuple(locus.model_copy(update={"anchor": f"Form!A{n}"}) for n in range(1, len(rows) + 1)),
+    )
+
+
+def test_close_headers_split_when_items_lie_between_them(rules: PriceSheetRules) -> None:
+    """A second header fewer than HEADER_SCAN rows below the first still opens its own table."""
+    compiled = rules.compiled()
+    grids = table_grids("d06", [_two_close_tables()], compiled)
+    assert [(g.id, g.caption) for g in grids] == [
+        ("d06:s1", "Form"),
+        ("d06:s1:r5", "Options"),
+    ]
+    readings = read_grids(grids, compiled, {})
+    assert [len(r.lines) for r in readings] == [2, 2]
+    assert [r["name"] for r in readings[1].lines] == ["Ceramic upgrade", "Dust shield"]
+
+
+def test_duplicate_headers_without_items_stay_one_table(rules: PriceSheetRules) -> None:
+    """A repeated header with nothing between it and the first stays in the same table."""
+    rows = [
+        ("No", "Description", "Qty", "Unit Price"),
+        ("No", "Description", "Qty", "Unit Price"),
+        ("1", "Brake pad", "4", "25"),
+    ]
+    locus = Locus(source_doc="d07", page_number=1, section_id="Form", paragraph_index=1, sentence_index=1)
+    table = Table(
+        source_doc="d07",
+        page_number=1,
+        section_id="Form",
+        title="Form",
+        header=(),
+        rows=tuple(rows),
+        row_loci=tuple(locus.model_copy(update={"anchor": f"Form!A{n}"}) for n in range(1, len(rows) + 1)),
+    )
+    grids = table_grids("d07", [table], rules.compiled())
+    assert [g.id for g in grids] == ["d07:s1"]
 
 
 # ── assignment store ────────────────────────────────────────────────────────

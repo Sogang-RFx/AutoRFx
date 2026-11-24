@@ -503,16 +503,33 @@ def table_grids(
         )
         numbers = [number for number, _, _, _ in placed]
         pages = tuple(page for _, page, _, _ in placed)
-        cuts: list[tuple[int, dict[str, int]]] = [(0, {})]
+        # Row 0 may already be a price-sheet header (sheet opens as a table); remember that so a
+        # second table two cuts later still gets the title row above it (len(cuts) == 2).
+        cuts: list[tuple[int, dict[str, int]]] = [
+            (0, _header_roles_at(rows, 0, compiled) or {} if compiled is not None else {})
+        ]
         if compiled is not None:
-            for index in range(HEADER_SCAN, len(rows)):
-                if index - cuts[-1][0] >= HEADER_SCAN and (roles := _header_roles_at(rows, index, compiled)):
+            for index in range(1, len(rows)):
+                roles = _header_roles_at(rows, index, compiled)
+                if not roles:
+                    continue
+                prev, prev_roles = cuts[-1]
+                if index <= prev:
+                    continue
+                # Two headers with an item between them: a new table, even when close.
+                # Consecutive duplicate headers (no items between) stay one table.
+                # The first header under notes/start always opens a table (notes rarely hold items).
+                if prev_roles:
+                    if any(_item_row(rows[r]) for r in range(prev + 1, index)):
+                        cuts.append((index, roles))
+                else:
                     cuts.append((index, roles))
         title_of = blocks[0].title
         for (start, roles), end in zip(cuts, [c for c, _ in cuts[1:]] + [len(rows)], strict=True):
             # One table under the sheet's notes is named by its sheet: the line above its header
             # is then a note ("Contract Effective until August 31, 2027"), not a table title.
-            title = _sheet_title(rows[start - 1], roles) if start and len(cuts) > 2 else ""
+            # A sheet that opens as a table (cuts[0] has roles) keeps titles for every lower table.
+            title = _sheet_title(rows[start - 1], roles) if start and (cuts[0][1] or len(cuts) > 2) else ""
             grids.append(
                 Grid(
                     id=f"{doc}:s{n}" if not start else f"{doc}:s{n}:r{numbers[start] or start + 1}",
@@ -536,6 +553,8 @@ def _placed_rows(table: Table) -> list[tuple[int | None, int, int, tuple[str, ..
 
     The parser's header row is the first row again, on the sheet row above the first data row.
     The first column comes from the cell anchors ("Sheet!B73" in the second cell: column A).
+    Header cells use ``header_anchors`` the same way, so an empty column the parser dropped does
+    not shift "Quantity" onto the blank under "Item".
     """
     at = 0
     for anchors in table.cell_anchors:
@@ -552,8 +571,30 @@ def _placed_rows(table: Table) -> list[tuple[int | None, int, int, tuple[str, ..
     rows = [(numbers[i], pages[i], *_anchored(r, anchors[i], at)) for i, r in enumerate(table.rows)]
     if table.header:
         first = numbers[0] - 1 if numbers and numbers[0] else None
-        rows.insert(0, (first, table.page_number, at, tuple(table.header)))
+        header_anchors = table.header_anchors
+        if len(header_anchors) != len(table.header) or not any(
+            a and SHEET_COLUMN.search(a) for a in header_anchors
+        ):
+            header_anchors = _estimate_header_anchors(table)
+        rows.insert(0, (first, table.page_number, *_anchored(table.header, header_anchors, at)))
     return rows
+
+
+def _estimate_header_anchors(table: Table) -> tuple[str | None, ...]:
+    """Sheet columns of a header that was stored without ``header_anchors``.
+
+    Older parsed tables only kept data-row anchors. Each packed header index takes the column of
+    the same-index data cell in the block, so empty columns the parser dropped still line up.
+    """
+    estimated: list[str | None] = []
+    for index in range(len(table.header)):
+        anchor = None
+        for row_anchors in table.cell_anchors:
+            if index < len(row_anchors) and row_anchors[index] and SHEET_COLUMN.search(row_anchors[index]):
+                anchor = row_anchors[index]
+                break
+        estimated.append(anchor)
+    return tuple(estimated)
 
 
 def _anchored(cells: Sequence[str], anchors: Sequence[str | None], at: int) -> tuple[int, tuple[str, ...]]:
@@ -576,6 +617,12 @@ def _anchored(cells: Sequence[str], anchors: Sequence[str | None], at: int) -> t
         return at, tuple(cells)
     width = max(placed) + 1
     return 0, tuple(placed.get(i, "") for i in range(width))
+
+
+def _item_row(row: Sequence[str]) -> bool:
+    """A numeric item row: at least two filled cells, one of them a whole number."""
+    texts = [c for c in row if c and str(c).strip()]
+    return len(texts) >= 2 and any(INTEGER.match(c) for c in texts)
 
 
 SHEET_COLUMN = re.compile(r"!\$?([A-Z]+)\$?\d+")
