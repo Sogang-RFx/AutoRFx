@@ -11,6 +11,8 @@ import type { KeyboardEvent } from "react";
 import type { ClauseItem, Locus, ProvenanceMap, VisibleClause } from "@/lib/rfq/contract";
 import type { DeptFilter } from "@/lib/rfq/departments";
 import { fileName, fileTag, usePackageFiles } from "@/lib/rfq/package-context";
+import { noTranslationMessage } from "@/lib/rfq/translation";
+import { useTeamGroup } from "../shell/app-shell";
 import { IconClose, IconLock, IconWarn } from "../ui/icons";
 import {
   CitationChip,
@@ -281,6 +283,7 @@ export function ClauseDetail({
 }: DetailProps) {
   const files = usePackageFiles();
   const locusLabel = useLocusLabel();
+  const { engines } = useTeamGroup();
   const [showTranslation, setShowTranslation] = useState(true);
   const deptLabel = (id: string) => departments.find((d) => d.id === id)?.label ?? id;
 
@@ -444,7 +447,7 @@ export function ClauseDetail({
             showTranslation && <p className="text-dense text-ink">{clause.translation_ko}</p>
           ) : (
             <p className="text-label text-ink-muted" data-testid="no-translation">
-              번역 없음. 번역 제공자가 연결되지 않아 원문만 제공합니다.
+              {noTranslationMessage(clause.lang, engines?.translation ?? "")}
             </p>
           )}
         </section>
