@@ -97,6 +97,9 @@ def _analyze(args: argparse.Namespace) -> int:
 
 def _compare_search(args: argparse.Namespace) -> int:
     """BM25 vs embedding vs hybrid on one RFQ, for a list of questions (report under data/work)."""
+    if args.min_score is not None and not -1.0 <= args.min_score <= 1.0:  # before any pipeline work
+        sys.stderr.write(f"--min-score 값은 -1에서 1 사이여야 합니다: {args.min_score}\n")
+        return 2
     settings = get_settings()
     ruleset = load_ruleset(settings.rules_dir)
     # The questions are checked first, like in score-search: a missing or malformed file, or one from
@@ -120,7 +123,7 @@ def _compare_search(args: argparse.Namespace) -> int:
     if found is None:
         return 2
     sources, name, is_sample = found
-    gate = args.min_score if args.min_score is not None else settings.embedding_min_score
+    gate = args.min_score if args.min_score is not None else settings.min_score_for(model)
     # Retrieval only needs parsing and chunking. The analysis runs on rules in its own temporary
     # workspace, so it neither spends API calls nor replaces the served analysis (possibly GPT) of the
     # same files under data/work. The embedding cache and the report stay where they are.
@@ -268,14 +271,20 @@ def main(argv: list[str] | None = None) -> int:
     comp.add_argument("--sample", help="샘플 RFQ의 id")
     comp.add_argument("--questions", default=str(DEFAULT_QUESTIONS), help="질문 YAML")
     comp.add_argument("--model", help="임베딩 모델 (기본: EMBEDDING_MODEL)")
-    comp.add_argument("--min-score", type=float, help="임베딩 근거 기준 (기본: EMBEDDING_MIN_SCORE)")
+    comp.add_argument(
+        "--min-score",
+        type=float,
+        help="임베딩 근거 기준, -1~1 (기본: EMBEDDING_MIN_SCORE, 없으면 모델별 측정값)",
+    )
     comp.add_argument("--top", type=int, default=3, help="질문별로 보여줄 결과 수")
     comp.set_defaults(run=_compare_search)
     sc = commands.add_parser("score-search", help="정답 표로 검색 방식과 근거 기준을 자동 채점한다 (#14)")
     sc.add_argument("--key", help="정답 표 YAML (기본: data/answer_keys/retrieval_ko.yaml)")
     sc.add_argument("--questions", default=str(DEFAULT_QUESTIONS), help="질문 YAML")
     sc.add_argument("--model", help="임베딩 모델 (기본: EMBEDDING_MODEL)")
-    sc.add_argument("--gates", help="비교할 근거 기준, 쉼표로 구분 (기본: 0.45,0.50,0.55,0.60,0.65)")
+    sc.add_argument(
+        "--gates", help="비교할 근거 기준, 쉼표로 구분 (기본: 0.20,0.30,0.40,0.45,0.50,0.55,0.60,0.65)"
+    )
     sc.add_argument("--top", type=int, default=3, help="질문별로 보는 결과 수")
     sc.add_argument(
         "--allow-missing", action="store_true", help="정답 표의 RFQ 일부가 없어도 있는 것만 채점한다"

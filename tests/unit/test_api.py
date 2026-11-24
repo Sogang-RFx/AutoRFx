@@ -31,7 +31,7 @@ Api = tuple[TestClient, str, list[Path]]
 @pytest.fixture(scope="module")
 def api(tmp_path_factory: pytest.TempPathFactory, ruleset: Ruleset) -> Iterator[Api]:
     root = tmp_path_factory.mktemp("api")
-    settings = Settings(_env_file=None, data_dir=root / "data")
+    settings = Settings(_env_file=None, data_dir=root / "data", embedding_model=None)
     make_package(settings.samples_dir / "synthetic-sample")
     sources = make_package(root / "upload")
     app = create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())
@@ -186,7 +186,9 @@ def test_an_oversized_upload_is_refused_while_it_arrives(
 ):
     """PKG-03, security: the size limit stops reading the body; the server never buffers an oversized
     upload (40 MB sent against a 1 file x 1 MB limit) before refusing it."""
-    settings = Settings(_env_file=None, data_dir=tmp_path / "data", max_files=1, max_file_mb=1)
+    settings = Settings(
+        _env_file=None, data_dir=tmp_path / "data", max_files=1, max_file_mb=1, embedding_model=None
+    )
     chunks = [PART_HEAD, *([b"x" * MB] * 40), b"\r\n--B--\r\n"]
     headers = [(b"content-length", str(sum(map(len, chunks))).encode())] if declare_length else []
     with TestClient(create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())) as client:
@@ -200,7 +202,7 @@ def test_an_oversized_upload_is_refused_while_it_arrives(
 def test_results_of_older_rules_are_not_served(tmp_path: Path, ruleset: Ruleset):
     """INV-8 (review open question): cost sensitivity follows the rules, so results computed under
     other rule files are refused until the package is analysed again; analysing again fixes it."""
-    settings = Settings(_env_file=None, data_dir=tmp_path / "data")
+    settings = Settings(_env_file=None, data_dir=tmp_path / "data", embedding_model=None)
     sources = make_package(tmp_path / "upload")
     files = [("files", (p.name, p.read_bytes(), PDF)) for p in sources]
     with TestClient(create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())) as client:
@@ -498,3 +500,65 @@ def test_a_keyless_server_creates_no_translation_cache(tmp_path: Path, ruleset: 
     with TestClient(translating):
         assert translating.state.autorfx.translation_cache is not None
     assert (settings.cache_dir / "translation.sqlite").exists()
+
+
+def test_the_evidence_gate_follows_the_loaded_encoder(
+    tmp_path: Path, ruleset: Ruleset, monkeypatch: pytest.MonkeyPatch
+):
+    """The gate comes from the encoder in use, not from the setting, so the two cannot disagree."""
+    from autorfx.api import state as state_module
+    from topic_encoder import TopicEncoder
+
+    settings = Settings(_env_file=None, data_dir=tmp_path / "data", embedding_model=None)
+    files = [("files", (p.name, p.read_bytes(), PDF)) for p in make_package(tmp_path / "upload")]
+    seen: list[float | None] = []
+    real = state_module.load_rfq
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("min_score"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(state_module, "load_rfq", spy)
+    with TestClient(create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())) as client:
+        rfq_id = client.post("/rfqs", files=files).json()["data"]["id"]
+        app_state = client.app.state.autorfx
+        app_state.wait()
+        encoder = TopicEncoder()
+        encoder.name = "openai:text-embedding-3-large"
+        app_state.encoder = encoder
+        app_state._data.clear()
+        assert client.get(f"/rfqs/{rfq_id}/clauses").status_code == 200
+    assert seen[-1] == 0.30
+
+
+def test_a_failed_embedding_is_not_cached_so_the_next_request_tries_again(
+    tmp_path: Path, ruleset: Ruleset, monkeypatch: pytest.MonkeyPatch
+):
+    """A 429 or a dropped network on the first open must not keep the RFQ on keyword search."""
+    from autorfx import pipeline
+    from topic_encoder import TopicEncoder
+
+    settings = Settings(_env_file=None, data_dir=tmp_path / "data", embedding_model=None)
+    files = [("files", (p.name, p.read_bytes(), PDF)) for p in make_package(tmp_path / "upload")]
+    with TestClient(create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())) as client:
+        rfq_id = client.post("/rfqs", files=files).json()["data"]["id"]
+        app_state = client.app.state.autorfx
+        app_state.wait()
+        app_state.encoder = TopicEncoder()
+        app_state._data.clear()
+        real = pipeline.DenseIndex
+        calls = {"n": 0}
+
+        def flaky(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ConnectionError("offline")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(pipeline, "DenseIndex", flaky)
+        first = client.get("/meta")  # warm-up, keeps the client alive
+        assert first.status_code == 200
+        assert client.get(f"/rfqs/{rfq_id}/clauses").status_code == 200
+        assert rfq_id not in app_state._data, "the keyword-only result is not kept"
+        assert client.get(f"/rfqs/{rfq_id}/clauses").status_code == 200
+        assert rfq_id in app_state._data, "once the embedding works, the result is kept"

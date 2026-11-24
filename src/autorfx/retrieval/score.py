@@ -49,7 +49,8 @@ from autorfx.retrieval.index import SearchIndex
 NONE = "none"
 SKIP = "skip"
 MODES = ("bm25", "dense", "hybrid")
-DEFAULT_GATES = (0.45, 0.50, 0.55, 0.60, 0.65)
+DEFAULT_GATES = (0.20, 0.30, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65)
+"""Spans the measured gate of every model (3-large 0.30, 3-small 0.45, BGE-M3 0.55)."""
 
 
 @dataclass(frozen=True, slots=True)

@@ -145,7 +145,11 @@ def test_score_search_explains_a_malformed_question_file(
 
 
 def test_score_search_explains_what_is_missing(
-    data_dir: Path, score_files, fake_encoder, capsys: pytest.CaptureFixture[str]
+    data_dir: Path,
+    score_files,
+    fake_encoder,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ):
     questions, key = score_files
     base = ["score-search", "--model", "fake", "--questions", str(questions)]
@@ -153,8 +157,12 @@ def test_score_search_explains_what_is_missing(
     assert "정답 표가 없습니다" in capsys.readouterr().err
     assert main([*base, "--gates", "0.5,abc"]) == 2
     assert "--gates" in capsys.readouterr().err
+    monkeypatch.setenv("EMBEDDING_MODEL", "")  # embedding search switched off on purpose
+    get_settings.cache_clear()
     assert main(["score-search", "--questions", str(questions)]) == 2  # no model configured
     assert "임베딩 모델" in capsys.readouterr().err
+    monkeypatch.delenv("EMBEDDING_MODEL")
+    get_settings.cache_clear()
 
     key.write_text(key.read_text(encoding="utf-8") + "  other-rfq:\n    Q01: none\n", encoding="utf-8")
     assert main(base) == 2
@@ -303,3 +311,27 @@ def test_compare_search_checks_the_questions_before_any_work(
     held_out.write_text(compare_questions.read_text(encoding="utf-8"), encoding="utf-8")
     assert main([*argv, str(held_out)]) == 2
     assert capsys.readouterr().err.strip()
+
+
+def test_compare_search_uses_the_gate_measured_for_the_model(
+    data_dir: Path, score_files, fake_encoder, capsys: pytest.CaptureFixture[str]
+):
+    """Without --min-score the gate is the model's own (3-large 0.30, BGE-M3 0.55), not one for all."""
+    questions, _ = score_files
+    base = ["compare-search", "--sample", "synthetic-sample", "--questions", str(questions)]
+    for model, gate in (("openai:text-embedding-3-large", "0.3"), ("BAAI/bge-m3", "0.55")):
+        assert main([*base, "--model", model]) == 0
+        report = next((data_dir / "work" / "_compare").glob("*.md"))
+        assert f"{gate}" in report.read_text(encoding="utf-8")
+        report.unlink()
+    assert main([*base, "--min-score", "1.5"]) != 0
+    assert "-1에서 1 사이" in capsys.readouterr().err
+
+
+def test_a_bad_min_score_is_refused_before_any_work(data_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys):
+    import autorfx.cli as cli
+
+    monkeypatch.setattr(cli, "run_pipeline", lambda *a, **k: pytest.fail("the pipeline ran"))
+    monkeypatch.setattr(cli, "load_encoder", lambda *a, **k: pytest.fail("the model was loaded"))
+    assert main(["compare-search", "--sample", "synthetic-sample", "--model", "x", "--min-score", "7"]) == 2
+    assert "-1에서 1 사이" in capsys.readouterr().err

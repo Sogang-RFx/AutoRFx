@@ -18,6 +18,20 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ConfirmPolicy = Literal["always", "ambiguous_only", "never"]
 
 
+DEFAULT_EMBEDDING_MODEL = "openai:text-embedding-3-large"
+"""Chosen on 11/24 with the 30-question x 5-RFQ answer key (123 judged cells): hybrid search found 64 of
+87 answers with it against 49 with BAAI/bge-m3, and overall accuracy was 82/123 against 71/123."""
+FALLBACK_MIN_SCORE = 0.55
+MODEL_MIN_SCORE = {
+    "openai:text-embedding-3-large": 0.30,
+    "openai:text-embedding-3-small": 0.45,
+    "baai/bge-m3": 0.55,
+}
+"""Evidence gate per model (lower-case id). The scales differ: text-embedding-3-large scores lower than
+BGE-M3 and finds almost nothing at 0.45. Values are the best hybrid gate of the 11/24 answer-key runs
+(30 questions x 5 RFQs). For 3-large the sweep 0.10-0.70 peaked at 0.30 (82/123; 0.25: 79, 0.35: 76)."""
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -39,11 +53,16 @@ class Settings(BaseSettings):
     )
     """Reasoning effort sent with translation calls. Unset sends nothing (gpt-4o does not accept it)."""
     deepl_api_key: SecretStr | None = Field(default=None, validation_alias="DEEPL_API_KEY")
-    embedding_model: str | None = Field(default=None, validation_alias="EMBEDDING_MODEL")
-    """Dense retrieval is added to BM25 when this is set: a sentence-transformers id (``BAAI/bge-m3``,
-    local, ``uv sync --extra embedding``) or ``openai:<model>`` (needs the LLM key)."""
-    embedding_min_score: float = Field(default=0.55, ge=-1.0, le=1.0, validation_alias="EMBEDDING_MIN_SCORE")
-    """Cosine similarity a sentence needs to count as evidence in dense search. Model-dependent."""
+    embedding_model: str | None = Field(default=DEFAULT_EMBEDDING_MODEL, validation_alias="EMBEDDING_MODEL")
+    """Dense retrieval is added to BM25 with this model: ``openai:<model>`` (needs the LLM key; the default,
+    OpenAI text-embedding-3-large) or a sentence-transformers id (``BAAI/bge-m3``, local,
+    ``uv sync --extra embedding``). An empty ``EMBEDDING_MODEL=`` turns it off (keyword search only), and
+    without an OpenAI key the default falls back to keyword search too."""
+    embedding_min_score: float | None = Field(
+        default=None, ge=-1.0, le=1.0, validation_alias="EMBEDDING_MIN_SCORE"
+    )
+    """Cosine similarity a sentence needs to count as evidence in dense search. Empty = the measured value
+    of the model (``min_score_for``): the scale differs a lot between models."""
 
     confirm_policy: ConfirmPolicy = Field(default="ambiguous_only", validation_alias="AUTORFX_CONFIRM_POLICY")
     llm_concurrency: int = Field(default=4, ge=1, le=16, validation_alias="AUTORFX_LLM_CONCURRENCY")
@@ -67,11 +86,23 @@ class Settings(BaseSettings):
         return value
 
     @field_validator(
-        "embedding_model", "openai_translation_model", "openai_translation_effort", mode="before"
+        "embedding_model",
+        "embedding_min_score",
+        "openai_translation_model",
+        "openai_translation_effort",
+        mode="before",
     )
     @classmethod
-    def _blank_model_is_none(cls, value: object) -> object:
-        return None if isinstance(value, str) and not value.strip() else value
+    def _blank_is_unset(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
+
+    def min_score_for(self, model: str | None) -> float:
+        """The evidence gate for ``model``: the configured value, else the one measured for that model."""
+        if self.embedding_min_score is not None:
+            return self.embedding_min_score
+        return MODEL_MIN_SCORE.get((model or "").strip().lower(), FALLBACK_MIN_SCORE)
 
     @field_validator("openai_translation_effort", mode="after")
     @classmethod
