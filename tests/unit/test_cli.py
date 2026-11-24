@@ -171,3 +171,40 @@ def test_score_search_refuses_the_evaluation_set(
         main(["score-search", "--model", "fake", "--questions", str(questions), "--key", str(held_out)]) == 2
     )
     assert "평가용(eval)" in capsys.readouterr().err
+
+
+@pytest.fixture
+def compare_questions(data_dir: Path) -> Path:
+    path = data_dir / "questions.yaml"
+    path.write_text('questions:\n  - {id: Q01, text: "보증 기간은 얼마인가요?"}\n', encoding="utf-8")
+    return path
+
+
+def test_compare_search_leaves_stored_results_alone(data_dir: Path, compare_questions: Path, fake_encoder):
+    """Like score-search: a comparison run never replaces the served analysis of the same files."""
+    assert main(["analyze", "--sample", "synthetic-sample"]) == 0
+    stored = {p: p.read_bytes() for p in (data_dir / "work").glob("rfq-*/*.json")}
+    assert stored
+    argv = ["compare-search", "--sample", "synthetic-sample", "--model", "fake"]
+    assert main([*argv, "--questions", str(compare_questions)]) == 0
+    assert {p: p.read_bytes() for p in (data_dir / "work").glob("rfq-*/*.json")} == stored
+    assert list((data_dir / "work" / "_compare").glob("*.md"))
+
+
+def test_compare_search_never_builds_an_llm_provider(
+    data_dir: Path,
+    compare_questions: Path,
+    fake_encoder,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Comparing searches spends no API calls, even with a key set."""
+    import autorfx.cli as cli
+
+    def fail(*args, **kwargs):
+        raise AssertionError("compare-search must not build an LLM provider")
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-a-real-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(cli, "make_provider", fail)
+    argv = ["compare-search", "--sample", "synthetic-sample", "--model", "fake"]
+    assert main([*argv, "--questions", str(compare_questions)]) == 0

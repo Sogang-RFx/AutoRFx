@@ -98,20 +98,25 @@ def _compare_search(args: argparse.Namespace) -> int:
     if found is None:
         return 2
     sources, name, is_sample = found
-    workspace = run_pipeline(
-        sources,
-        name=name,
-        settings=settings,
-        ruleset=ruleset,
-        provider=make_provider(settings, ruleset),
-        is_sample=is_sample,
-        now_ms=int(time.time() * 1000),
-        retrieval=retrieval_engine(encoder),
-    )
     gate = args.min_score if args.min_score is not None else settings.embedding_min_score
-    data = load_rfq(workspace, ruleset, encoder=encoder, min_score=gate)
-    questions = compare.load_questions(Path(args.questions))
-    rows = compare.run(data.index, questions, top=args.top)
+    # Retrieval only needs parsing and chunking. The analysis runs on rules in its own temporary
+    # workspace, so it neither spends API calls nor replaces the served analysis (possibly GPT) of the
+    # same files under data/work. The embedding cache and the report stay where they are.
+    with tempfile.TemporaryDirectory(prefix="autorfx-compare-") as tmp:
+        scratch = settings.model_copy(update={"data_dir": Path(tmp)})
+        workspace = run_pipeline(
+            sources,
+            name=name,
+            settings=scratch,
+            ruleset=ruleset,
+            provider=RuleOnlyProvider(),
+            is_sample=is_sample,
+            now_ms=int(time.time() * 1000),
+            retrieval=retrieval_engine(encoder),
+        )
+        data = load_rfq(workspace, ruleset, encoder=encoder, min_score=gate)
+        questions = compare.load_questions(Path(args.questions))
+        rows = compare.run(data.index, questions, top=args.top)
     out = settings.work_dir / "_compare"
     out.mkdir(parents=True, exist_ok=True)
     stem = f"{data.manifest.id}-{time.strftime('%Y%m%d-%H%M')}"
