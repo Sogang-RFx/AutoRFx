@@ -19,7 +19,18 @@ from fastapi.testclient import TestClient
 from autorfx.analysis import RuleOnlyProvider
 from autorfx.api import create_app
 from autorfx.config import Settings
-from autorfx.models import Locus, PackageManifest, Table
+from autorfx.models import (
+    FileLayout,
+    FileRecord,
+    Locus,
+    PackageManifest,
+    ParsedFile,
+    Rect,
+    SheetCell,
+    SheetRow,
+    Table,
+)
+from autorfx.parser.sheets import parse_sheets
 from autorfx.precost import lines as lines_mod
 from autorfx.precost.lines import find_grid, pdf_grids, read_grids, rfq_lines, signature, table_grids
 from autorfx.precost.sheet_store import (
@@ -135,6 +146,53 @@ def test_a_sheet_goes_on_over_a_page_break_without_its_header(tmp_path: Path, ru
     assert [(r["group"], r["no"], r["page"]) for r in rows] == [("Filters", "1", 1), ("Filters", "2", 2)]
 
 
+def _two_pages(path: Path, second: Sequence[float], rows: Sequence[Cells]) -> Path:
+    """Page 1: the sheet with its header. Page 2: more rows, the table ruled into ``second`` widths."""
+    doc = pymupdf.open()
+    first = doc.new_page(width=792, height=612)
+    _table(first, 70, [HEADER, ("1", "EU2Z-2V026-A", "ROTORS, REAR BRAKE", "$", "36", "$")], WIDE, True)
+    following = doc.new_page(width=792, height=612)
+    _table(following, 70, rows, second, True)
+    doc.save(str(path))
+    return path
+
+
+def test_a_sheet_cut_into_other_columns_on_the_next_page_goes_on_by_column_position(
+    tmp_path: Path, rules: PriceSheetRules
+) -> None:
+    """Page 2 rules the description column in two (a sliver of the name, the rest): the columns
+    no longer count the same, so they are matched by where they are printed."""
+    split = (40, 110, 150, 80, 60, 60, 80)
+    rows = [
+        ("2", "GB5Z-2001-B", "PADS BRAKE FRONT", "", "$", "19", "$"),
+        ("3", "FL-500-S", "FILTER OIL", "", "$", "180", "$"),
+    ]
+    path = _two_pages(tmp_path / "a.pdf", split, rows)
+    grids = pdf_grids("d01", path, rules)
+    assert [len(g.rows[0]) for g in grids] == [6, 7]
+    readings = read_grids(grids, rules.compiled(), {})
+    assert [r.how for r in readings] == ["rules", "continued"]
+    assert [(r["no"], r["name"], r["quantity"], r["page"]) for x in readings for r in x.lines] == [
+        ("1", "ROTORS, REAR BRAKE", 36, 1),
+        ("2", "PADS BRAKE FRONT", 19, 2),
+        ("3", "FILTER OIL", 180, 2),
+    ]
+    manifest = PackageManifest.model_construct(files=[type("F", (), {"id": "d01", "kind": "pdf"})()])
+    (only,) = rfq_lines(manifest, {}, {"d01": path}, rules)["lists"]
+    assert (only["pages"], only["lines"]) == ([1, 2], 3)
+
+
+def test_a_table_whose_columns_do_not_line_up_is_not_taken_as_going_on(
+    tmp_path: Path, rules: PriceSheetRules
+) -> None:
+    """Another table on the next page, with columns elsewhere, is not read with the sheet's roles."""
+    other = (300, 120, 120)
+    path = _two_pages(tmp_path / "a.pdf", other, [("Delivery address", "Plant 2", "Dock 4")] * 3)
+    readings = read_grids(pdf_grids("d01", path, rules), rules.compiled(), {})
+    assert [r.how for r in readings] == ["rules", "none"]
+    assert len(readings[1].lines) == 0
+
+
 def test_text_outside_a_price_sheet_is_not_a_line(tmp_path: Path, rules: PriceSheetRules) -> None:
     schedule = [("Event", "Date"), ("Issue date", "June 13, 2026"), ("Quote due", "July 13, 2026")]
     assert _read(_pdf(tmp_path / "a.pdf", [[schedule]], (200, 200)), rules) == []
@@ -237,6 +295,36 @@ def test_a_revised_sheet_replaces_the_earlier_listing_of_a_group(
     # The same layout on the next page is one list, with the revision applied inside it.
     (only,) = found["lists"]
     assert (only["pages"], only["lines"], only["replaced_by"]) == ([1, 2], 2, None)
+
+
+def _price_sheets(rules: PriceSheetRules, revised_caption: str) -> dict:
+    """A price sheet, and the same sheet reprinted by an addendum with a column added."""
+    rows = [("1", "EU2Z-2V026-A", "ROTORS", "", "36"), ("2", "FL-500-S", "FILTER OIL", "", "180")]
+    original = _sheet_table(("ITEM #", "PART NUMBER", "DESCRIPTION", "UNIT PRICE", "YEARLY QUANTITY"), rows)
+    reprint = _sheet_table(
+        ("ITEM #", "MFG. PART NUMBER", "Updated Part Number", "DESCRIPTION", "UNIT PRICE", "YEARLY QUANTITY"),
+        [(no, part, "", name, price, qty) for no, part, name, price, qty in rows],
+    ).model_copy(update={"title": revised_caption, "page_number": 5, "section_id": "addendum"})
+    original = original.model_copy(update={"title": "FORM 3.02 PRICE SHEET"})
+    manifest = PackageManifest.model_construct(files=[type("F", (), {"id": "d01", "kind": "xlsx"})()])
+    parsed = {"d01": ParsedFile.model_construct(tables=(original, reprint))}
+    return rfq_lines(manifest, parsed, {}, rules)
+
+
+def test_a_sheet_reprinted_as_revised_replaces_the_original_even_with_a_column_more(
+    rules: PriceSheetRules,
+) -> None:
+    """Everett: Addendum #2 reprints Form 3.02 as "*REVISED*" with an "Updated Part Number" column."""
+    found = _price_sheets(rules, "FORM 3.02 PRICE SHEET *REVISED*")
+    original, revised = found["lists"]
+    assert (original["lines"], original["suggested"], original["replaced_by"]) == (0, False, revised["id"])
+    assert (revised["lines"], revised["suggested"], revised["replaced_by"]) == (2, True, None)
+    assert found["total"] == 2 and {r["list"] for r in found["items"]} == {revised["id"]}
+
+
+def test_a_repeated_sheet_not_marked_as_revised_keeps_both_lists(rules: PriceSheetRules) -> None:
+    found = _price_sheets(rules, "FORM 3.03 PRICE SHEET")
+    assert [(lst["lines"], lst["replaced_by"]) for lst in found["lists"]] == [(2, None), (2, None)]
 
 
 def test_a_group_title_repeated_on_the_next_page_keeps_earlier_rows(
@@ -438,8 +526,11 @@ def test_quantities_with_units_and_values_one_cell_off_their_header_are_read(
         ("", "2", "", "Automotive Battery Charger", "", "2 units", ""),
         ("", "3", "", "Manifold Gauge", "", "3 sets", ""),
     ]
-    grids = table_grids("d01", [_sheet_table(header, rows)])
-    (reading,) = read_grids(grids, rules.compiled(), {})
+    # Cells as a PDF table gives them (a spreadsheet has no cells off their header).
+    grid = lines_mod.Grid(
+        id="d01:p1:t1", source_doc="d01", title="1쪽 표 1", rows=(header, *rows), pages=(1,) * 4
+    )
+    (reading,) = read_grids([grid], rules.compiled(), {})
     assert reading.priced
     assert [(r["no"], r["name"], r["quantity"]) for r in reading.lines] == [
         ("1", "Refrigerant Recovery Machine", 1),
@@ -537,6 +628,371 @@ def test_a_workbook_sheet_without_quantities_has_no_lines(rules: PriceSheetRules
     table = _sheet_table(("PART NO.", "DESCRIPTION", "Unit Price"), [("7237", "AIR FILTER", "0")])
     (reading,) = read_grids(table_grids("d01", [table]), rules.compiled(), {})
     assert reading.lines == []
+
+
+def _order_form() -> Table:
+    """An order form on one sheet: contact fields, then two tables with their own headers.
+
+    The quantity column is left for the buyer; the second table's name column has no known title.
+    """
+    rows = [
+        ("Instructions: complete sections I to III", "", "", "", "", ""),
+        ("I", "Contact Information", "", "", "", ""),
+        ("", "Agency Name:", "", "", "", ""),
+        ("", "Contact Name:", "", "", "", ""),
+        ("", "Phone Number:", "", "E-mail:", "", ""),
+        ("", "Program:", "", "State Purchasing", "230000001331", ""),
+        ("II", "Base Vehicle Floor Plans", "", "", "", ""),
+        ("Base Vehicles", "", "Qty", "Description", "Price Each", "Total Price"),
+        ("", "A.", "", "Class I - 26 Foot Bus", "", ""),
+        ("", "1", "", "24 passenger without lift", "153078", "0"),
+        ("", "2", "", "14+2 passenger with lift", "164751", "0"),
+        ("", "B.", "", "Class II - 29 Foot Bus", "", ""),
+        ("", "1", "", "24 passenger without lift", "180261", "0"),
+        ("", "Total", "0", "Base Vehicle Totals", "", "0"),
+        ("III", "Contract Options", "", "", "", ""),
+        ("Contract Options", "", "Qty", "Contract Options", "Price Each", "Total Price"),
+        ("", "1", "", "Air Conditioning, Split unit", "19898", "0"),
+        ("", "2", "", "Destination Sign - LED", "6357", "0"),
+        ("", "3", "", "Donation box (in lieu of farebox)", "-1045", "0"),
+        ("", "", "", "Contract Options Subtotal", "", "0"),
+    ]
+    locus = Locus(source_doc="d02", page_number=1, section_id="Form", paragraph_index=1, sentence_index=1)
+    return Table(
+        source_doc="d02",
+        page_number=1,
+        section_id="Form",
+        title="Form",
+        header=("NEW VEHICLE ORDER FORM", "", "", "", "", ""),
+        rows=tuple(rows),
+        row_loci=tuple(locus.model_copy(update={"anchor": f"Form!A{n}"}) for n in range(2, len(rows) + 2)),
+    )
+
+
+def test_an_order_form_sheet_is_cut_into_its_tables_and_read_without_quantities(
+    rules: PriceSheetRules,
+) -> None:
+    compiled = rules.compiled()
+    grids = table_grids("d02", [_order_form()], compiled)
+    assert [(g.id, g.caption) for g in grids] == [
+        ("d02:s1", "Form"),
+        ("d02:s1:r9", "Base Vehicle Floor Plans"),
+        ("d02:s1:r17", "Contract Options"),
+    ]
+    readings = read_grids(grids, compiled, {})
+    assert [(r["group"], r["name"], r["quantity"]) for r in readings[1].lines] == [
+        ("A. · Class I - 26 Foot Bus", "24 passenger without lift", None),
+        ("A. · Class I - 26 Foot Bus", "14+2 passenger with lift", None),
+        ("B. · Class II - 29 Foot Bus", "24 passenger without lift", None),
+    ]
+    # The name column is found by its words; the group of the table above does not carry over.
+    assert [(r["group"], r["name"]) for r in readings[2].lines] == [
+        (None, "Air Conditioning, Split unit"),
+        (None, "Destination Sign - LED"),
+        (None, "Donation box (in lieu of farebox)"),
+    ]
+
+
+def test_the_tables_of_one_sheet_are_separate_lists(rules: PriceSheetRules) -> None:
+    sha = "0" * 64
+    record = FileRecord(
+        id="d02",
+        name="form.xlsx",
+        kind="xlsx",
+        page_count=1,
+        sha256=sha,
+        canonical_tool="t",
+        canonical_sha256=sha,
+    )
+    manifest = PackageManifest(
+        id="p", name="p", files=(record,), page_count=1, sha256=sha, is_sample=False, created_at=0
+    )
+    parsed = {
+        "d02": ParsedFile(file_id="d02", lang="en", page_count=1, sentences=(), tables=(_order_form(),))
+    }
+    got = rfq_lines(manifest, parsed, {}, rules)
+    assert [(lst["caption"], lst["lines"], lst["suggested"]) for lst in got["lists"]] == [
+        ("Base Vehicle Floor Plans", 3, True),
+        ("Contract Options", 3, True),
+    ]
+
+
+def _block(header: tuple[str, ...], rows: list[tuple[str, ...]], first_row: int, column: str) -> Table:
+    """A block of one sheet as the parser cuts it: its own header and the columns it uses."""
+    letters = "ABCDEFGHIJ"
+    start = letters.index(column)
+    loci, anchors = [], []
+    for n, row in enumerate(rows, start=first_row):
+        loci.append(
+            Locus(
+                source_doc="d03",
+                page_number=1,
+                section_id="Hardware",
+                paragraph_index=1,
+                sentence_index=1,
+                anchor=f"Hardware!{column}{n}",
+            )
+        )
+        anchors.append(tuple(f"Hardware!{letters[start + i]}{n}" if c else None for i, c in enumerate(row)))
+    return Table(
+        source_doc="d03",
+        page_number=1,
+        section_id="Hardware",
+        title="Hardware",
+        header=header,
+        rows=tuple(rows),
+        row_loci=tuple(loci),
+        cell_anchors=tuple(anchors),
+    )
+
+
+def test_the_blocks_of_one_sheet_are_read_as_one_table_with_their_categories(rules: PriceSheetRules) -> None:
+    """The parser cuts a sheet at a category title and trims each block to its columns (Annexure M)."""
+    notes = _block(("IMPORTANT NOTES",), [("Prices MUST be quoted in ZAR",)] * 6, 2, "C")
+    first = _block(
+        ("Category", "No.", "Part Number", "Description", "Total Estimated Quantity", "Unit Price"),
+        [
+            ("Cyber Security", "", "", "ISA-3000 Firewall", "", ""),
+            ("", "1", "ISA-3000-2C2F", "Cisco Secure Firewall ISA3000", "400", "0"),
+            ("", "", "", "FPR3105 Firewall", "", ""),
+            ("", "2", "FPR3105-NGFW", "Cisco Secure Firewall 3105", "20", "0"),
+        ],
+        10,
+        "A",
+    )
+    # The next block starts at a category title and leaves out the empty column F.
+    second = _block(
+        ("Routers", "", "", "IR8340 Router"),
+        [("", "3", "IR8340-K9", "Cisco Catalyst IR8340", "300")],
+        15,
+        "A",
+    )
+    compiled = rules.compiled()
+    grids = table_grids("d03", [notes, first, second], compiled)
+    assert [g.id for g in grids] == ["d03:s1", "d03:s1:r9"]
+    lines = [line for r in read_grids(grids, compiled, {}) for line in r.lines]
+    assert [(r["part"], r["quantity"], r["group"]) for r in lines] == [
+        ("ISA-3000-2C2F", 400, "Cyber Security · ISA-3000 Firewall"),
+        ("FPR3105-NGFW", 20, "Cyber Security · FPR3105 Firewall"),
+        ("IR8340-K9", 300, "Routers · IR8340 Router"),
+    ]
+
+
+def _worksheet(cells: list[tuple[int, tuple[tuple[str, str], ...]]]) -> Table:
+    """A vehicle cost worksheet as the parser gives it: empty columns left out of each row,
+    every cell with its own address ((sheet row, ((column, text), ...)))."""
+    rows, loci, anchors = [], [], []
+    for n, row in cells:
+        rows.append(tuple(text for _, text in row))
+        anchors.append(tuple(f"Van!{column}{n}" for column, _ in row))
+        loci.append(
+            Locus(
+                source_doc="d04",
+                page_number=1,
+                section_id="Van",
+                paragraph_index=1,
+                sentence_index=1,
+                anchor=f"Van!A{n}",
+            )
+        )
+    return Table(
+        source_doc="d04",
+        page_number=1,
+        section_id="Van",
+        title="Van",
+        header=(),
+        rows=tuple(rows),
+        row_loci=tuple(loci),
+        cell_anchors=tuple(anchors),
+    )
+
+
+def _worksheet_lines(rules: PriceSheetRules, table: Table) -> list[dict]:
+    sha = "0" * 64
+    record = FileRecord(
+        id="d04",
+        name="vcw.xlsx",
+        kind="xlsx",
+        page_count=1,
+        sha256=sha,
+        canonical_tool="t",
+        canonical_sha256=sha,
+    )
+    manifest = PackageManifest(
+        id="p", name="p", files=(record,), page_count=1, sha256=sha, is_sample=False, created_at=0
+    )
+    parsed = {"d04": ParsedFile(file_id="d04", lang="en", page_count=1, sentences=(), tables=(table,))}
+    return rfq_lines(manifest, parsed, {}, rules)["items"]
+
+
+def test_a_worksheet_reads_numbered_options_beside_their_number(rules: PriceSheetRules) -> None:
+    """ "Item | (blank) | Quantity | Unit Price": the base vehicle is named under "Item", each option
+    by the unheaded cell beside its number. The counted base number does not erase option 1."""
+    table = _worksheet(
+        [
+            (14, (("A", "Item"), ("C", "Quantity"), ("D", "Unit Price"), ("E", "Total"))),
+            (15, (("A", "Modified Minivan"), ("D", "70993"), ("E", "0"))),
+            (16, (("A", "Options"),)),
+            (17, (("A", "1"), ("B", "Rear-Entry Ramp"), ("D", "-4223"), ("E", "0"))),
+            (18, (("A", "2"), ("B", "Center Foldable Seat"), ("D", "1685"), ("E", "0"))),
+            (19, (("A", "3"), ("B", "Power Door Kit INCLUDED"))),
+            (20, (("C", "TOTAL COST"), ("E", "0"))),
+        ]
+    )
+    assert [(r["no"], r["name"], r["quantity"], r["group"]) for r in _worksheet_lines(rules, table)] == [
+        ("1", "Modified Minivan", None, None),
+        ("1", "Rear-Entry Ramp", None, "Options"),
+        ("2", "Center Foldable Seat", None, "Options"),
+        ("3", "Power Door Kit INCLUDED", None, "Options"),
+    ]
+
+
+def test_a_worksheet_row_keeps_its_cells_in_their_own_columns(rules: PriceSheetRules) -> None:
+    """The parser leaves out the empty columns B-D of an option row; the price stays under its header."""
+    table = _worksheet(
+        [
+            (19, (("A", "Item"), ("D", "Quantity"), ("E", "Unit Price"), ("F", "Total"))),
+            (20, (("A", "Accessible Van"), ("E", "74789"), ("F", "0"))),
+            (22, (("A", "1000-lb lift"), ("B", ""), ("E", "1300"), ("F", "0"))),
+            (23, (("A", "Solid Color Paint"), ("B", ""), ("E", "805"), ("F", "0"))),
+        ]
+    )
+    assert [(r["name"], r["quantity"]) for r in _worksheet_lines(rules, table)] == [
+        ("Accessible Van", None),
+        ("1000-lb lift", None),
+        ("Solid Color Paint", None),
+    ]
+
+
+def test_a_sheet_with_quantities_keeps_its_rows_strict(rules: PriceSheetRules) -> None:
+    """Only a quantity column blank in every row makes an order form; else no quantity, no line."""
+    table = _sheet_table(
+        ("No", "Description", "Qty", "Unit Price"),
+        [("1", "Brake pad", "4", ""), ("2", "Brake disc", "", "120"), ("", "Note: delivered", "", "")],
+    )
+    (reading,) = read_grids(table_grids("d01", [table], rules.compiled()), rules.compiled(), {})
+    assert not reading.open
+    assert [(r["name"], r["quantity"]) for r in reading.lines] == [("Brake pad", 4)]
+
+
+def _layout_row(sheet: str, index: int, cells: list[tuple[str, str]]) -> SheetRow:
+    rect = Rect(x=0.05, y=min(0.05 + 0.03 * index, 0.9), w=0.9, h=0.02)
+    return SheetRow(
+        sheet=sheet,
+        row_index=index,
+        page_number=1,
+        rect=rect,
+        cells=tuple(
+            SheetCell(anchor=f"{sheet}!{col}{index}", column=col, text=text, rect=rect) for col, text in cells
+        ),
+    )
+
+
+def test_parse_sheets_keeps_header_aligned_with_empty_columns(rules: PriceSheetRules) -> None:
+    """Empty column B is dropped by the parser; header_anchors put Quantity back over column C."""
+    layout = FileLayout(
+        file_id="d05",
+        rows=(
+            _layout_row("Parts", 1, [("A", "Item"), ("C", "Quantity"), ("D", "Unit Price")]),
+            _layout_row("Parts", 2, [("A", "Brake Pad"), ("C", "10"), ("D", "25")]),
+        ),
+    )
+    parsed = parse_sheets("d05", layout, page_count=1)
+    (table,) = parsed.tables
+    assert table.header == ("Item", "Quantity", "Unit Price")
+    assert table.header_anchors == ("Parts!A1", "Parts!C1", "Parts!D1")
+    compiled = rules.compiled()
+    (grid,) = table_grids("d05", parsed.tables, compiled)
+    assert grid.rows[0] == ("Item", "", "Quantity", "Unit Price")
+    assert grid.rows[1] == ("Brake Pad", "", "10", "25")
+    (reading,) = read_grids([grid], compiled, {})
+    assert [(r["name"], r["quantity"]) for r in reading.lines] == [("Brake Pad", 10)]
+
+
+def test_header_without_anchors_is_estimated_from_data_cells(rules: PriceSheetRules) -> None:
+    """A table stored before header_anchors existed still lines up via data-cell columns."""
+    table = Table(
+        source_doc="d05",
+        page_number=1,
+        section_id="Parts",
+        title="Parts",
+        header=("Item", "Quantity", "Unit Price"),
+        rows=(("Brake Pad", "10", "25"),),
+        row_loci=(
+            Locus(
+                source_doc="d05",
+                page_number=1,
+                section_id="Parts",
+                paragraph_index=1,
+                sentence_index=1,
+                anchor="Parts!A2",
+            ),
+        ),
+        cell_anchors=(("Parts!A2", "Parts!C2", "Parts!D2"),),
+        header_anchors=(),
+    )
+    compiled = rules.compiled()
+    (grid,) = table_grids("d05", [table], compiled)
+    assert grid.rows[0] == ("Item", "", "Quantity", "Unit Price")
+    (reading,) = read_grids([grid], compiled, {})
+    assert [(r["name"], r["quantity"]) for r in reading.lines] == [("Brake Pad", 10)]
+
+
+def _two_close_tables() -> Table:
+    """Two price tables on one sheet with only a few rows between their headers."""
+    rows = [
+        ("Item", "Description", "Qty", "Unit Price"),
+        ("1", "Brake pad", "4", "25"),
+        ("2", "Brake disc", "2", "80"),
+        ("Options", "", "", ""),
+        ("Option", "Description", "Qty", "Unit Price"),
+        ("1", "Ceramic upgrade", "1", "40"),
+        ("2", "Dust shield", "1", "15"),
+    ]
+    locus = Locus(source_doc="d06", page_number=1, section_id="Form", paragraph_index=1, sentence_index=1)
+    return Table(
+        source_doc="d06",
+        page_number=1,
+        section_id="Form",
+        title="Form",
+        header=(),
+        rows=tuple(rows),
+        row_loci=tuple(locus.model_copy(update={"anchor": f"Form!A{n}"}) for n in range(1, len(rows) + 1)),
+    )
+
+
+def test_close_headers_split_when_items_lie_between_them(rules: PriceSheetRules) -> None:
+    """A second header fewer than HEADER_SCAN rows below the first still opens its own table."""
+    compiled = rules.compiled()
+    grids = table_grids("d06", [_two_close_tables()], compiled)
+    assert [(g.id, g.caption) for g in grids] == [
+        ("d06:s1", "Form"),
+        ("d06:s1:r5", "Options"),
+    ]
+    readings = read_grids(grids, compiled, {})
+    assert [len(r.lines) for r in readings] == [2, 2]
+    assert [r["name"] for r in readings[1].lines] == ["Ceramic upgrade", "Dust shield"]
+
+
+def test_duplicate_headers_without_items_stay_one_table(rules: PriceSheetRules) -> None:
+    """A repeated header with nothing between it and the first stays in the same table."""
+    rows = [
+        ("No", "Description", "Qty", "Unit Price"),
+        ("No", "Description", "Qty", "Unit Price"),
+        ("1", "Brake pad", "4", "25"),
+    ]
+    locus = Locus(source_doc="d07", page_number=1, section_id="Form", paragraph_index=1, sentence_index=1)
+    table = Table(
+        source_doc="d07",
+        page_number=1,
+        section_id="Form",
+        title="Form",
+        header=(),
+        rows=tuple(rows),
+        row_loci=tuple(locus.model_copy(update={"anchor": f"Form!A{n}"}) for n in range(1, len(rows) + 1)),
+    )
+    grids = table_grids("d07", [table], rules.compiled())
+    assert [g.id for g in grids] == ["d07:s1"]
 
 
 # ── assignment store ────────────────────────────────────────────────────────

@@ -295,6 +295,7 @@ def test_sheet_rows_become_citable_units_and_tables():
     assert [s.section_id for s in parsed.sections] == ["Part Data"]
     table = parsed.tables[1]
     assert table.header == ("Part number", "Thickness [mm]")
+    assert table.header_anchors == ("Part Data!A5", "Part Data!C5")
     assert table.rows == (("X-1", "2"), ("X-2", ""))
     assert table.cell_anchors[0] == ("Part Data!A6", "Part Data!C6")
     assert [locus.sentence_index for locus in table.row_loci] == [3, 4]

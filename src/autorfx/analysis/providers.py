@@ -71,6 +71,29 @@ class Answer(Model):
     model always states it (and strict structured output accepts the schema)."""
 
 
+class SheetMap(Model):
+    """Where the items of a table are: the header row and the column of each role (None when absent).
+
+    Only positions: the reading itself (every name and number) is done by code from the cells.
+    Every field is required (nullable), so strict structured output accepts the schema.
+    """
+
+    is_price_sheet: bool
+    """False when the table lists no items to buy (notes, exchange rates, a signature block)."""
+    header_row: int | None
+    no: int | None
+    part: int | None
+    description: int | None
+    spec: int | None
+    quantity: int | None
+    unit: int | None
+    months: int | None
+    price: int | None
+    total: int | None
+    reason: str
+    """Why, in Korean, in one sentence."""
+
+
 class AnalysisProvider(Protocol):
     id: str
     uses_llm: bool
@@ -81,6 +104,8 @@ class AnalysisProvider(Protocol):
     def confirm(self, clause: ClauseInput, candidates: Candidates, feedback: str | None) -> Judgement: ...
 
     def answer(self, question: str, evidence: Sequence[EvidenceSentence], feedback: str | None) -> Answer: ...
+
+    def map_sheet(self, sample: str) -> SheetMap | None: ...
 
 
 def rule_judgement(candidates: Candidates) -> Judgement:
@@ -117,6 +142,9 @@ class RuleOnlyProvider:
             text="\n".join(e.text for e in top), citations=tuple(e.number for e in top), answered=True
         )
 
+    def map_sheet(self, sample: str) -> SheetMap | None:
+        return None
+
 
 class ScriptedProvider:
     """Test double: returns queued judgements per clause and records every call."""
@@ -128,6 +156,7 @@ class ScriptedProvider:
         script: dict[str, list[Judgement | Exception]] | None = None,
         *,
         answers: list[Answer | Exception] | None = None,
+        sheet_maps: list[SheetMap | Exception] | None = None,
         translation: str | None = None,
         provider_id: str = "scripted",
     ) -> None:
@@ -135,6 +164,8 @@ class ScriptedProvider:
         self.translates = translation is not None
         self._script = {key: list(value) for key, value in (script or {}).items()}
         self._answers = list(answers or [])
+        self._sheet_maps = list(sheet_maps or [])
+        self.sheet_calls: list[str] = []
         self._translation = translation
         self._lock = threading.Lock()
         self.confirm_calls: list[tuple[str, str | None]] = []
@@ -156,6 +187,14 @@ class ScriptedProvider:
         with self._lock:
             self.answer_calls.append((question, tuple(e.text for e in evidence), feedback))
             item = self._answers.pop(0) if len(self._answers) > 1 else self._answers[0]
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+    def map_sheet(self, sample: str) -> SheetMap | None:
+        with self._lock:
+            self.sheet_calls.append(sample)
+            item = self._sheet_maps.pop(0) if len(self._sheet_maps) > 1 else (self._sheet_maps or [None])[0]
         if isinstance(item, Exception):
             raise item
         return item
