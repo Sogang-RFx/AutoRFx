@@ -19,6 +19,7 @@ from autorfx.analysis import RuleOnlyProvider
 from autorfx.api import create_app
 from autorfx.config import Settings
 from autorfx.models import Locus, PackageManifest, Table
+from autorfx.precost import lines as lines_mod
 from autorfx.precost.lines import pdf_grids, read_grids, rfq_lines, signature, table_grids
 from autorfx.precost.sheet_store import PriceSheetError, PriceSheetStore, check_columns
 from autorfx.rules import PriceSheetRules, Ruleset
@@ -181,6 +182,89 @@ def test_a_revised_sheet_replaces_the_earlier_listing_of_a_group(
     # The same layout on the next page is one list, with the revision applied inside it.
     (only,) = found["lists"]
     assert (only["pages"], only["lines"], only["replaced_by"]) == ([1, 2], 2, None)
+
+
+def test_a_group_title_repeated_on_the_next_page_keeps_earlier_rows(
+    tmp_path: Path, rules: PriceSheetRules
+) -> None:
+    """A multi-page sheet that reprints its group heading must not drop page-1 items."""
+    page1 = [
+        ("Category 1 - Brakes",),
+        HEADER,
+        ("1", "EU2Z-2V026-A", "ROTORS, REAR BRAKE", "$", "36", "$"),
+    ]
+    page2 = [
+        ("Category 1 - Brakes",),
+        HEADER,
+        ("2", "GB5Z-2001-B", "PADS BRAKE FRONT", "$", "19", "$"),
+    ]
+    path = _pdf(tmp_path / "a.pdf", [[page1], [page2]], WIDE)
+    manifest = PackageManifest.model_construct(files=[type("F", (), {"id": "d01", "kind": "pdf"})()])
+    found = rfq_lines(manifest, {}, {"d01": path}, rules)
+    assert sorted((r["no"], r["part"], r["page"]) for r in found["items"]) == [
+        ("1", "EU2Z-2V026-A", 1),
+        ("2", "GB5Z-2001-B", 2),
+    ]
+    (only,) = found["lists"]
+    assert only["lines"] == 2
+
+
+def test_spec_and_bid_form_sharing_a_lot_name_keep_both_lists(
+    tmp_path: Path, rules: PriceSheetRules
+) -> None:
+    """Parallel lists that both say \"Lot 1\" must not treat the later as a revision."""
+    spec = [
+        ("Lot 1 - Electrical",),
+        ("Items to be Supplied", "Quantity", "Description/Specifications", "", ""),
+        ("Battery Charger", "2", "12V automotive charger", "", ""),
+        ("Manifold Gauge", "3", "R134a set", "", ""),
+    ]
+    form = [
+        ("Lot 1 - Electrical",),
+        ("Item No.", "Description of Goods", "Quantity", "Unit Price", "Total Price"),
+        ("1", "Battery Charger", "2", "", ""),
+        ("2", "Manifold Gauge", "3", "", ""),
+    ]
+    path = _pdf(tmp_path / "a.pdf", [[spec], [form]], (120, 200, 60, 80, 80))
+    manifest = PackageManifest.model_construct(files=[type("F", (), {"id": "d01", "kind": "pdf"})()])
+    found = rfq_lines(manifest, {}, {"d01": path}, rules)
+    assert len(found["lists"]) == 2
+    by_list = {lst["id"]: lst for lst in found["lists"]}
+    assert all(lst["lines"] == 2 for lst in found["lists"])
+    assert all(lst["replaced_by"] is None for lst in found["lists"])
+    suggested = next(lst for lst in found["lists"] if lst["suggested"])
+    other = next(lst for lst in found["lists"] if not lst["suggested"])
+    assert suggested["has_price"] and not other["has_price"]
+    assert {r["list"] for r in found["items"]} == set(by_list)
+
+
+def test_suggested_lists_are_kept_when_items_exceed_max(
+    tmp_path: Path, rules: PriceSheetRules, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A long unpriced specification ahead of a bid form must not starve the suggested list."""
+    monkeypatch.setattr(lines_mod, "MAX_ITEMS", 3)
+    spec_rows = [("Items to be Supplied", "Quantity", "Description/Specifications", "", "")]
+    form_rows = [("Item No.", "Description of Goods", "Quantity", "Unit Price", "Total Price")]
+    for i in range(1, 6):
+        spec_rows.append((f"Part {i}", "1", f"Spec of part {i}", "", ""))
+        form_rows.append((str(i), f"Part {i}", "1", "", ""))
+    path = _pdf(tmp_path / "a.pdf", [[spec_rows], [form_rows]], (120, 60, 200, 80, 80))
+    manifest = PackageManifest.model_construct(files=[type("F", (), {"id": "d01", "kind": "pdf"})()])
+    found = rfq_lines(manifest, {}, {"d01": path}, rules)
+    assert found["total"] == 10
+    assert len(found["items"]) == 3
+    suggested = next(lst for lst in found["lists"] if lst["suggested"])
+    assert all(item["list"] == suggested["id"] for item in found["items"])
+    assert suggested["lines"] == 5  # counts are before truncation
+
+
+def test_box_coordinates_are_clamped_to_the_page(tmp_path: Path) -> None:
+    doc = pymupdf.open()
+    page = doc.new_page(width=100, height=200)
+    page_num, x, y, w, h = lines_mod._box(page, 1, (-10, -5, 150, 250))
+    doc.close()
+    assert (page_num, x, y, w, h) == (1, 0.0, 0.0, 1.0, 1.0)
+    assert 0 <= x <= 1 and 0 <= y <= 1 and 0 <= w <= 1 and 0 <= h <= 1
 
 
 def _annexes(path: Path) -> Path:

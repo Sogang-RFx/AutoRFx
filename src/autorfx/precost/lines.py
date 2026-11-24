@@ -192,14 +192,18 @@ def _caption(page: pymupdf.Page, bbox: Sequence[float]) -> str:
 
 
 def _box(page: pymupdf.Page, number: int, bbox: Sequence[float]) -> tuple[int, float, float, float, float]:
+    """Normalised page box clamped to ``[0, 1]`` so schema validation never sees overflow."""
     w, h = page.rect.width or 1, page.rect.height or 1
-    x0, y0, x1, y1 = (max(0.0, v) for v in bbox)
+    x0 = min(max(0.0, bbox[0]), w)
+    y0 = min(max(0.0, bbox[1]), h)
+    x1 = min(max(x0, bbox[2]), w)
+    y1 = min(max(y0, bbox[3]), h)
     return (
         number,
         round(x0 / w, 4),
         round(y0 / h, 4),
-        round(min(x1 - x0, w) / w, 4),
-        round(min(y1 - y0, h) / h, 4),
+        round((x1 - x0) / w, 4),
+        round((y1 - y0) / h, 4),
     )
 
 
@@ -550,8 +554,12 @@ def _read_rows(reading: Reading, start: int, state: dict, compiled: Mapping[str,
                 state["last_at"] = (grid.id, index)
             continue
         if heading or (span == 0 and len(filled) == 1 and not INTEGER.match(filled[0])):
-            state["group"] = heading or text[:80]
-            state["run"] += 1
+            # A group title repeated with the header on the next page of the same sheet is
+            # the same run; bump only when the group name actually changes (a revision).
+            new_group = heading or text[:80]
+            if new_group != state["group"]:
+                state["run"] += 1
+            state["group"] = new_group
             continue
         amount = _quantity(_cell(row, columns["quantity"]))
         if monthly and amount is not None:
@@ -637,7 +645,9 @@ def read_grids(
             head = grid.rows[reading.header]
             state.update(header=head, columns=reading.columns, last=None)
             if reading.header > 0 and (heading := _group(normalize(" ".join(grid.rows[0])), compiled)):
-                state["group"], state["run"] = heading, state["run"] + 1
+                if heading != state["group"]:
+                    state["run"] += 1
+                state["group"] = heading
             _read_rows(reading, reading.header + 1, state, compiled)
         elif state["columns"] is not None and len(grid.rows[0]) == len(state["header"]):
             # The sheet goes on over a page break without repeating its header.
@@ -804,26 +814,35 @@ def rfq_lines(
     for grids in file_grids(manifest, parsed, canonical, rules):
         readings.extend(read_grids(grids, compiled, layouts or {}))
     lists = _lists(readings)[:MAX_LISTS]
-    shown = {lst["id"] for lst in lists}
-    rows = [line for reading in readings for line in reading.lines]
-    # A revised sheet (an addendum) lists a group again: its last listing replaces the earlier ones,
-    # and a list left empty by that is shown as replaced.
-    last = {row["group"]: row for row in rows if row["group"]}
+    shown = {lst["id"]: lst for lst in lists if lst["id"]}
+    rows = [line for reading in readings for line in reading.lines if line.get("list") in shown]
+    # A revised sheet lists a group again: keep the last run. Scope by list so a specification
+    # and its bid form that share a group name (e.g. "Lot 1") do not erase each other. Across
+    # lists, only the same form (identical columns) is treated as a revision / addendum.
+    last_in_list = {(row["list"], row["group"]): row for row in rows if row["group"]}
+    last_form: dict[tuple, dict] = {}
+    for row in rows:
+        if not row["group"]:
+            continue
+        form = (row["group"], tuple(sorted(shown[row["list"]]["columns"].items())))
+        last_form[form] = row
     replaced: dict[str, str] = {}
     latest: dict[tuple, dict] = {}
     for row in rows:
-        if row["group"] and row["run"] != last[row["group"]]["run"]:
-            if last[row["group"]]["list"] != row["list"]:
-                replaced[row["list"]] = last[row["group"]]["list"]
-            continue
-        key = (
-            (row["group"], row["no"])
-            if row["group"]
-            else (row["source_doc"], row["table"], row["no"], row["part"])
-        )
+        if row["group"]:
+            if row["run"] != last_in_list[(row["list"], row["group"])]["run"]:
+                continue
+            form = (row["group"], tuple(sorted(shown[row["list"]]["columns"].items())))
+            end = last_form[form]
+            if end["list"] != row["list"]:
+                replaced[row["list"]] = end["list"]
+                continue
+            key = (row["list"], row["group"], row["no"])
+        else:
+            key = (row["source_doc"], row["table"], row["no"], row["part"])
         latest.pop(key, None)
         latest[key] = {k: v for k, v in row.items() if k != "run"}
-    found = [item for item in latest.values() if item["list"] in shown]
+    found = list(latest.values())
     overlaps = _overlaps(lists, found)
     counts: dict[str, int] = {}
     for item in found:
@@ -835,9 +854,14 @@ def rfq_lines(
         if counts.get(lst["id"])
         and (lst["id"] in priced or not priced or not any(o["list"] in priced for o in overlaps[lst["id"]]))
     }
+    # Prefer suggested (usually the bid form) so a long specification ahead of it cannot
+    # consume the whole MAX_ITEMS budget and leave the priced list with zero lines.
+    preferred = [item for item in found if item["list"] in suggested]
+    rest = [item for item in found if item["list"] not in suggested]
+    items = (preferred + rest)[:MAX_ITEMS]
     tables = [r for r in readings if r.lines or _looks_like_table(r.grid)]
     return {
-        "items": found[:MAX_ITEMS],
+        "items": items,
         "total": len(found),
         "limit": MAX_LINES,
         "tables": [_summary(r) for r in tables[:MAX_TABLES]],
