@@ -19,6 +19,7 @@ import json
 import logging
 import threading
 import unicodedata
+from collections import Counter
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Literal, TypedDict
@@ -26,8 +27,8 @@ from typing import Literal, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from autorfx.analysis.candidates import Candidates, find_candidates
-from autorfx.analysis.citation import number_signatures, verify
-from autorfx.analysis.llm import PROMPT_VERSION, strip_sentence_marks
+from autorfx.analysis.citation import verify
+from autorfx.analysis.llm import PROMPT_VERSION
 from autorfx.analysis.providers import (
     AnalysisProvider,
     CacheStore,
@@ -36,6 +37,8 @@ from autorfx.analysis.providers import (
     TransientProviderError,
     rule_judgement,
 )
+from autorfx.analysis.translation import is_source_korean, translate_clause
+from autorfx.analysis.usage import UsageMeter
 from autorfx.jobs import JobReporter, NullReporter
 from autorfx.models import Clause, ClauseAnalysis, Finding, Origin, RedFlag
 from autorfx.rules import Ruleset
@@ -120,7 +123,12 @@ def assemble(
 
 
 def build_clause_graph(
-    provider: AnalysisProvider, ruleset: Ruleset, policy: Policy, cache: CacheStore | None
+    provider: AnalysisProvider,
+    ruleset: Ruleset,
+    policy: Policy,
+    cache: CacheStore | None,
+    meter: UsageMeter | None = None,
+    translation_cache: CacheStore | None = None,
 ):
     """Compile the per-clause graph for one provider and one set of rules."""
 
@@ -173,22 +181,22 @@ def build_clause_graph(
         clause, analysis = state["clause"], state["analysis"]
         if state["origin"] == "llm" and analysis.summary.citation_status == "verified" and cache is not None:
             cache.put(cache_key(clause, provider.id, ruleset.digest), state["judgement"].model_dump_json())
-        if provider.translates and not clause.is_boilerplate:
-            try:
-                translation = provider.translate(ClauseInput.of(clause))
-            except TransientProviderError:
-                translation = None
-            # "[S1]"-style marks are the numbering we use for citations, not part of any translation:
-            # they are removed whatever provider made it, so their digits never count as numbers.
-            if translation:
-                translation = strip_sentence_marks(translation, clause.text) or None
-            # A translation is shown next to the original: a number that is not in the clause is
-            # an error of the translator, and the translation is withheld rather than shown (CITE-02).
-            if translation and number_signatures(translation) - number_signatures(clause.text):
-                log.warning("translation of %s states numbers not in the clause; withheld", clause.clause_id)
-                translation = None
-            analysis = analysis.model_copy(update={"translation_ko": translation})
-        return {"analysis": analysis}
+        if not provider.translates:
+            return {"analysis": analysis.model_copy(update={"translation_status": "no_provider"})}
+        if clause.is_boilerplate:
+            return {"analysis": analysis.model_copy(update={"translation_status": "boilerplate"})}
+        if is_source_korean(clause):
+            return {"analysis": analysis.model_copy(update={"translation_status": "source_ko"})}
+        result = translate_clause(clause, provider, cache=translation_cache)
+        if meter is not None:
+            meter.add(result.usage)  # also for clauses that failed or were withheld: the tokens were billed
+        update = {
+            "translation_ko": result.text,
+            "translation_sentences": result.sentences,
+            "translation_status": result.status,
+            "translation_note": result.note,
+        }
+        return {"analysis": analysis.model_copy(update=update)}
 
     graph = StateGraph(ClauseState)
     graph.add_node("candidates", candidates_node)
@@ -216,11 +224,13 @@ def analyze(
     reporter: JobReporter | None = None,
     max_concurrency: int = 4,
     policy: Policy = "ambiguous_only",
+    meter: UsageMeter | None = None,
+    translation_cache: CacheStore | None = None,
 ) -> tuple[ClauseAnalysis, ...]:
     """One analysis per clause, in input order. Reports the translate, route, assess and verify stages."""
     report = reporter or NullReporter()
     total = len(clauses)
-    graph = build_clause_graph(provider, ruleset, policy, cache)
+    graph = build_clause_graph(provider, ruleset, policy, cache, meter, translation_cache)
     lock = threading.Lock()
     done = 0
 
@@ -250,8 +260,14 @@ def analyze(
 
     verified = sum(r.summary.citation_status == "verified" for r in results)
     if provider.translates:
-        translated = sum(r.translation_ko is not None for r in results)
-        report.update("translate", "done", f"{translated}/{total} 조항 번역")
+        count = Counter(r.translation_status for r in results)
+        excluded = count["boilerplate"] + count["source_ko"]
+        report.update(
+            "translate",
+            "done",
+            f"번역 {count['translated']} · 일부 {count['partial']} · 보류 {count['withheld']}"
+            f" · 실패 {count['failed']} · 제외 {excluded}",
+        )
     report.update("route", "done", f"{total}개 조항 분류")
     must = sum(r.priority == "must" for r in results)
     flags = sum(r.red_flag is not None for r in results)

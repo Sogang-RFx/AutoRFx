@@ -125,6 +125,19 @@ export type SourceExcerpt = z.infer<typeof SourceExcerpt>;
 export const Lang = z.enum(["en", "de", "ko", "mixed", "unknown"]);
 export type Lang = z.infer<typeof Lang>;
 
+/** Why a clause has a translation or not (TRANS-03). "not_recorded": analysed before this was recorded. */
+export const TranslationStatus = z.enum([
+  "not_recorded",
+  "no_provider",
+  "boilerplate",
+  "source_ko",
+  "translated",
+  "partial",
+  "withheld",
+  "failed",
+]);
+export type TranslationStatus = z.infer<typeof TranslationStatus>;
+
 export const VisibleClause = z.object({
   kind: z.literal("clause"),
   /** Unique inside the RFQ, e.g. "d01:II.G". */
@@ -143,6 +156,7 @@ export const VisibleClause = z.object({
   excerpt: z.array(SourceExcerpt),
   summary: VerifiedFinding,
   translation_ko: z.string().nullable(),
+  translation_status: TranslationStatus.optional(),
   origin: Origin,
 });
 export type VisibleClause = z.infer<typeof VisibleClause>;

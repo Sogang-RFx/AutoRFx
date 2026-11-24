@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ConfirmPolicy = Literal["always", "ambiguous_only", "never"]
@@ -34,13 +34,24 @@ BGE-M3 and finds almost nothing at 0.45. Values are the best hybrid gate of the 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore", frozen=True, populate_by_name=True
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        frozen=True,
+        populate_by_name=True,
+        hide_input_in_errors=True,
     )
 
     data_dir: Path = Field(default=Path("data"), validation_alias="AUTORFX_DATA_DIR")
 
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-4o", validation_alias="OPENAI_MODEL")
+    openai_translation_model: str | None = Field(default=None, validation_alias="OPENAI_TRANSLATION_MODEL")
+    """Model for translation only. Unset means the judgement model (OPENAI_MODEL)."""
+    openai_translation_effort: Literal["none", "low", "medium", "high"] | None = Field(
+        default=None, validation_alias="OPENAI_TRANSLATION_EFFORT"
+    )
+    """Reasoning effort sent with translation calls. Unset sends nothing (gpt-4o does not accept it)."""
     deepl_api_key: SecretStr | None = Field(default=None, validation_alias="DEEPL_API_KEY")
     embedding_model: str | None = Field(default=DEFAULT_EMBEDDING_MODEL, validation_alias="EMBEDDING_MODEL")
     """Dense retrieval is added to BM25 with this model: ``openai:<model>`` (needs the LLM key; the default,
@@ -74,7 +85,13 @@ class Settings(BaseSettings):
             return None
         return value
 
-    @field_validator("embedding_model", "embedding_min_score", mode="before")
+    @field_validator(
+        "embedding_model",
+        "embedding_min_score",
+        "openai_translation_model",
+        "openai_translation_effort",
+        mode="before",
+    )
     @classmethod
     def _blank_is_unset(cls, value: object) -> object:
         if isinstance(value, str):
@@ -86,6 +103,25 @@ class Settings(BaseSettings):
         if self.embedding_min_score is not None:
             return self.embedding_min_score
         return MODEL_MIN_SCORE.get((model or "").strip().lower(), FALLBACK_MIN_SCORE)
+
+    @field_validator("openai_translation_effort", mode="after")
+    @classmethod
+    def _effort_needs_a_model(cls, value: str | None, info: ValidationInfo) -> str | None:
+        """The effort belongs to the translation model: set both, or neither.
+
+        A field validator, not a model validator: its error carries the effort value only, never the whole
+        settings dict (which holds the API key). The model field is declared first, so it is validated first;
+        when it failed it is absent from ``info.data`` and its own error is the one shown.
+        """
+        if value is None or "openai_translation_model" not in info.data:
+            return value
+        model = info.data["openai_translation_model"]
+        if not model:
+            raise ValueError("OPENAI_TRANSLATION_EFFORT needs OPENAI_TRANSLATION_MODEL: set both or neither")
+        if model.lower().startswith("gpt-4"):
+            # Every translation call would be rejected while the server looks healthy.
+            raise ValueError("OPENAI_TRANSLATION_EFFORT is not accepted by gpt-4* models: leave it empty")
+        return value
 
     @property
     def rules_dir(self) -> Path:
@@ -104,6 +140,11 @@ class Settings(BaseSettings):
     @property
     def cache_dir(self) -> Path:
         return self.data_dir / "cache"
+
+    @property
+    def translation_prices_path(self) -> Path:
+        """USD per 1M tokens per translation model, for the estimated cost. Not a rule file."""
+        return self.data_dir / "translation" / "prices.yaml"
 
     @property
     def answer_keys_dir(self) -> Path:

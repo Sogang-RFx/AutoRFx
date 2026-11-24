@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import shutil
 from collections.abc import Iterator
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
+from autorfx.analysis import ScriptedProvider
+from autorfx.analysis.usage import Usage, usd_text
 from autorfx.cli import main
 from autorfx.config import get_settings
 from conftest import RULES_DIR
@@ -179,6 +182,75 @@ def test_score_search_refuses_the_evaluation_set(
         main(["score-search", "--model", "fake", "--questions", str(questions), "--key", str(held_out)]) == 2
     )
     assert "평가용(eval)" in capsys.readouterr().err
+
+
+# ── estimated translation cost (INV-12) ─────────────────────────────────────
+PRICE_FILE = (
+    'source: https://example.test/pricing\nchecked: "2026-11-24"\nunit: per 1M\nmodels:\n'
+    '  gpt-x:\n    input: "0.10"\n    cached_input: "0.01"\n    output: "0.50"\n'
+)
+
+
+@pytest.fixture
+def translating(data_dir: Path, monkeypatch: pytest.MonkeyPatch):
+    """A key is set and the provider is a script that translates; nothing leaves the machine."""
+    import autorfx.cli as cli
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-used")
+    get_settings.cache_clear()
+
+    def build(model: str):
+        provider = ScriptedProvider(
+            translation="번역문",
+            provider_id=f"openai:{model}",
+            usage=Usage(calls=1, input_tokens=1000, output_tokens=1000),
+        )
+        monkeypatch.setattr(cli, "make_provider", lambda *a, **k: provider)
+
+    return build
+
+
+def test_analyze_prints_the_estimated_translation_cost(
+    data_dir: Path, translating, capsys: pytest.CaptureFixture[str]
+):
+    """INV-12: the summary says "estimated" and gives the cost with the number of calls."""
+    translating("gpt-x")
+    (data_dir / "translation").mkdir()
+    (data_dir / "translation" / "prices.yaml").write_text(PRICE_FILE, encoding="utf-8")
+    assert main(["analyze", "--sample", "synthetic-sample"]) == 0
+    line = next(x for x in capsys.readouterr().out.splitlines() if x.startswith("번역 추정 비용"))
+    calls = int(line.split("(")[1].split("회")[0])
+    cost = Decimal(calls) * Decimal("0.0006")
+    assert line == f"번역 추정 비용: ${usd_text(cost)} ({calls}회 호출)"
+
+
+def test_analyze_says_when_the_model_has_no_price(
+    data_dir: Path, translating, capsys: pytest.CaptureFixture[str]
+):
+    """INV-12: an unpriced model is reported as such, not as zero."""
+    translating("gpt-unpriced")
+    (data_dir / "translation").mkdir()
+    (data_dir / "translation" / "prices.yaml").write_text(PRICE_FILE, encoding="utf-8")
+    assert main(["analyze", "--sample", "synthetic-sample"]) == 0
+    assert "번역 추정 비용: 단가 없음 (" in capsys.readouterr().out
+
+
+def test_analyze_with_a_key_needs_the_price_file(
+    data_dir: Path, translating, capsys: pytest.CaptureFixture[str]
+):
+    """INV-12: a missing price file stops the run at the start, with a message naming it."""
+    translating("gpt-x")
+    assert main(["analyze", "--sample", "synthetic-sample"]) == 1
+    assert "prices.yaml" in capsys.readouterr().err
+    assert not list((data_dir / "work").glob("rfq-*"))
+
+
+def test_analyze_without_a_key_prints_no_cost_and_needs_no_price_file(
+    data_dir: Path, capsys: pytest.CaptureFixture[str]
+):
+    """TRANS-03: without a key nothing is translated and the price file is not read."""
+    assert main(["analyze", "--sample", "synthetic-sample"]) == 0
+    assert "번역 추정 비용" not in capsys.readouterr().out
 
 
 @pytest.fixture

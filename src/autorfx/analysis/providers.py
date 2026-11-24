@@ -17,13 +17,22 @@ from pathlib import Path
 from typing import Protocol
 
 from autorfx.analysis.candidates import Candidates
+from autorfx.analysis.usage import Usage
 from autorfx.models import Clause, Lang, Locus, Model, Priority
 
 MAX_EXTRACT = 3
 
 
 class TransientProviderError(RuntimeError):
-    """The provider could not answer right now (timeout, rate limit). The caller falls back to rules."""
+    """The provider could not answer right now (timeout, rate limit). The caller falls back to rules.
+
+    The message is an exception name only, never text of a clause or an answer: it is stored and logged.
+    ``usage`` is what a failed call still cost (a reply that did not parse was billed).
+    """
+
+    def __init__(self, message: str = "", *, usage: Usage | None = None) -> None:
+        super().__init__(message)
+        self.usage = usage
 
 
 class ClauseInput(Model):
@@ -71,6 +80,18 @@ class Answer(Model):
     model always states it (and strict structured output accepts the schema)."""
 
 
+class SentenceTranslation(Model):
+    """One translated sentence, by the 1-based number it was sent with."""
+
+    n: int
+    text: str
+
+
+class TranslationBatch(Model):
+    items: tuple[SentenceTranslation, ...]
+    """Required, with no default: a malformed reply is a schema error, and a strict schema has no defaults."""
+
+
 class SheetMap(Model):
     """Where the items of a table are: the header row and the column of each role (None when absent).
 
@@ -98,8 +119,10 @@ class AnalysisProvider(Protocol):
     id: str
     uses_llm: bool
     translates: bool
+    translation_id: str | None
+    """Engine that translates, None when nothing is translated."""
 
-    def translate(self, clause: ClauseInput) -> str | None: ...
+    def translate(self, clause: ClauseInput, numbers: Sequence[int]) -> tuple[TranslationBatch, Usage]: ...
 
     def confirm(self, clause: ClauseInput, candidates: Candidates, feedback: str | None) -> Judgement: ...
 
@@ -129,9 +152,10 @@ class RuleOnlyProvider:
     id = "rule-only"
     uses_llm = False
     translates = False
+    translation_id = None
 
-    def translate(self, clause: ClauseInput) -> str | None:
-        return None
+    def translate(self, clause: ClauseInput, numbers: Sequence[int]) -> tuple[TranslationBatch, Usage]:
+        return TranslationBatch(items=()), Usage()
 
     def confirm(self, clause: ClauseInput, candidates: Candidates, feedback: str | None) -> Judgement:
         return rule_judgement(candidates)
@@ -158,10 +182,16 @@ class ScriptedProvider:
         answers: list[Answer | Exception] | None = None,
         sheet_maps: list[SheetMap | Exception] | None = None,
         translation: str | None = None,
+        translations: dict[str, list[dict[int, str] | str | TranslationBatch | Exception]] | None = None,
         provider_id: str = "scripted",
+        usage: Usage | None = None,
     ) -> None:
         self.id = provider_id
-        self.translates = translation is not None
+        self.translates = translation is not None or translations is not None
+        self.translation_id = provider_id if self.translates else None
+        self._usage = usage or Usage()
+        self._translations = {key: list(value) for key, value in (translations or {}).items()}
+        self.translate_calls: list[tuple[str, tuple[int, ...]]] = []
         self._script = {key: list(value) for key, value in (script or {}).items()}
         self._answers = list(answers or [])
         self._sheet_maps = list(sheet_maps or [])
@@ -171,8 +201,24 @@ class ScriptedProvider:
         self.confirm_calls: list[tuple[str, str | None]] = []
         self.answer_calls: list[tuple[str, tuple[str, ...], str | None]] = []
 
-    def translate(self, clause: ClauseInput) -> str | None:
-        return self._translation
+    def translate(self, clause: ClauseInput, numbers: Sequence[int]) -> tuple[TranslationBatch, Usage]:
+        """A queued dict or batch is returned as it is (requested or not); a text answers every number."""
+        with self._lock:
+            self.translate_calls.append((clause.clause_id, tuple(numbers)))
+            queue = self._translations.get(clause.clause_id)
+            item = (queue.pop(0) if len(queue) > 1 else queue[0]) if queue else self._translation
+        if isinstance(item, Exception):
+            raise item
+        if isinstance(item, TranslationBatch):
+            return item, self._usage
+        if isinstance(item, dict):
+            return TranslationBatch(
+                items=tuple(SentenceTranslation(n=n, text=t) for n, t in item.items())
+            ), self._usage
+        if item is None:
+            return TranslationBatch(items=()), self._usage
+        batch = TranslationBatch(items=tuple(SentenceTranslation(n=n, text=item) for n in numbers))
+        return batch, self._usage
 
     def confirm(self, clause: ClauseInput, candidates: Candidates, feedback: str | None) -> Judgement:
         with self._lock:
@@ -222,7 +268,13 @@ class MemoryCache:
 
 
 class SqliteCache:
-    """Judgements keyed by content hash. Values hold sentence numbers, never document text."""
+    """Results keyed by content hash.
+
+    Judgement values hold sentence numbers, never document text. The translation cache file
+    (``translation.sqlite``) does hold translated customer text. It stays in the git-ignored cache folder and
+    is not removed when an RFQ is re-analysed (a later run reads it) or deleted: the application has no RFQ
+    deletion, and no code removes cache files. Delete the file by hand to forget the translations.
+    """
 
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
