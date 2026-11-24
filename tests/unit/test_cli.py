@@ -243,3 +243,63 @@ def test_analyze_without_a_key_prints_no_cost_and_needs_no_price_file(
     """TRANS-03: without a key nothing is translated and the price file is not read."""
     assert main(["analyze", "--sample", "synthetic-sample"]) == 0
     assert "번역 추정 비용" not in capsys.readouterr().out
+
+
+@pytest.fixture
+def compare_questions(data_dir: Path) -> Path:
+    path = data_dir / "questions.yaml"
+    path.write_text('questions:\n  - {id: Q01, text: "보증 기간은 얼마인가요?"}\n', encoding="utf-8")
+    return path
+
+
+def test_compare_search_leaves_stored_results_alone(data_dir: Path, compare_questions: Path, fake_encoder):
+    """Like score-search: a comparison run never replaces the served analysis of the same files."""
+    assert main(["analyze", "--sample", "synthetic-sample"]) == 0
+    stored = {p: p.read_bytes() for p in (data_dir / "work").glob("rfq-*/*.json")}
+    assert stored
+    argv = ["compare-search", "--sample", "synthetic-sample", "--model", "fake"]
+    assert main([*argv, "--questions", str(compare_questions)]) == 0
+    assert {p: p.read_bytes() for p in (data_dir / "work").glob("rfq-*/*.json")} == stored
+    assert list((data_dir / "work" / "_compare").glob("*.md"))
+
+
+def test_compare_search_never_builds_an_llm_provider(
+    data_dir: Path,
+    compare_questions: Path,
+    fake_encoder,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Comparing searches spends no API calls, even with a key set."""
+    import autorfx.cli as cli
+
+    def fail(*args, **kwargs):
+        raise AssertionError("compare-search must not build an LLM provider")
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-a-real-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(cli, "make_provider", fail)
+    argv = ["compare-search", "--sample", "synthetic-sample", "--model", "fake"]
+    assert main([*argv, "--questions", str(compare_questions)]) == 0
+
+
+def test_compare_search_checks_the_questions_before_any_work(
+    data_dir: Path,
+    compare_questions: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """A missing, malformed or held-out (INV-11) questions file stops the run before parsing and embedding."""
+    import autorfx.cli as cli
+
+    monkeypatch.setattr(cli, "run_pipeline", lambda *a, **k: pytest.fail("the pipeline ran"))
+    monkeypatch.setattr(cli, "load_encoder", lambda *a, **k: pytest.fail("the model was loaded"))
+    argv = ["compare-search", "--sample", "synthetic-sample", "--model", "fake", "--questions"]
+    assert main([*argv, str(data_dir / "missing.yaml")]) == 2
+    malformed = data_dir / "bad.yaml"
+    malformed.write_text("questions: [", encoding="utf-8")
+    assert main([*argv, str(malformed)]) == 2
+    held_out = data_dir / "eval" / "questions.yaml"
+    held_out.parent.mkdir()
+    held_out.write_text(compare_questions.read_text(encoding="utf-8"), encoding="utf-8")
+    assert main([*argv, str(held_out)]) == 2
+    assert capsys.readouterr().err.strip()

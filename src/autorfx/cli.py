@@ -99,6 +99,14 @@ def _compare_search(args: argparse.Namespace) -> int:
     """BM25 vs embedding vs hybrid on one RFQ, for a list of questions (report under data/work)."""
     settings = get_settings()
     ruleset = load_ruleset(settings.rules_dir)
+    # The questions are checked first, like in score-search: a missing or malformed file, or one from
+    # the held-out evaluation set (INV-11), must not be found only after parsing and embedding.
+    try:
+        assert_not_held_out(Path(args.questions))
+        questions = compare.load_questions(Path(args.questions))
+    except (GuardError, ValueError, OSError, yaml.YAMLError) as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 2
     model = args.model or settings.embedding_model
     if not model:
         sys.stderr.write("임베딩 모델을 정해 주세요: --model BAAI/bge-m3 또는 .env의 EMBEDDING_MODEL\n")
@@ -112,20 +120,24 @@ def _compare_search(args: argparse.Namespace) -> int:
     if found is None:
         return 2
     sources, name, is_sample = found
-    workspace = run_pipeline(
-        sources,
-        name=name,
-        settings=settings,
-        ruleset=ruleset,
-        provider=make_provider(settings, ruleset),
-        is_sample=is_sample,
-        now_ms=int(time.time() * 1000),
-        retrieval=retrieval_engine(encoder),
-    )
     gate = args.min_score if args.min_score is not None else settings.embedding_min_score
-    data = load_rfq(workspace, ruleset, encoder=encoder, min_score=gate)
-    questions = compare.load_questions(Path(args.questions))
-    rows = compare.run(data.index, questions, top=args.top)
+    # Retrieval only needs parsing and chunking. The analysis runs on rules in its own temporary
+    # workspace, so it neither spends API calls nor replaces the served analysis (possibly GPT) of the
+    # same files under data/work. The embedding cache and the report stay where they are.
+    with tempfile.TemporaryDirectory(prefix="autorfx-compare-") as tmp:
+        scratch = settings.model_copy(update={"data_dir": Path(tmp)})
+        workspace = run_pipeline(
+            sources,
+            name=name,
+            settings=scratch,
+            ruleset=ruleset,
+            provider=RuleOnlyProvider(),
+            is_sample=is_sample,
+            now_ms=int(time.time() * 1000),
+            retrieval=retrieval_engine(encoder),
+        )
+        data = load_rfq(workspace, ruleset, encoder=encoder, min_score=gate)
+        rows = compare.run(data.index, questions, top=args.top)
     out = settings.work_dir / "_compare"
     out.mkdir(parents=True, exist_ok=True)
     stem = f"{data.manifest.id}-{time.strftime('%Y%m%d-%H%M')}"
