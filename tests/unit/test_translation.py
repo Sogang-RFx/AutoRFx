@@ -1096,7 +1096,7 @@ def test_a_cached_batch_is_served_after_an_outage_began():
 
 def test_effort_without_a_model_is_refused():
     """TRANS-03: OPENAI_TRANSLATION_EFFORT needs OPENAI_TRANSLATION_MODEL."""
-    with pytest.raises(ValidationError, match="OPENAI_TRANSLATION_MODEL.*OPENAI_TRANSLATION_EFFORT"):
+    with pytest.raises(ValidationError, match="OPENAI_TRANSLATION_EFFORT needs OPENAI_TRANSLATION_MODEL"):
         Settings(_env_file=None, OPENAI_TRANSLATION_EFFORT="none")  # type: ignore[call-arg]
     Settings(_env_file=None, OPENAI_TRANSLATION_MODEL="gpt-x", OPENAI_TRANSLATION_EFFORT="none")  # type: ignore[call-arg]
 

@@ -283,3 +283,35 @@ def test_derived_folders_follow_the_data_dir(tmp_path: Path):
     assert settings.work_dir == tmp_path / "work"
     assert settings.samples_dir == tmp_path / "raw" / "dev"
     assert not guard.is_held_out(settings.samples_dir.relative_to(tmp_path))
+
+
+FAKE_KEY = "sk-FAKEsecretkey123"
+
+
+def assert_no_secret(exc: ValidationError) -> None:
+    shown = " ".join([str(exc), repr(exc), repr(exc.errors())])
+    assert FAKE_KEY not in shown and FAKE_KEY[:5] not in shown
+
+
+@pytest.mark.parametrize("effort", ["none", "max"], ids=["without-model", "invalid-value"])
+def test_settings_errors_never_show_the_api_key(effort: str, monkeypatch: pytest.MonkeyPatch):
+    """OPS-01: a validation error about the translation effort does not carry the API key."""
+    with pytest.raises(ValidationError) as by_alias:
+        Settings(_env_file=None, OPENAI_API_KEY=FAKE_KEY, OPENAI_TRANSLATION_EFFORT=effort)  # type: ignore[call-arg]
+    assert_no_secret(by_alias.value)
+    monkeypatch.setenv("OPENAI_API_KEY", FAKE_KEY)
+    monkeypatch.setenv("OPENAI_TRANSLATION_EFFORT", effort)
+    with pytest.raises(ValidationError) as by_env:
+        Settings(_env_file=None)  # type: ignore[call-arg]
+    assert_no_secret(by_env.value)
+
+
+def test_effort_without_a_model_message_is_kept_and_a_bad_model_does_not_crash(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """OPS-01: the message names both variables; an invalid model value still gives a normal error."""
+    monkeypatch.setenv("OPENAI_TRANSLATION_EFFORT", "low")
+    with pytest.raises(ValidationError, match="OPENAI_TRANSLATION_EFFORT needs OPENAI_TRANSLATION_MODEL"):
+        Settings(_env_file=None)  # type: ignore[call-arg]
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, OPENAI_TRANSLATION_MODEL=["x"], OPENAI_TRANSLATION_EFFORT="low")  # type: ignore[call-arg]

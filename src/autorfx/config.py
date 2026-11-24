@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator, model_validator
+from pydantic import Field, SecretStr, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ConfirmPolicy = Literal["always", "ambiguous_only", "never"]
@@ -20,7 +20,12 @@ ConfirmPolicy = Literal["always", "ambiguous_only", "never"]
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=".env", env_file_encoding="utf-8", extra="ignore", frozen=True, populate_by_name=True
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        frozen=True,
+        populate_by_name=True,
+        hide_input_in_errors=True,
     )
 
     data_dir: Path = Field(default=Path("data"), validation_alias="AUTORFX_DATA_DIR")
@@ -68,12 +73,22 @@ class Settings(BaseSettings):
     def _blank_model_is_none(cls, value: object) -> object:
         return None if isinstance(value, str) and not value.strip() else value
 
-    @model_validator(mode="after")
-    def _effort_needs_a_model(self) -> Settings:
-        """The effort belongs to the translation model: set both, or neither."""
-        if self.openai_translation_effort is not None and self.openai_translation_model is None:
+    @field_validator("openai_translation_effort", mode="after")
+    @classmethod
+    def _effort_needs_a_model(cls, value: str | None, info: ValidationInfo) -> str | None:
+        """The effort belongs to the translation model: set both, or neither.
+
+        A field validator, not a model validator: its error carries the effort value only, never the whole
+        settings dict (which holds the API key). The model field is declared first, so it is validated first;
+        when it failed it is absent from ``info.data`` and its own error is the one shown.
+        """
+        if (
+            value is not None
+            and "openai_translation_model" in info.data
+            and not info.data["openai_translation_model"]
+        ):
             raise ValueError("OPENAI_TRANSLATION_EFFORT needs OPENAI_TRANSLATION_MODEL: set both or neither")
-        return self
+        return value
 
     @property
     def rules_dir(self) -> Path:
