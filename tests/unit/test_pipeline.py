@@ -21,7 +21,7 @@ ARTIFACTS = ("clauses.json", "analysis.json", "mentions.json", "consistency.json
 
 
 def settings_in(folder: Path) -> Settings:
-    return Settings(_env_file=None, data_dir=folder / "data")
+    return Settings(_env_file=None, data_dir=folder / "data", embedding_model=None)
 
 
 def process(folder: Path, ruleset: Ruleset, sources: list[Path] | None = None) -> Workspace:

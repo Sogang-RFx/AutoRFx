@@ -77,7 +77,9 @@ class Settings(BaseSettings):
     @field_validator("embedding_model", "embedding_min_score", mode="before")
     @classmethod
     def _blank_is_unset(cls, value: object) -> object:
-        return None if isinstance(value, str) and not value.strip() else value
+        if isinstance(value, str):
+            return value.strip() or None
+        return value
 
     def min_score_for(self, model: str | None) -> float:
         """The evidence gate for ``model``: the configured value, else the one measured for that model."""

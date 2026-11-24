@@ -29,7 +29,7 @@ Api = tuple[TestClient, str, list[Path]]
 @pytest.fixture(scope="module")
 def api(tmp_path_factory: pytest.TempPathFactory, ruleset: Ruleset) -> Iterator[Api]:
     root = tmp_path_factory.mktemp("api")
-    settings = Settings(_env_file=None, data_dir=root / "data")
+    settings = Settings(_env_file=None, data_dir=root / "data", embedding_model=None)
     make_package(settings.samples_dir / "synthetic-sample")
     sources = make_package(root / "upload")
     app = create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())
@@ -184,7 +184,9 @@ def test_an_oversized_upload_is_refused_while_it_arrives(
 ):
     """PKG-03, security: the size limit stops reading the body; the server never buffers an oversized
     upload (40 MB sent against a 1 file x 1 MB limit) before refusing it."""
-    settings = Settings(_env_file=None, data_dir=tmp_path / "data", max_files=1, max_file_mb=1)
+    settings = Settings(
+        _env_file=None, data_dir=tmp_path / "data", max_files=1, max_file_mb=1, embedding_model=None
+    )
     chunks = [PART_HEAD, *([b"x" * MB] * 40), b"\r\n--B--\r\n"]
     headers = [(b"content-length", str(sum(map(len, chunks))).encode())] if declare_length else []
     with TestClient(create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())) as client:
@@ -198,7 +200,7 @@ def test_an_oversized_upload_is_refused_while_it_arrives(
 def test_results_of_older_rules_are_not_served(tmp_path: Path, ruleset: Ruleset):
     """INV-8 (review open question): cost sensitivity follows the rules, so results computed under
     other rule files are refused until the package is analysed again; analysing again fixes it."""
-    settings = Settings(_env_file=None, data_dir=tmp_path / "data")
+    settings = Settings(_env_file=None, data_dir=tmp_path / "data", embedding_model=None)
     sources = make_package(tmp_path / "upload")
     files = [("files", (p.name, p.read_bytes(), PDF)) for p in sources]
     with TestClient(create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())) as client:
@@ -449,3 +451,32 @@ def test_security_headers_and_cors(api: Api):
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
     other = client.get("/health", headers={"Origin": "https://example.org"})
     assert "access-control-allow-origin" not in other.headers
+
+
+def test_the_evidence_gate_follows_the_loaded_encoder(
+    tmp_path: Path, ruleset: Ruleset, monkeypatch: pytest.MonkeyPatch
+):
+    """The gate comes from the encoder in use, not from the setting, so the two cannot disagree."""
+    from autorfx.api import state as state_module
+    from topic_encoder import TopicEncoder
+
+    settings = Settings(_env_file=None, data_dir=tmp_path / "data", embedding_model=None)
+    files = [("files", (p.name, p.read_bytes(), PDF)) for p in make_package(tmp_path / "upload")]
+    seen: list[float | None] = []
+    real = state_module.load_rfq
+
+    def spy(*args, **kwargs):
+        seen.append(kwargs.get("min_score"))
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(state_module, "load_rfq", spy)
+    with TestClient(create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())) as client:
+        rfq_id = client.post("/rfqs", files=files).json()["data"]["id"]
+        app_state = client.app.state.autorfx
+        app_state.wait()
+        encoder = TopicEncoder()
+        encoder.name = "openai:text-embedding-3-large"
+        app_state.encoder = encoder
+        app_state._data.clear()
+        assert client.get(f"/rfqs/{rfq_id}/clauses").status_code == 200
+    assert seen[-1] == 0.30

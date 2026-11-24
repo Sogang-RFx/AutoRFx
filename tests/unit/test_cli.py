@@ -239,3 +239,18 @@ def test_compare_search_checks_the_questions_before_any_work(
     held_out.write_text(compare_questions.read_text(encoding="utf-8"), encoding="utf-8")
     assert main([*argv, str(held_out)]) == 2
     assert capsys.readouterr().err.strip()
+
+
+def test_compare_search_uses_the_gate_measured_for_the_model(
+    data_dir: Path, score_files, fake_encoder, capsys: pytest.CaptureFixture[str]
+):
+    """Without --min-score the gate is the model's own (3-large 0.30, BGE-M3 0.55), not one for all."""
+    questions, _ = score_files
+    base = ["compare-search", "--sample", "synthetic-sample", "--questions", str(questions)]
+    for model, gate in (("openai:text-embedding-3-large", "0.3"), ("BAAI/bge-m3", "0.55")):
+        assert main([*base, "--model", model]) == 0
+        report = next((data_dir / "work" / "_compare").glob("*.md"))
+        assert f"{gate}" in report.read_text(encoding="utf-8")
+        report.unlink()
+    assert main([*base, "--min-score", "1.5"]) != 0
+    assert "-1에서 1 사이" in capsys.readouterr().err

@@ -211,6 +211,7 @@ def load_rfq(
     cost_inputs = workspace.read_json(workspace.cost_inputs_path)
     if not isinstance(cost_inputs, dict):
         raise PipelineError("원가 입력 후보가 손상됐습니다. RFQ를 다시 올려 주세요.")
+    dense = _dense(clauses, encoder, min_score)
     return RfqData(
         workspace=workspace,
         manifest=manifest,
@@ -222,14 +223,20 @@ def load_rfq(
         cost_inputs=cost_inputs,
         # Retrieval runs when a question is asked, with the encoder loaded now, not the one recorded at
         # analysis time; the served engines say which (rule 6: no result shown as another engine's).
-        engines={**run["engines"], "retrieval": retrieval_engine(encoder)},
-        index=SearchIndex(clauses, ruleset, dense=_dense(clauses, encoder, min_score)),
+        engines={**run["engines"], "retrieval": retrieval_engine(encoder if dense is not None else None)},
+        index=SearchIndex(clauses, ruleset, dense=dense),
     )
 
 
 def _dense(clauses: Sequence[Clause], encoder: Encoder | None, min_score: float | None) -> DenseIndex | None:
     if encoder is None:
         return None
-    if min_score is None:
-        return DenseIndex(clauses, encoder)
-    return DenseIndex(clauses, encoder, min_score=min_score)
+    try:
+        if min_score is None:
+            return DenseIndex(clauses, encoder)
+        return DenseIndex(clauses, encoder, min_score=min_score)
+    except Exception:
+        # Offline, an expired key, a rate limit or an oversized batch: the screens keep working on
+        # keyword search, and the engine id says so (INV-12, no result shown as another engine's).
+        log.exception("embedding failed, answering with keyword search only")
+        return None
