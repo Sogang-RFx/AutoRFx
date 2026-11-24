@@ -292,7 +292,7 @@ class ClauseAnalysis(Model):
     translation_sentences: tuple[str | None, ...] = ()
     """The translation per source sentence; None where it is withheld or failed."""
     translation_note: str = ""
-    """An exception name or the count of added numbers; never clause or translation text."""
+    """Counts (extra_numbers, missing) and exception names; never clause or translation text."""
     origin: Origin
 
 

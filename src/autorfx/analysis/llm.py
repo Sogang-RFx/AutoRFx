@@ -25,8 +25,8 @@ from autorfx.analysis.providers import (
     EvidenceSentence,
     Judgement,
     TransientProviderError,
+    TranslationBatch,
 )
-from autorfx.analysis.translation import TranslationBatch
 from autorfx.analysis.usage import Usage
 from autorfx.rules import Ruleset
 

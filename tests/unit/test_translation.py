@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 import pytest
+from pydantic import ValidationError
 
 from autorfx.analysis import (
     RuleOnlyProvider,
@@ -21,6 +22,7 @@ from autorfx.analysis.translation import (
     clean,
     translate_clause,
 )
+from autorfx.analysis.usage import Usage
 from autorfx.jobs import JobStore, load_job
 from autorfx.models import Clause, ClauseAnalysis
 from autorfx.rules import Ruleset
@@ -238,3 +240,103 @@ def test_copied_markers_are_removed_unless_the_source_has_them():
     got, _ = run(clause, [{1: "[S2] 포장은 반환용이다.", 2: "부속서 [S2] 참조."}])
     assert got.sentences == ("포장은 반환용이다.", "부속서 [S2] 참조.") and got.status == "translated"
     assert clean("A [S1] B", "plain") == "A B"
+
+
+# ── fix round 1 ─────────────────────────────────────────────────────────────
+class CountingProvider(ScriptedProvider):
+    """A double that reports usage, as a real client does."""
+
+    def translate(self, clause, numbers):  # type: ignore[no-untyped-def]
+        batch, _ = super().translate(clause, numbers)
+        return batch, Usage(calls=1, input_tokens=10 * len(numbers), output_tokens=3)
+
+
+def has_key(node: object, key: str) -> bool:
+    if isinstance(node, dict):
+        return key in node or any(has_key(v, key) for v in node.values())
+    if isinstance(node, list):
+        return any(has_key(v, key) for v in node)
+    return False
+
+
+def test_batch_schema_is_strict_and_has_no_defaults():
+    """TRANS-01: items is required; a default would put "default" into the strict schema."""
+    from openai.lib._pydantic import to_strict_json_schema
+
+    assert not has_key(to_strict_json_schema(TranslationBatch), "default")
+    with pytest.raises(ValidationError):
+        TranslationBatch.model_validate({})
+
+
+def test_an_unrequested_number_in_a_reply_is_dropped():
+    """TRANS-02: sentence 21 was not in the first batch; its text there must not be used."""
+    clause = many(25)
+    first = TranslationBatch(items=tuple(SentenceTranslation(n=n, text="문장.") for n in range(1, 22)))
+    got, _ = run(clause, [first, TransientProviderError("TimeoutError")])
+    assert got.sentences[20] is None and got.sentences[0] == "문장."
+
+
+def test_a_blank_first_duplicate_wins_and_the_number_is_asked_again():
+    """TRANS-02: the first occurrence of a number counts, even blank; so the number is absent."""
+    clause = make_clause("6.1", ["Ship by train."])
+    first = TranslationBatch(
+        items=(SentenceTranslation(n=1, text=" "), SentenceTranslation(n=1, text="열차."))
+    )
+    got, provider = run(clause, [first, {1: "열차 후."}])
+    assert got.sentences == ("열차 후.",) and len(provider.translate_calls) == 2
+
+
+def test_a_marker_only_reply_is_missing_and_asked_again():
+    """TRANS-02, CITE-02: one definition of blank, after marker cleaning."""
+    clause = make_clause("6.2", ["Ship by train."])
+    got, provider = run(clause, [{1: " [S1] "}, {1: "열차."}])
+    assert got.status == "translated" and len(provider.translate_calls) == 2
+    never, _ = run(clause, [{1: "[S1]"}])
+    assert never.sentences == (None,) and never.note == "missing=1"
+
+
+def test_markers_leave_no_stray_spaces():
+    """CITE-02: a marker before a full stop or next to another marker leaves clean text."""
+    assert clean("FCA이다 [S1].", "plain") == "FCA이다."
+    assert clean("A [S1][S2] B", "plain") == "A B"
+    assert clean("[S1] A [S2]", "plain") == "A"
+    assert clean("A [S1] B [S2]", "has [S1]") == "A [S1] B"
+
+
+def test_only_the_marker_the_source_lacks_is_removed():
+    """CITE-02: the source has [S1]; the copied [S2] goes, [S1] stays."""
+    clause = make_clause("6.3", ["See [S1] of the annex."])
+    got, _ = run(clause, [{1: "[S2] 부속서 [S1] 참조."}])
+    assert got.sentences == ("부속서 [S1] 참조.",)
+
+
+@pytest.mark.parametrize("queue", [[ValueError("boom")], [{}, ValueError("boom")]])
+def test_a_non_transient_exception_propagates(queue: list):
+    """TRANS-03: only TransientProviderError is handled; a bug is not hidden in a note."""
+    clause = make_clause("6.4", ["Ship by train."])
+    with pytest.raises(ValueError):
+        run(clause, queue)
+
+
+def test_two_added_numbers_in_one_sentence_count_two():
+    """CITE-02: the note counts added numbers, not sentences."""
+    clause = make_clause("6.5", ["Ship by train."])
+    got, _ = run(clause, [{1: "열차 7대 8일."}])
+    assert got.status == "withheld" and got.note == "extra_numbers=2"
+
+
+def test_usage_is_summed_over_every_call():
+    """TRANS-04: batches and retries add up."""
+    clause = many(21)
+    provider = CountingProvider(translations={clause.clause_id: [{n: "문장." for n in range(1, 20)}, {}]})
+    got = translate_clause(clause, provider)
+    assert len(provider.translate_calls) == 4, "batch, retry of 20, batch 2, retry of 21"
+    assert got.usage == Usage(calls=4, input_tokens=230, output_tokens=12)
+
+
+def test_a_withheld_translation_is_not_logged(caplog: pytest.LogCaptureFixture):
+    """TRANS-03: logs carry ids and counts, never the translation."""
+    clause = make_clause("6.6", ["Ship by train."])
+    with caplog.at_level(logging.DEBUG):
+        run(clause, [{1: "비밀번역 777"}])
+    assert caplog.records and all("비밀번역" not in r.getMessage() for r in caplog.records)

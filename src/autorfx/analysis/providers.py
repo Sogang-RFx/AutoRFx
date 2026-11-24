@@ -14,14 +14,11 @@ import sqlite3
 import threading
 from collections.abc import Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import Protocol
 
 from autorfx.analysis.candidates import Candidates
 from autorfx.analysis.usage import Usage
 from autorfx.models import Clause, Lang, Locus, Model, Priority
-
-if TYPE_CHECKING:
-    from autorfx.analysis.translation import TranslationBatch
 
 MAX_EXTRACT = 3
 
@@ -78,6 +75,18 @@ class Answer(Model):
     model always states it (and strict structured output accepts the schema)."""
 
 
+class SentenceTranslation(Model):
+    """One translated sentence, by the 1-based number it was sent with."""
+
+    n: int
+    text: str
+
+
+class TranslationBatch(Model):
+    items: tuple[SentenceTranslation, ...]
+    """Required, with no default: a malformed reply is a schema error, and a strict schema has no defaults."""
+
+
 class AnalysisProvider(Protocol):
     id: str
     uses_llm: bool
@@ -113,9 +122,7 @@ class RuleOnlyProvider:
     translates = False
 
     def translate(self, clause: ClauseInput, numbers: Sequence[int]) -> tuple[TranslationBatch, Usage]:
-        from autorfx.analysis.translation import TranslationBatch
-
-        return TranslationBatch(), Usage()
+        return TranslationBatch(items=()), Usage()
 
     def confirm(self, clause: ClauseInput, candidates: Candidates, feedback: str | None) -> Judgement:
         return rule_judgement(candidates)
@@ -154,8 +161,6 @@ class ScriptedProvider:
 
     def translate(self, clause: ClauseInput, numbers: Sequence[int]) -> tuple[TranslationBatch, Usage]:
         """A queued dict or batch is returned as it is (requested or not); a text answers every number."""
-        from autorfx.analysis.translation import SentenceTranslation, TranslationBatch
-
         with self._lock:
             self.translate_calls.append((clause.clause_id, tuple(numbers)))
             queue = self._translations.get(clause.clause_id)
@@ -169,7 +174,7 @@ class ScriptedProvider:
                 items=tuple(SentenceTranslation(n=n, text=t) for n, t in item.items())
             ), Usage()
         if item is None:
-            return TranslationBatch(), Usage()
+            return TranslationBatch(items=()), Usage()
         return TranslationBatch(items=tuple(SentenceTranslation(n=n, text=item) for n in numbers)), Usage()
 
     def confirm(self, clause: ClauseInput, candidates: Candidates, feedback: str | None) -> Judgement:
