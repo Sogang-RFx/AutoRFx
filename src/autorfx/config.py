@@ -12,7 +12,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 ConfirmPolicy = Literal["always", "ambiguous_only", "never"]
@@ -67,6 +67,13 @@ class Settings(BaseSettings):
     @classmethod
     def _blank_model_is_none(cls, value: object) -> object:
         return None if isinstance(value, str) and not value.strip() else value
+
+    @model_validator(mode="after")
+    def _effort_needs_a_model(self) -> Settings:
+        """The effort belongs to the translation model: set both, or neither."""
+        if self.openai_translation_effort is not None and self.openai_translation_model is None:
+            raise ValueError("OPENAI_TRANSLATION_EFFORT needs OPENAI_TRANSLATION_MODEL: set both or neither")
+        return self
 
     @property
     def rules_dir(self) -> Path:

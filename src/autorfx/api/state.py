@@ -80,7 +80,10 @@ class AppState:
         # Read now, so a missing price file stops the start and not a job half way.
         self.prices = load_prices(settings.translation_prices_path) if settings.llm_connected else None
         self.cache = SqliteCache(settings.cache_dir / "analysis.sqlite")
-        self.translation_cache = SqliteCache(settings.cache_dir / "translation.sqlite")
+        # Only a translating provider reads or writes it: a keyless run leaves no file behind.
+        self.translation_cache = (
+            SqliteCache(settings.cache_dir / "translation.sqlite") if self.provider.translates else None
+        )
         key = settings.openai_api_key.get_secret_value() if settings.openai_api_key else None
         self.encoder = encoder or load_encoder(
             settings.embedding_model, openai_api_key=key, cache_dir=settings.cache_dir

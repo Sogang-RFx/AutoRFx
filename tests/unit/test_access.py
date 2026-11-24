@@ -119,6 +119,7 @@ def test_translation_of_a_cost_clause_never_reaches_a_restricted_team(ruleset: R
     )
     assert marker not in payload
     assert "translation_status" not in payload and "translation_note" not in payload
+    assert "translation_sentences" not in payload
 
 
 def test_masked_clause_carries_identity_only(ruleset: Ruleset, analyses):

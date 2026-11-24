@@ -2,7 +2,8 @@
 
 A clause is sent in batches of sentences. Every sentence is judged on its own: a
 number that the same source sentence lacks withholds that sentence only, and a
-sentence the model did not return is asked for once more. Notes carry counts
+sentence the model did not return is asked for once more. After two failed
+first calls in a row the rest of the clause is not asked. Notes carry counts
 and exception names, never clause or translation text.
 """
 
@@ -12,6 +13,7 @@ import hashlib
 import json
 import logging
 import re
+import sqlite3
 import unicodedata
 from collections.abc import Sequence
 from typing import Literal, NamedTuple
@@ -36,6 +38,7 @@ __all__ = [
     "TranslationBatch",
     "batches",
     "clean",
+    "is_source_korean",
     "translate_clause",
     "translation_key",
 ]
@@ -45,6 +48,9 @@ log = logging.getLogger(__name__)
 WITHHELD = "〔번역 보류: 원문 확인〕"
 MAX_BATCH_SENTENCES = 20
 MAX_BATCH_CHARS = 4000
+MAX_CONSECUTIVE_FAILURES = 2  # failed first calls in a row before the rest of a clause is not asked
+HANGUL = re.compile("[\uac00-\ud7a3]")
+LATIN = re.compile("[A-Za-z\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u024f]")
 CACHE_SCHEMA = 1  # shape of a cached value: a JSON list of texts in batch order
 MARKER = re.compile(r"[ \t]*\[S\d+\][ \t]*")  # spaces and tabs only: a line break is part of the text
 LINE_BREAK = re.compile(r" *\n *")
@@ -76,12 +82,22 @@ class Fetched(NamedTuple):
     missing: int
     errors: tuple[str, ...]
     usage: Usage
+    skipped: int = 0
 
 
 class Judged(NamedTuple):
     sentences: tuple[str | None, ...]
     outcomes: tuple[Outcome, ...]
     extra_numbers: int
+
+
+def is_source_korean(clause: Clause) -> bool:
+    """True when the clause is labelled Korean and Hangul is at least half of its letters (Hangul + Latin)."""
+    if clause.lang != "ko":
+        return False
+    hangul = len(HANGUL.findall(clause.text))
+    latin = len(LATIN.findall(clause.text))
+    return hangul > 0 and hangul * 2 >= hangul + latin
 
 
 def batches(sentences: Sequence[str]) -> list[tuple[int, ...]]:
@@ -149,9 +165,17 @@ def translation_key(sentences: Sequence[str], lang: str, translation_id: str, te
     return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
-def _stored(cache: CacheStore, key: str, size: int) -> list[str] | None:
-    """The stored texts, or None unless the value is a JSON list of exactly ``size`` non-blank strings."""
-    raw = cache.get(key)
+def _stored(cache: CacheStore, key: str, size: int, clause_id: str) -> list[str] | None:
+    """The stored texts, or None unless the value is a JSON list of exactly ``size`` non-blank strings.
+
+    A cache that fails to read is a miss. Only ``sqlite3.Error`` is caught (the cache is a sqlite file that
+    can be locked or full): a bug elsewhere must not hide behind it. The paid translation goes on.
+    """
+    try:
+        raw = cache.get(key)
+    except sqlite3.Error as exc:
+        log.warning("translation cache read for %s failed (%s)", clause_id, type(exc).__name__)
+        return None
     if raw is None:
         return None
     try:
@@ -165,6 +189,23 @@ def _stored(cache: CacheStore, key: str, size: int) -> list[str] | None:
     return value
 
 
+def _extra_numbers(text: str, original: str) -> int:
+    """How many numbers the text has that its source sentence lacks (CITE-02)."""
+    return len(number_signatures(text) - number_signatures(original))
+
+
+def _verified(text: str | None, source: ClauseInput, n: int) -> bool:
+    return text is not None and not _extra_numbers(text, source.sentences[n - 1])
+
+
+def _store(cache: CacheStore, key: str, texts: list[str], clause_id: str) -> None:
+    """Store a verified batch. A write that fails is skipped (see ``_stored``); the translation stays."""
+    try:
+        cache.put(key, json.dumps(texts, ensure_ascii=False))
+    except sqlite3.Error as exc:
+        log.warning("translation cache write for %s failed (%s)", clause_id, type(exc).__name__)
+
+
 def _fetch(
     source: ClauseInput,
     provider: AnalysisProvider,
@@ -174,12 +215,16 @@ def _fetch(
     """Ask for every batch, and once more for numbers a batch left out. Only transient errors are caught.
 
     A batch with a stored translation is not asked for. A batch is stored only when every one of its
-    numbers has a text after the retry.
+    numbers has a text that passes the number check (verified results only, like the judgement cache).
+    After MAX_CONSECUTIVE_FAILURES failed first calls in a row the remaining batches are not asked (stored
+    ones are still read); their sentences count as skipped. A retry that fails does not count.
     """
     texts: dict[int, str] = {}
     errors: list[str] = []
     usage = Usage()
     missing = 0
+    skipped = 0
+    failures = 0
     translation_id = provider.translation_id
     for numbers in batches(source.sentences):
         key = None
@@ -187,16 +232,21 @@ def _fetch(
             key = translation_key(
                 [source.sentences[n - 1] for n in numbers], source.lang, translation_id, terms_digest
             )
-            stored = _stored(cache, key, len(numbers))
+            stored = _stored(cache, key, len(numbers), source.clause_id)
             if stored is not None:
                 texts |= dict(zip(numbers, stored, strict=True))
                 continue
+        if failures >= MAX_CONSECUTIVE_FAILURES:
+            skipped += len(numbers)
+            continue
         try:
             reply, used = provider.translate(source, numbers)
         except TransientProviderError as exc:
             errors.append(str(exc))
             usage = usage.plus(exc.usage or Usage())
+            failures += 1
             continue
+        failures = 0
         usage = usage.plus(used)
         got = _accept(reply, set(numbers), source.sentences)
         again = tuple(n for n in numbers if n not in got)
@@ -210,10 +260,10 @@ def _fetch(
                 usage = usage.plus(used)
                 got |= _accept(reply, set(again), source.sentences)
                 missing += sum(1 for n in again if n not in got)
-        if cache is not None and key is not None and all(n in got for n in numbers):
-            cache.put(key, json.dumps([got[n] for n in numbers], ensure_ascii=False))
+        if cache is not None and key is not None and all(_verified(got.get(n), source, n) for n in numbers):
+            _store(cache, key, [got[n] for n in numbers], source.clause_id)
         texts |= got
-    return Fetched(texts, missing, tuple(dict.fromkeys(errors)), usage)
+    return Fetched(texts, missing, tuple(dict.fromkeys(errors)), usage, skipped)
 
 
 def _judge(source: ClauseInput, texts: dict[int, str]) -> Judged:
@@ -225,7 +275,7 @@ def _judge(source: ClauseInput, texts: dict[int, str]) -> Judged:
         text = texts.get(n)
         # A translation is shown next to the original: a number that the sentence lacks is an error
         # of the translator, and that sentence is withheld rather than shown.
-        extra = len(number_signatures(text or "") - number_signatures(original))
+        extra = _extra_numbers(text or "", original)
         if text is None:
             sentences.append(None)
             outcomes.append("failed")
@@ -262,6 +312,7 @@ def translate_clause(
     status = _status(judged.outcomes)
     counts = [f"extra_numbers={judged.extra_numbers}"] if judged.extra_numbers else []
     counts += [f"missing={fetched.missing}"] if fetched.missing else []
+    counts += [f"skipped={fetched.skipped}"] if fetched.skipped else []
     note = "; ".join([*counts, *fetched.errors])
     for name in fetched.errors:
         log.warning("translation of %s failed (%s)", clause.clause_id, name)

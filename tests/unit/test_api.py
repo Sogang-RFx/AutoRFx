@@ -485,3 +485,16 @@ def test_security_headers_and_cors(api: Api):
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
     other = client.get("/health", headers={"Origin": "https://example.org"})
     assert "access-control-allow-origin" not in other.headers
+
+
+def test_a_keyless_server_creates_no_translation_cache(tmp_path: Path, ruleset: Ruleset):
+    """TRANS-03: without a translating provider no translation.sqlite is created; with one it is."""
+    settings = Settings(_env_file=None, data_dir=tmp_path / "data")  # type: ignore[call-arg]
+    keyless = create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())
+    with TestClient(keyless):
+        assert keyless.state.autorfx.translation_cache is None
+    assert not (settings.cache_dir / "translation.sqlite").exists()
+    translating = create_app(settings, ruleset=ruleset, provider=ScriptedProvider(translation="번역문"))
+    with TestClient(translating):
+        assert translating.state.autorfx.translation_cache is not None
+    assert (settings.cache_dir / "translation.sqlite").exists()

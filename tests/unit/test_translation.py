@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
+import sqlite3
 import threading
 from decimal import Decimal
 from pathlib import Path
@@ -28,6 +30,7 @@ from autorfx.analysis import (
 from autorfx.analysis import llm as llm_module
 from autorfx.analysis import translation as translation_module
 from autorfx.analysis.llm import (
+    TRANSLATE_INSTRUCTION,
     TRANSLATE_SYSTEM,
     openai_translation_call,
     translation_options,
@@ -40,6 +43,7 @@ from autorfx.analysis.translation import (
     TranslationBatch,
     batches,
     clean,
+    is_source_korean,
     translate_clause,
     translation_key,
 )
@@ -59,6 +63,10 @@ from autorfx.rules import RulesError, Ruleset
 from autorfx.workspace import Workspace
 from factories import make_clause
 
+PINNED_PROMPT = (  # sha256 of TRANSLATE_SYSTEM + TRANSLATE_INSTRUCTION, TRANSLATION_PROMPT_VERSION
+    "df757c6a409e08e276b69091bd55fdf5ec072e30212f2006e36ee431530c84cf",
+    "2026-11-25.1",
+)
 PLAIN = make_clause("1.1", ["1.1 Delivery is FCA supplier plant according to Incoterms 2020."])
 BOILER = make_clause("1.2", ["1.2 All rights reserved."], is_boilerplate=True)
 KOREAN = make_clause("1.3", ["1.3 납품은 공급사 공장 인도 조건이다."], lang="ko")
@@ -674,13 +682,25 @@ def test_cached_text_gets_the_number_check_again():
     """CITE-02: a stored text is checked against its source sentence on every read."""
     cache = MemoryCache()
     bad = [CACHED_KO[0], "샘플은 99주 전까지이다."]
-    translate_clause(CACHED, cached_provider(texts=bad), cache=cache)
+    cache.put(translation_key(texts_of(CACHED), "en", "scripted", ""), json.dumps(bad, ensure_ascii=False))
     again = cached_provider()
     result = translate_clause(CACHED, again, cache=cache)
     assert again.translate_calls == []
     assert result.sentences == (bad[0], None)
     assert result.status == "partial"
     assert "extra_numbers=1" in result.note
+
+
+def test_a_batch_with_a_withheld_sentence_is_not_stored():
+    """TRANS-03, CITE-02: only verified batches are cached; a withheld one is asked again and can pass."""
+    cache = MemoryCache()
+    bad = [CACHED_KO[0], "샘플은 99주 전까지이다."]
+    first = translate_clause(CACHED, cached_provider(texts=bad), cache=cache)
+    assert first.status == "partial"
+    again = cached_provider()
+    second = translate_clause(CACHED, again, cache=cache)
+    assert len(again.translate_calls) == 1
+    assert second.status == "translated" and second.sentences == tuple(CACHED_KO)
 
 
 @pytest.mark.parametrize(
@@ -787,8 +807,7 @@ def test_a_hit_by_a_variant_is_checked_against_the_clauses_own_sentences():
     """CITE-02: a stored text with a number the source lacks is withheld on a hit by a variant too."""
     cache = MemoryCache()
     bad = [CAFE_KO[0], "샘플은 SOP 99주 전까지이다."]
-    first = make_clause("7.3", CAFE)
-    translate_clause(first, cached_provider(first, bad), cache=cache)
+    cache.put(translation_key(CAFE, "en", "scripted", ""), json.dumps(bad, ensure_ascii=False))
     variant = make_clause("7.4", CAFE_VARIANT)
     provider = cached_provider(variant)
     result = translate_clause(variant, provider, cache=cache)
@@ -992,3 +1011,105 @@ def test_a_rule_only_run_records_zero_usage_and_no_cost(ruleset: Ruleset):
         "cost_usd": None,
         "counts": {"no_provider": 1},
     }
+
+
+# ── final review fixes ──────────────────────────────────────────────────────
+class BrokenCache(MemoryCache):
+    """A cache whose file fails, as a locked or full sqlite file does."""
+
+    def __init__(self, *, get: bool = False, put: bool = False) -> None:
+        super().__init__()
+        self._fail_get, self._fail_put = get, put
+
+    def get(self, key: str) -> str | None:
+        if self._fail_get:
+            raise sqlite3.OperationalError("database is locked")
+        return super().get(key)
+
+    def put(self, key: str, value: str) -> None:
+        if self._fail_put:
+            raise sqlite3.OperationalError("disk is full")
+        super().put(key, value)
+
+
+@pytest.mark.parametrize("broken", [{"get": True}, {"put": True}], ids=["get", "put"])
+def test_a_failing_cache_does_not_fail_the_job(broken: dict[str, bool], caplog: pytest.LogCaptureFixture):
+    """TRANS-03: a cache read that fails is a miss, a write that fails is skipped; the log has id and type."""
+    with caplog.at_level(logging.WARNING):
+        result = translate_clause(CACHED, cached_provider(), cache=BrokenCache(**broken))
+    assert result.status == "translated" and result.sentences == tuple(CACHED_KO)
+    lines = [r.getMessage() for r in caplog.records if "OperationalError" in r.getMessage()]
+    assert lines and all("d01:7.1" in line and "locked" not in line and "full" not in line for line in lines)
+
+
+def test_translation_prompt_version_pins_the_prompt():
+    """TRANS-01: the cache key holds TRANSLATION_PROMPT_VERSION, so a prompt change must raise it."""
+    digest = hashlib.sha256((TRANSLATE_SYSTEM + TRANSLATE_INSTRUCTION).encode("utf-8")).hexdigest()
+    assert (digest, llm_module.TRANSLATION_PROMPT_VERSION) == PINNED_PROMPT, (
+        "The translation prompt changed: raise TRANSLATION_PROMPT_VERSION in llm.py "
+        "(cached translations of the old prompt would be served) and pin the new pair here."
+    )
+
+
+def test_an_outage_stops_asking_after_two_failed_first_calls():
+    """TRANS-03: two consecutive failed first calls end the clause; the rest is skipped and counted."""
+    clause = many(537)
+    got, provider = run(clause, [TransientProviderError("TimeoutError")])
+    assert len(provider.translate_calls) == 2
+    skipped = 537 - 40
+    assert got.status == "failed" and got.note == f"skipped={skipped}; TimeoutError"
+    assert got.sentences == (None,) * 537
+
+
+def test_a_success_resets_the_failure_count():
+    """TRANS-03: fail, ok, fail, ok asks every batch."""
+    clause = many(80)
+    err = TransientProviderError("TimeoutError")
+    queue = [err, {n: "문장." for n in range(21, 41)}, err, {n: "문장." for n in range(61, 81)}]
+    got, provider = run(clause, queue)
+    assert [numbers[0] for _, numbers in provider.translate_calls] == [1, 21, 41, 61]
+    assert got.status == "partial" and "skipped" not in got.note
+
+
+def test_a_failed_retry_does_not_count_towards_the_outage():
+    """TRANS-03: only a failed first call counts; a retry that fails does not."""
+    clause = many(60)
+    err = TransientProviderError("RateLimitError")
+    got, provider = run(clause, [{}, err, {}, err, {}])
+    assert 41 in [numbers[0] for _, numbers in provider.translate_calls]
+    assert "skipped" not in got.note
+
+
+def test_a_cached_batch_is_served_after_an_outage_began():
+    """TRANS-03: the outage bound skips asking, not reading the cache."""
+    clause = many(60)
+    texts = [s.text for s in clause.sentences]
+    cache = MemoryCache()
+    key = translation_key(texts[40:], "en", "scripted", "")
+    cache.put(key, json.dumps(["문장."] * 20, ensure_ascii=False))
+    provider = ScriptedProvider(translations={clause.clause_id: [TransientProviderError("TimeoutError")]})
+    got = translate_clause(clause, provider, cache=cache)
+    assert len(provider.translate_calls) == 2
+    assert got.sentences[40:] == ("문장.",) * 20 and got.status == "partial"
+    assert got.note == "TimeoutError"
+
+
+def test_effort_without_a_model_is_refused():
+    """TRANS-03: OPENAI_TRANSLATION_EFFORT needs OPENAI_TRANSLATION_MODEL."""
+    with pytest.raises(ValidationError, match="OPENAI_TRANSLATION_MODEL.*OPENAI_TRANSLATION_EFFORT"):
+        Settings(_env_file=None, OPENAI_TRANSLATION_EFFORT="none")  # type: ignore[call-arg]
+    Settings(_env_file=None, OPENAI_TRANSLATION_MODEL="gpt-x", OPENAI_TRANSLATION_EFFORT="none")  # type: ignore[call-arg]
+
+
+def test_a_mostly_english_clause_labelled_korean_is_translated(ruleset: Ruleset):
+    """TRANS-01: the skip needs the text to be mostly Hangul, not only the language label."""
+    english = make_clause(
+        "3.1", ["The seal must hold 120 bar during the whole endurance test. 비고: 참고."], lang="ko"
+    )
+    korean = make_clause("3.2", ["납품 부품은 ABS 와 ECU 모듈을 포함하며 공급사가 포장한다."], lang="ko")
+    assert not is_source_korean(english) and is_source_korean(korean)
+    assert not is_source_korean(make_clause("3.3", ["납품은 공급사 공장 인도 조건이다."], lang="en"))
+    provider = ScriptedProvider(translations={english.clause_id: ["씰은 120 bar를 견뎌야 한다."]})
+    results = by_id(analyze([english, korean], ruleset, provider))
+    assert results[english.clause_id].translation_status == "translated"
+    assert results[korean.clause_id].translation_status == "source_ko"

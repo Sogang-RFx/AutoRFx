@@ -1,4 +1,5 @@
-"""LLM provider (ENGINE-01): OpenAI through langchain-openai, structured output, temperature 0.
+"""LLM provider (ENGINE-01): OpenAI through langchain-openai, structured output, temperature 0 for
+judgement and answers (translation sends it to gpt-4* only).
 
 Prompts carry no hand-written domain lists: department roles, strength
 expressions and red-flag descriptions are injected from the rule files
@@ -31,8 +32,9 @@ from autorfx.analysis.usage import Usage
 from autorfx.rules import Ruleset
 
 PROMPT_VERSION = "2026-11-18.1"
-# Part of every cached translation's key. Changing the translation prompt (OpenAIProvider.translate) or
-# SYSTEM means raising it, or translations of the old prompt are served as new ones.
+# Part of every cached translation's key. Changing TRANSLATE_SYSTEM, TRANSLATE_INSTRUCTION (the user prompt
+# in OpenAIProvider.translate) or the cleaning in translation.clean (texts are cached after cleaning) means
+# raising it, or translations of the old prompt are served as new ones. A test pins the prompt's hash.
 TRANSLATION_PROMPT_VERSION = "2026-11-25.1"
 T = TypeVar("T", bound=BaseModel)
 R = TypeVar("R")
@@ -55,6 +57,11 @@ TRANSLATE_SYSTEM = (
     "Keep every number, unit, part number and standard exactly as written, and add none."
 )
 """No citation rule here: a translation cites nothing, so the model has no reason to write "[S1]"."""
+
+TRANSLATE_INSTRUCTION = (
+    "Translate each item into Korean. Keep every number, unit, part number, date and standard "
+    "as written. Return one item per input item with the same n; never merge or split items.\n\n"
+)
 
 
 def numbered(sentences: Sequence[str]) -> str:
@@ -201,11 +208,7 @@ class OpenAIProvider:
         # No "[S1]" markers: a translation has no citations, and a model that copies one adds a digit that
         # the number check (CITE-02) reads as an invented number. Sentences travel as data, by number.
         items = [{"n": n, "text": clause.sentences[n - 1]} for n in numbers]
-        user = (
-            "Translate each item into Korean. Keep every number, unit, part number, date and standard "
-            "as written. Return one item per input item with the same n; never merge or split items.\n\n"
-            + json.dumps(items, ensure_ascii=False)
-        )
+        user = TRANSLATE_INSTRUCTION + json.dumps(items, ensure_ascii=False)
         return self._guard(lambda: self._translation_call(TRANSLATE_SYSTEM, user, TranslationBatch))
 
     def confirm(self, clause: ClauseInput, candidates: Candidates, feedback: str | None) -> Judgement:

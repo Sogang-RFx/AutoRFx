@@ -37,7 +37,7 @@ from autorfx.analysis.providers import (
     TransientProviderError,
     rule_judgement,
 )
-from autorfx.analysis.translation import translate_clause
+from autorfx.analysis.translation import is_source_korean, translate_clause
 from autorfx.analysis.usage import UsageMeter
 from autorfx.jobs import JobReporter, NullReporter
 from autorfx.models import Clause, ClauseAnalysis, Finding, Origin, RedFlag
@@ -185,7 +185,7 @@ def build_clause_graph(
             return {"analysis": analysis.model_copy(update={"translation_status": "no_provider"})}
         if clause.is_boilerplate:
             return {"analysis": analysis.model_copy(update={"translation_status": "boilerplate"})}
-        if clause.lang == "ko":
+        if is_source_korean(clause):
             return {"analysis": analysis.model_copy(update={"translation_status": "source_ko"})}
         result = translate_clause(clause, provider, cache=translation_cache)
         if meter is not None:
