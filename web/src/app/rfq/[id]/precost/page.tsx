@@ -712,10 +712,15 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
                 const chosen = suggestedLists(read);
                 setChosenLists(chosen);
                 const rows = pickedItems(read, chosen).slice(0, read.limit);
-                const kept = (list: LineRow[]) => list.filter((l) => l.group === MANUAL);
-                // Keep hand-added lines; when the re-read finds sheet rows, replace auto lines.
-                // A zero-row re-read leaves the previous auto lines (and manuals) in place.
-                setLines((list) => (rows.length > 0 ? [...linesFromRfq(rows, sheetYear, processValues), ...kept(list)] : list));
+                const manuals = (list: LineRow[]) => list.filter((l) => l.group === MANUAL);
+                // Replace sheet-derived lines when the re-read finds rows; on zero rows drop the
+                // previous auto lines so they do not stay stale (manual lines are kept).
+                setLines((list) =>
+                  rows.length > 0
+                    ? [...linesFromRfq(rows, sheetYear, processValues), ...manuals(list)]
+                    : manuals(list),
+                );
+                // When there was no region yet (or lists changed), point the viewer at the first suggested list.
                 const next = read.lists.find((l) => l.suggested) ?? read.lists[0];
                 if (next) setRegion({ id: next.id, region: listRegion(next) });
               }} />

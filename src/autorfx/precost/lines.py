@@ -904,9 +904,17 @@ def find_grid(
     canonical: Mapping[str, Path],
     rules: PriceSheetRules,
     grid_id: str,
+    words: Mapping[str, Sequence[str]] | None = None,
 ) -> Grid | None:
+    """Locate one table by id. ``words`` must match the approved set used when listing tables,
+    or an unruled PDF table found via approved headers would 404 on re-assignment."""
     return next(
-        (g for grids in file_grids(manifest, parsed, canonical, rules) for g in grids if g.id == grid_id),
+        (
+            g
+            for grids in file_grids(manifest, parsed, canonical, rules, words)
+            for g in grids
+            if g.id == grid_id
+        ),
         None,
     )
 

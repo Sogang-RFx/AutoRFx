@@ -19,7 +19,7 @@ import logging
 import os
 import re
 import threading
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from datetime import date
 from pathlib import Path
 
@@ -81,6 +81,26 @@ def check_columns(columns: Mapping[str, int], width: int) -> dict[str, int]:
     if "description" not in found and "part" not in found:
         raise PriceSheetError("품명(설명) 열이나 품번 열을 지정하세요.")
     return found
+
+
+def header_label(header: Sequence[str], index: int, claimed: frozenset[int] | set[int]) -> tuple[str, int]:
+    """Header text for the value column ``index``, and the column that holds that text.
+
+    A PDF table may put the label one cell left of the values. Walk left over empty cells, but
+    stop before a column already claimed as another role's values so we never reuse that label.
+    """
+    if index < 0 or index >= len(header):
+        return "", index
+    if header[index].strip():
+        return header[index], index
+    for j in range(index - 1, -1, -1):
+        if j != index and j in claimed:
+            break
+        if header[j].strip() and all(not header[k].strip() for k in range(j + 1, index)):
+            return header[j], j
+        if header[j].strip():
+            break
+    return "", index
 
 
 class PriceSheetStore:
@@ -187,5 +207,6 @@ __all__ = [
     "PriceSheetStore",
     "check_columns",
     "clean_word",
+    "header_label",
     "usable_header_word",
 ]

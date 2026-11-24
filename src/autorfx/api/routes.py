@@ -40,7 +40,7 @@ from autorfx.precost import (
     rfq_lines,
 )
 from autorfx.precost.lines import find_grid, header_roles, signature
-from autorfx.precost.sheet_store import PriceSheetError, check_columns
+from autorfx.precost.sheet_store import PriceSheetError, check_columns, header_label
 from autorfx.retrieval import answer_question
 from autorfx.work_areas import catalog
 
@@ -430,7 +430,15 @@ def assign_columns(rfq_id: str, body: ColumnsBody, state: State, team: Team = No
     _cost_visible(state.group_of(team))
     data = state.data(rfq_id)
     rules = state.ruleset.price_sheet
-    grid = find_grid(data.manifest, data.parsed, _canonical(data), rules, body.table)
+    # Pass approved words so unruled tables found via the dictionary are found again on re-assign.
+    grid = find_grid(
+        data.manifest,
+        data.parsed,
+        _canonical(data),
+        rules,
+        body.table,
+        words=state.price_sheets.approved,
+    )
     if grid is None:
         raise ApiError(404, "not_found", "표를 찾을 수 없습니다. 화면을 새로 고쳐 주세요.")
     if body.header_row >= len(grid.rows):
@@ -441,20 +449,14 @@ def assign_columns(rfq_id: str, body: ColumnsBody, state: State, team: Team = No
     except PriceSheetError as exc:
         raise ApiError(400, "invalid_request", str(exc)) from exc
     # Header words the rules would have given another role (or none) are dictionary candidates.
-    # Values may sit one cell right of the label; use the nearest non-empty header cell then.
+    # Values may sit one cell right of the label; resolve the label column, not the value cell.
     known = header_roles(header, rules.compiled(state.price_sheets.approved))
-
-    def _label(index: int) -> str:
-        if header[index].strip():
-            return header[index]
-        for j in range(index - 1, -1, -1):
-            if header[j].strip() and all(not header[k].strip() for k in range(j + 1, index)):
-                return header[j]
-            if header[j].strip():
-                break
-        return ""
-
-    words = {role: label for role, i in columns.items() if known.get(role) != i and (label := _label(i))}
+    claimed = set(columns.values())
+    words: dict[str, str] = {}
+    for role, index in columns.items():
+        label, label_col = header_label(header, index, claimed)
+        if label and known.get(role) != label_col:
+            words[role] = label
     state.price_sheets.assign(signature(header), columns, words, date.today())
     return envelope({"lines": _lines(state, data)}, precost="real")
 

@@ -21,8 +21,14 @@ from autorfx.api import create_app
 from autorfx.config import Settings
 from autorfx.models import Locus, PackageManifest, Table
 from autorfx.precost import lines as lines_mod
-from autorfx.precost.lines import pdf_grids, read_grids, rfq_lines, signature, table_grids
-from autorfx.precost.sheet_store import PriceSheetError, PriceSheetStore, check_columns, usable_header_word
+from autorfx.precost.lines import find_grid, pdf_grids, read_grids, rfq_lines, signature, table_grids
+from autorfx.precost.sheet_store import (
+    PriceSheetError,
+    PriceSheetStore,
+    check_columns,
+    header_label,
+    usable_header_word,
+)
 from autorfx.rules import PriceSheetRules, Ruleset, keyword_pattern
 from contract_schema import assert_valid
 
@@ -174,6 +180,45 @@ def test_approved_words_find_an_unruled_pdf_table(tmp_path: Path, rules: PriceSh
     assert _read(path, rules) == []
     rows = _read(path, rules, words={"description": ("artikeltext",), "quantity": ("bedarf 2027",)})
     assert [r["name"] for r in rows] == ["Schraube M8", "Mutter M8"]
+
+
+def test_find_grid_forwards_approved_words_to_file_grids(
+    tmp_path: Path, rules: PriceSheetRules, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-assign must pass store.approved into find_grid (unruled tables found via those words)."""
+    sheet = [UNKNOWN, ("1", "Schraube M8", "5000", ""), ("2", "Mutter M8", "5000", "")]
+    path = _pdf(tmp_path / "u.pdf", [[sheet]], (40, 200, 90, 90), ruled=False)
+    manifest = PackageManifest.model_construct(files=[type("F", (), {"id": "d01", "kind": "pdf"})()])
+    words = {"description": ("artikeltext",), "quantity": ("bedarf 2027",)}
+    listed = rfq_lines(manifest, {}, {"d01": path}, rules, words=words)
+    (table,) = listed["tables"]
+    assert find_grid(manifest, {}, {"d01": path}, rules, table["id"], words=words) is not None
+
+    seen: dict = {}
+    real = lines_mod.file_grids
+
+    def wrap(*args, **kwargs):
+        seen["words"] = kwargs["words"] if "words" in kwargs else (args[4] if len(args) > 4 else None)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(lines_mod, "file_grids", wrap)
+    find_grid(manifest, {}, {"d01": path}, rules, table["id"], words=words)
+    assert seen["words"] == words
+
+
+def test_header_label_skips_claimed_columns_and_reports_label_col() -> None:
+    header = ("Description", "", "Qty", "")
+    claimed = {1, 3}  # value columns for description and quantity
+    assert header_label(header, 1, claimed) == ("Description", 0)
+    assert header_label(header, 3, claimed) == ("Qty", 2)
+    # Walking left must not reuse another role's value column as this role's label.
+    assert header_label(("Name", "Qty", ""), 2, {1, 2}) == ("", 2)
+    # Direct header cell: label_col is the value column itself.
+    assert header_label(("Item", "Description", "Qty"), 1, {0, 1, 2}) == ("Description", 1)
+    # known.get(role) != label_col: an already-mapped label column must not re-suggest.
+    known = {"description": 0, "quantity": 2}
+    label, label_col = header_label(header, 1, claimed)
+    assert label == "Description" and known.get("description") == label_col
 
 
 def test_a_revised_sheet_replaces_the_earlier_listing_of_a_group(
@@ -607,3 +652,51 @@ def test_a_wrong_assignment_is_refused(api: tuple[TestClient, str]) -> None:
         client.post(f"/rfqs/{rfq_id}/price-sheet/columns", params={"team": VISIBLE}, json=missing).status_code
         == 404
     )
+
+
+def test_assign_columns_passes_approved_words_into_find_grid(
+    api: tuple[TestClient, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, rfq_id = api
+    store = client.app.state.autorfx.price_sheets
+    table = client.get(f"/rfqs/{rfq_id}/precost-setup", params={"team": VISIBLE}).json()["data"]["lines"][
+        "tables"
+    ][0]
+    seen: dict = {}
+    import autorfx.api.routes as routes
+
+    real = routes.find_grid
+
+    def wrap(*args, **kwargs):
+        seen["words"] = kwargs.get("words")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(routes, "find_grid", wrap)
+    body = {"table": table["id"], "header_row": 0, "columns": {"no": 0, "description": 1, "quantity": 2}}
+    assert (
+        client.post(f"/rfqs/{rfq_id}/price-sheet/columns", params={"team": VISIBLE}, json=body).status_code
+        == 200
+    )
+    assert "words" in seen and seen["words"] == store.approved
+
+
+def test_offset_header_label_is_not_re_suggested_when_rules_already_mapped_it() -> None:
+    """known compares against label_col, so a dictionary hit on the label cell is not a candidate."""
+    header = ("Description", "", "Quantity", "")
+    columns = {"description": 1, "quantity": 3}
+    claimed = set(columns.values())
+    # Pretend rules already mapped description/quantity to the label columns.
+    known = {"description": 0, "quantity": 2}
+    words = {}
+    for role, index in columns.items():
+        label, label_col = header_label(header, index, claimed)
+        if label and known.get(role) != label_col:
+            words[role] = label
+    assert words == {}
+    # Without the label_col check (comparing to value index), both would be re-suggested.
+    naive = {
+        role: header_label(header, i, claimed)[0]
+        for role, i in columns.items()
+        if known.get(role) != i and header_label(header, i, claimed)[0]
+    }
+    assert naive == {"description": "Description", "quantity": "Quantity"}
