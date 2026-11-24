@@ -39,8 +39,9 @@ from autorfx.precost import (
     requirements,
     rfq_lines,
 )
-from autorfx.precost.lines import find_grid, header_roles, signature
+from autorfx.precost.lines import LAYOUT_SCAN, find_grid, header_roles, signature
 from autorfx.precost.sheet_store import PriceSheetError, check_columns, header_label
+from autorfx.precost.sheet_suggest import SuggestError, suggest_columns
 from autorfx.retrieval import answer_question
 from autorfx.work_areas import catalog
 
@@ -415,13 +416,44 @@ def _lines(state: AppState, data: RfqData) -> dict:
         state.ruleset.price_sheet,
         words=store.approved,
         layouts=store.layouts,
+        rendered={
+            f.id: layout
+            for f in data.manifest.files
+            if f.kind == "xlsx" and (layout := data.workspace.layout(f.id)) is not None
+        },
     )
 
 
 class ColumnsBody(Model):
     table: str = Field(min_length=1, max_length=120)
-    header_row: int = Field(ge=0, le=5)
+    header_row: int = Field(ge=0, lt=LAYOUT_SCAN)
     columns: dict[str, int]
+
+
+class SuggestBody(Model):
+    table: str = Field(min_length=1, max_length=120)
+
+
+@router.post("/rfqs/{rfq_id}/price-sheet/suggest")
+def suggest_sheet_columns(rfq_id: str, body: SuggestBody, state: State, team: Team = None) -> dict:
+    """An AI suggestion for the columns of one table: positions only, checked by reading the table.
+
+    Nothing is stored: the user reviews the suggestion in the column assigner and accepts it there
+    (``/price-sheet/columns``). Only the first rows of this one table are sent to the model.
+    """
+    _cost_visible(state.group_of(team))
+    data = state.data(rfq_id)
+    rules = state.ruleset.price_sheet
+    grid = find_grid(
+        data.manifest, data.parsed, _canonical(data), rules, body.table, words=state.price_sheets.approved
+    )
+    if grid is None:
+        raise ApiError(404, "not_found", "표를 찾을 수 없습니다. 화면을 새로 고쳐 주세요.")
+    try:
+        suggestion = suggest_columns(grid, state.provider, rules.compiled(state.price_sheets.approved))
+    except SuggestError as exc:
+        raise ApiError(422, "no_suggestion", str(exc)) from exc
+    return envelope(suggestion, precost="real")
 
 
 @router.post("/rfqs/{rfq_id}/price-sheet/columns")
