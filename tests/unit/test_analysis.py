@@ -25,6 +25,7 @@ from autorfx.analysis import (
     make_provider,
     verify,
 )
+from autorfx.analysis.citation import number_signatures
 from autorfx.analysis.llm import SYSTEM, Translation
 from autorfx.config import Settings
 from autorfx.jobs import JobStore, load_job
@@ -394,6 +395,22 @@ def test_openai_provider_builds_prompts_from_the_rule_files(ruleset: Ruleset):
     evidence = [EvidenceSentence(number=1, text="Delivery is FCA.", locus=make_locus(1))]
     assert provider.answer("인도조건은?", evidence, None).citations == (1,)
     assert "[S1] Delivery is FCA." in seen[-1][1]
+
+
+def test_translation_prompt_has_no_sentence_markers_and_markers_are_stripped(ruleset: Ruleset):
+    """A copied "[S1]" adds the digit 1 to the translation; the number check then withheld it."""
+    seen: list[str] = []
+
+    def fake(system: str, user: str, schema: type):
+        seen.append(user)
+        return Translation(text="[S1] 인도 조건은 FCA입니다. [S2] 포장 포함.")
+
+    clause = ClauseInput.of(DELIVERY)
+    provider = OpenAIProvider(ruleset, "gpt-test", fake)
+    text = provider.translate(clause)
+    assert "[S" not in seen[0], "sentence markers are only for citations, not for translation"
+    assert text == "인도 조건은 FCA입니다. 포장 포함."
+    assert not number_signatures(text) - number_signatures(DELIVERY.text)
 
 
 def test_any_client_failure_becomes_a_transient_error(ruleset: Ruleset):

@@ -12,6 +12,7 @@ without a network.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Sequence
 from typing import TypeVar
 
@@ -43,6 +44,9 @@ SYSTEM = (
 
 class Translation(Model):
     text: str
+
+
+SENTENCE_MARK = re.compile(r"\s*\[S\d+\]\s*")
 
 
 def numbered(sentences: Sequence[str]) -> str:
@@ -121,11 +125,15 @@ class OpenAIProvider:
             raise TransientProviderError(type(exc).__name__) from exc
 
     def translate(self, clause: ClauseInput) -> str | None:
+        # No sentence markers here: a translation has no citations, and a model that copies "[S1]" into
+        # its answer adds digits that the number check (CITE-02) then reads as invented numbers and
+        # withholds the whole translation (59 of 62 clauses in the 11/24 rehearsal).
         user = (
             "Translate the clause into Korean. "
-            "Keep every number, unit, part number and standard as written.\n\n" + numbered(clause.sentences)
+            "Keep every number, unit, part number and standard as written.\n\n" + "\n".join(clause.sentences)
         )
-        return self._ask(user, Translation).text.strip() or None
+        text = SENTENCE_MARK.sub(" ", self._ask(user, Translation).text).strip()
+        return text or None
 
     def confirm(self, clause: ClauseInput, candidates: Candidates, feedback: str | None) -> Judgement:
         return self._ask(clause_prompt(clause, candidates, self._ruleset, feedback), Judgement)
