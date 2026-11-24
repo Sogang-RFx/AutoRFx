@@ -242,7 +242,7 @@ def _fetch(
         try:
             reply, used = provider.translate(source, numbers)
         except TransientProviderError as exc:
-            errors.append(str(exc))
+            errors.append(str(exc) or type(exc).__name__)
             usage = usage.plus(exc.usage or Usage())
             failures += 1
             continue
@@ -254,7 +254,7 @@ def _fetch(
             try:
                 reply, used = provider.translate(source, again)
             except TransientProviderError as exc:
-                errors.append(str(exc))
+                errors.append(str(exc) or type(exc).__name__)
                 usage = usage.plus(exc.usage or Usage())
             else:
                 usage = usage.plus(used)

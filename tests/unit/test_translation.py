@@ -1075,9 +1075,33 @@ def test_a_failed_retry_does_not_count_towards_the_outage():
     """TRANS-03: only a failed first call counts; a retry that fails does not."""
     clause = many(60)
     err = TransientProviderError("RateLimitError")
-    got, provider = run(clause, [{}, err, {}, err, {}])
+    # Batch 1: first call answers nothing, its retry fails. Batch 2: first call fails. Counting the retry
+    # would make that two in a row and skip batch 3.
+    got, provider = run(clause, [{}, err, err, {n: "문장." for n in range(41, 61)}])
     assert 41 in [numbers[0] for _, numbers in provider.translate_calls]
     assert "skipped" not in got.note
+
+
+def test_an_error_without_a_message_is_named_by_its_type():
+    """TRANS-03: the note never holds an empty name."""
+    got, _ = run(many(1), [TransientProviderError("")])
+    assert got.note == "TransientProviderError"
+
+
+def test_skipped_is_noted_after_missing_and_a_cached_batch_does_not_end_an_outage():
+    """TRANS-03: the note order is fixed, and reading the cache says nothing about the provider."""
+    clause = many(100)
+    err = TransientProviderError("RateLimitError")
+    first = {n: "문장." for n in range(2, 21)}
+    got, _ = run(clause, [first, {}, err, err])
+    assert got.note == "missing=1; skipped=40; RateLimitError"
+    cache = MemoryCache()
+    texts = [s.text for s in clause.sentences]
+    cache.put(translation_key(texts[20:40], "en", "scripted", ""), json.dumps(["문장."] * 20))
+    provider = ScriptedProvider(translations={clause.clause_id: [err]})
+    got = translate_clause(clause, provider, cache=cache)
+    assert [numbers[0] for _, numbers in provider.translate_calls] == [1, 41]
+    assert "skipped=40" in got.note
 
 
 def test_a_cached_batch_is_served_after_an_outage_began():

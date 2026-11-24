@@ -41,12 +41,13 @@ def retrieval_engine(encoder: Encoder | None) -> str:
     return RETRIEVAL_ENGINE if encoder is None else f"{RETRIEVAL_ENGINE}+dense:{encoder.name}"
 
 
-PIPELINE_VERSION = "2026-11-24.1"
+PIPELINE_VERSION = "2026-11-25.1"
 """Raise when a change alters stored results (parsing, chunking, masking): older results are then
 re-computed, like after a rules change. .2: page-level masking, index runs, body-less leaf clauses.
 .3: page-level masking spares the lines of visible sentences.
 .4: positions in no clause count as cost-sensitive in mentions and issues.
-2026-11-24: translations are asked without sentence markers; ones withheld before are re-made."""
+2026-11-24: translations are asked without sentence markers; ones withheld before are re-made.
+2026-11-25: translations are made sentence by sentence, with a status and a usage record."""
 MASK_FAILED = "가림 처리에 실패했습니다. 금액 열람 권한이 없는 팀에는 이 파일의 원문을 제공하지 않습니다."
 CATEGORY_LABEL = {
     "conflict": "값 충돌",
