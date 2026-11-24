@@ -27,7 +27,7 @@ from langgraph.graph import END, START, StateGraph
 
 from autorfx.analysis.candidates import Candidates, find_candidates
 from autorfx.analysis.citation import number_signatures, verify
-from autorfx.analysis.llm import PROMPT_VERSION
+from autorfx.analysis.llm import PROMPT_VERSION, strip_sentence_marks
 from autorfx.analysis.providers import (
     AnalysisProvider,
     CacheStore,
@@ -178,6 +178,10 @@ def build_clause_graph(
                 translation = provider.translate(ClauseInput.of(clause))
             except TransientProviderError:
                 translation = None
+            # "[S1]"-style marks are the numbering we use for citations, not part of any translation:
+            # they are removed whatever provider made it, so their digits never count as numbers.
+            if translation:
+                translation = strip_sentence_marks(translation, clause.text) or None
             # A translation is shown next to the original: a number that is not in the clause is
             # an error of the translator, and the translation is withheld rather than shown (CITE-02).
             if translation and number_signatures(translation) - number_signatures(clause.text):

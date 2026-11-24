@@ -149,7 +149,10 @@ class OpenAIProvider:
         # its answer adds digits that the number check (CITE-02) then reads as invented numbers and
         # withholds the whole translation (59 of 62 clauses in the 11/24 rehearsal).
         source = "\n".join(clause.sentences)
-        user = f"Translate the clause into Korean. Keep every number, unit, part number and standard as written.\n\n{source}"
+        ask = (
+            "Translate the clause into Korean. Keep every number, unit, part number and standard as written."
+        )
+        user = f"{ask}\n\n{source}"
         text = strip_sentence_marks(self._ask(user, Translation, TRANSLATE_SYSTEM).text, source)
         return text or None
 

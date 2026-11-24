@@ -495,3 +495,15 @@ def test_a_number_the_clause_lacks_is_still_withheld_after_marks_are_removed(rul
 
     result = run_one(OpenAIProvider(ruleset, "gpt-test", call), ruleset)
     assert result.translation_ko is None
+
+
+def test_citation_marks_in_any_translation_are_removed_not_counted_as_numbers(ruleset: Ruleset):
+    """CITE-02: the numbering "[S1]" is ours; it neither stays in the text nor hides the translation."""
+    marked = run_one(
+        ScriptedProvider({"d01:4.1": [GOOD]}, translation="[S1] 인코텀즈 2020에 따른 FCA 인도. [S2]"), ruleset
+    )
+    assert marked.translation_ko == "인코텀즈 2020에 따른 FCA 인도."
+    invented = run_one(
+        ScriptedProvider({"d01:4.1": [GOOD]}, translation="[S1] FCA 인도, 운임 999 EUR."), ruleset
+    )
+    assert invented.translation_ko is None, "a really invented number is still withheld"
