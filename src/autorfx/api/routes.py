@@ -41,8 +41,9 @@ from autorfx.precost import (
     requirements,
     rfq_lines,
 )
-from autorfx.precost.lines import find_grid, header_roles, signature
+from autorfx.precost.lines import LAYOUT_SCAN, find_grid, header_roles, signature
 from autorfx.precost.sheet_store import PriceSheetError, check_columns, header_label
+from autorfx.precost.sheet_suggest import SuggestError, suggest_columns
 from autorfx.work_areas import catalog
 
 router = APIRouter()
@@ -422,13 +423,44 @@ def _lines(state: AppState, data: RfqData) -> dict:
         state.ruleset.price_sheet,
         words=store.approved,
         layouts=store.layouts,
+        rendered={
+            f.id: layout
+            for f in data.manifest.files
+            if f.kind == "xlsx" and (layout := data.workspace.layout(f.id)) is not None
+        },
     )
 
 
 class ColumnsBody(Model):
     table: str = Field(min_length=1, max_length=120)
-    header_row: int = Field(ge=0, le=5)
+    header_row: int = Field(ge=0, lt=LAYOUT_SCAN)
     columns: dict[str, int]
+
+
+class SuggestBody(Model):
+    table: str = Field(min_length=1, max_length=120)
+
+
+@router.post("/rfqs/{rfq_id}/price-sheet/suggest")
+def suggest_sheet_columns(rfq_id: str, body: SuggestBody, state: State, team: Team = None) -> dict:
+    """An AI suggestion for the columns of one table: positions only, checked by reading the table.
+
+    Nothing is stored: the user reviews the suggestion in the column assigner and accepts it there
+    (``/price-sheet/columns``). Only the first rows of this one table are sent to the model.
+    """
+    _cost_visible(state.group_of(team))
+    data = state.data(rfq_id)
+    rules = state.ruleset.price_sheet
+    grid = find_grid(
+        data.manifest, data.parsed, _canonical(data), rules, body.table, words=state.price_sheets.approved
+    )
+    if grid is None:
+        raise ApiError(404, "not_found", "표를 찾을 수 없습니다. 화면을 새로 고쳐 주세요.")
+    try:
+        suggestion = suggest_columns(grid, state.provider, rules.compiled(state.price_sheets.approved))
+    except SuggestError as exc:
+        raise ApiError(422, "no_suggestion", str(exc)) from exc
+    return envelope(suggestion, precost="real")
 
 
 @router.post("/rfqs/{rfq_id}/price-sheet/columns")
@@ -451,8 +483,14 @@ def assign_columns(rfq_id: str, body: ColumnsBody, state: State, team: Team = No
     if body.header_row >= len(grid.rows):
         raise ApiError(400, "invalid_request", "머리글 줄이 표 밖입니다.")
     header = grid.rows[body.header_row]
+    if sum(1 for c in header if c and str(c).strip()) < 2:
+        raise ApiError(
+            400, "invalid_request", "머리글 줄에 열이 너무 적습니다. 빈 줄이나 제목 줄은 머리글이 아닙니다."
+        )
+    # Row lengths can differ (ragged PDF tables); use the grid width, not this header alone.
+    width = max((len(row) for row in grid.rows), default=len(header))
     try:
-        columns = check_columns(body.columns, len(header))
+        columns = check_columns(body.columns, width)
     except PriceSheetError as exc:
         raise ApiError(400, "invalid_request", str(exc)) from exc
     # Header words the rules would have given another role (or none) are dictionary candidates.

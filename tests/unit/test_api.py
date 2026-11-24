@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import sqlite3
 from collections.abc import Iterator
+from decimal import Decimal
 from pathlib import Path
 
 import pymupdf
@@ -13,10 +15,11 @@ import pytest
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
-from autorfx.analysis import RuleOnlyProvider
+from autorfx.analysis import RuleOnlyProvider, ScriptedProvider
+from autorfx.analysis.usage import Usage, usd_text
 from autorfx.api import create_app
 from autorfx.config import Settings
-from autorfx.rules import Ruleset
+from autorfx.rules import RulesError, Ruleset
 from contract_schema import assert_valid
 from factories import PACKAGE_SECRET, make_package, precost_inputs
 
@@ -260,6 +263,40 @@ def test_a_request_for_another_host_is_refused(api: Api):
     client, _, _ = api
     assert client.get("/health", headers={"Host": "evil.example"}).status_code == 400
     assert client.get("/health", headers={"Host": "127.0.0.1:8000"}).status_code == 200
+
+
+def keyed_settings(root: Path) -> Settings:
+    return Settings(_env_file=None, data_dir=root / "data", OPENAI_API_KEY="sk-test-not-real")  # type: ignore[call-arg]
+
+
+def test_a_key_without_a_price_file_stops_the_server_at_start(tmp_path: Path, ruleset: Ruleset):
+    """INV-12: the price file is read when the app starts, so a missing file is not found mid-job."""
+    app = create_app(keyed_settings(tmp_path), ruleset=ruleset, provider=RuleOnlyProvider())
+    with pytest.raises(RulesError, match="prices.yaml"), TestClient(app):
+        pass
+
+
+def test_a_job_records_its_estimated_cost(tmp_path: Path, ruleset: Ruleset):
+    """INV-12: the server passes the prices to the pipeline; run.json holds the usage and the cost."""
+    settings = keyed_settings(tmp_path)
+    prices = settings.translation_prices_path
+    prices.parent.mkdir(parents=True)
+    prices.write_text(
+        'source: x\nchecked: "2026-11-24"\nmodels:\n  gpt-x:\n    input: "1"\n    cached_input: "1"\n'
+        '    output: "1"\n',
+        encoding="utf-8",
+    )
+    provider = ScriptedProvider(
+        translation="번역문", provider_id="openai:gpt-x", usage=Usage(calls=1, output_tokens=1000)
+    )
+    app = create_app(settings, ruleset=ruleset, provider=provider)
+    with TestClient(app) as client:
+        files = [("files", (p.name, p.read_bytes(), PDF)) for p in make_package(tmp_path / "upload")]
+        rfq_id = client.post("/rfqs", files=files).json()["data"]["id"]
+        app.state.autorfx.wait()
+    run = json.loads((settings.work_dir / rfq_id / "run.json").read_text(encoding="utf-8"))
+    calls = run["translation"]["usage"]["calls"]
+    assert calls > 0 and run["translation"]["cost_usd"] == usd_text(Decimal(calls) / 1000)
 
 
 def test_a_failed_job_is_reported_and_has_no_results(api: Api):
@@ -587,6 +624,13 @@ def test_the_chat_model_follows_settings_and_injection(tmp_path: Path, ruleset: 
     """§5, ENGINE-03: an injected provider means no chat model unless one is injected too."""
     from autorfx.chat.model import ScriptedChatModel
 
+    prices = tmp_path / "data" / "translation" / "prices.yaml"
+    prices.parent.mkdir(parents=True, exist_ok=True)
+    prices.write_text(
+        'checked: "2026-11-24"\nmodels:\n  gpt-4o:\n'
+        '    input: "2.50"\n    cached_input: "1.25"\n    output: "10.00"\n',
+        encoding="utf-8",
+    )
     keyed = Settings(_env_file=None, data_dir=tmp_path / "data", OPENAI_API_KEY="sk-test-not-real")  # type: ignore[call-arg]
     plain = Settings(_env_file=None, data_dir=tmp_path / "data", OPENAI_API_KEY="")  # type: ignore[call-arg]
     scripted = ScriptedChatModel(plans=[], drafts=[])
@@ -611,6 +655,24 @@ def test_security_headers_and_cors(api: Api):
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
     other = client.get("/health", headers={"Origin": "https://example.org"})
     assert "access-control-allow-origin" not in other.headers
+
+
+def test_a_keyless_server_creates_no_translation_cache(tmp_path: Path, ruleset: Ruleset):
+    """TRANS-03: without a translating provider no translation.sqlite is created; with one it is."""
+    settings = Settings(_env_file=None, data_dir=tmp_path / "data")  # type: ignore[call-arg]
+    keyless = create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())
+    with TestClient(keyless):
+        assert keyless.state.autorfx.translation_cache is None
+    assert not (settings.cache_dir / "translation.sqlite").exists()
+    translating = create_app(settings, ruleset=ruleset, provider=ScriptedProvider(translation="번역문"))
+    with TestClient(translating):
+        state = translating.state.autorfx
+        assert state.translation_cache is not None
+    # Shutdown closes both caches: a server started many times must not pile up connections.
+    for cache in (state.cache, state.translation_cache):
+        with pytest.raises(sqlite3.ProgrammingError):
+            cache.get("k")
+    assert (settings.cache_dir / "translation.sqlite").exists()
 
 
 def test_the_evidence_gate_follows_the_loaded_encoder(

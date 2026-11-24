@@ -21,6 +21,7 @@ import {
   RtmResponse,
   SentencesResponse,
   SheetColumnsResponse,
+  SheetSuggestResponse,
   SheetWordsResponse,
   UploadResponse,
   type ChatRequest,
@@ -29,6 +30,7 @@ import {
   type OrgDepartmentsRequest,
   type PrecostRequest,
   type SheetColumnsRequest,
+  type SheetSuggestRequest,
   type SheetWordRequest,
 } from "./contract";
 
@@ -191,6 +193,15 @@ export const rfqApi = {
       "cost_inputs",
       SheetColumnsResponse,
       buildUrl("cost_inputs", `${rfq(id)}/price-sheet/columns`, { team: ctx.team }),
+      post(body),
+    ),
+
+  /** An AI suggestion for the columns of one table (positions only); the user accepts it with assignSheetColumns. */
+  suggestSheetColumns: (id: string, body: SheetSuggestRequest, ctx: RequestCtx) =>
+    request(
+      "cost_inputs",
+      SheetSuggestResponse,
+      buildUrl("cost_inputs", `${rfq(id)}/price-sheet/suggest`, { team: ctx.team }),
       post(body),
     ),
 

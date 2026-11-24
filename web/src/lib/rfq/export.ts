@@ -4,12 +4,13 @@
  * masked. The first line says how the data was computed (engine).
  */
 import type { Engines, RtmRow, VisibleClause } from "./contract";
+import { translationLabel } from "./translation";
 
 /** First-line note of an export: the engine that computed the data. */
 export function exportNote(engines: Engines | null): string | null {
   if (!engines) return null;
   const how = engines.llm_connected ? `LLM 분석 (${engines.analysis})` : "규칙 기반 분석 (LLM 미연결)";
-  return `${how} · 번역: ${engines.translation} · 원문 위치로 확인한 뒤 사용하세요.`;
+  return `${how} · 번역: ${translationLabel(engines.translation)} · 원문 위치로 확인한 뒤 사용하세요.`;
 }
 
 function csvCell(value: string): string {
