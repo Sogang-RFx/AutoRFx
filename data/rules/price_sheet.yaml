@@ -1,0 +1,49 @@
+# 가격표(품목표) 읽기 사전 (도메인 팀 관리). 코드를 고치지 않고 이 파일만 고치면 반영된다.
+#
+# RFQ의 가격표는 양식이 제각각이다. 프로그램은 PDF·워드·엑셀에서 표를 찾고, 표의 머리글
+# 칸마다 아래 단어를 찾아 그 열이 무엇인지(roles) 정한다. 수량 열과 설명(또는 품번) 열을
+# 찾은 표만 품목으로 읽는다.
+#
+# 단어를 찾는 방식은 work_areas.yaml과 같다 (대소문자 구분 없음):
+#   - 영어·독일어 단어: 단어 전체로만 찾고, 복수·굴절 어미 s, es, e, n, en은 붙어도 된다.
+#   - 한국어 단어: 글자 그대로 찾는다.
+#   - "re:"로 시작하면 정규식이다.
+#   - 한 칸에 여러 역할의 단어가 걸리면 걸린 단어가 긴 역할을 쓴다
+#     ("UNIT PRICE"는 unit보다 긴 "unit price"가 걸리므로 단가, "EXTENDED PRICE"는 금액).
+#   - 같은 역할의 열이 둘이면 더 길게 걸린 열을, 같으면 왼쪽 열을 쓴다. "Item | Description | Qty"처럼
+#     item이 품명과 번호 둘 다 될 수 있으면, description이 걸린 열이 품명이 되고 Item은 번호가 된다.
+#
+# 여기에 없는 머리글은 화면에서 사람이 열을 지정한다. 지정한 머리글은 같은 양식이 다시 오면
+# 그대로 쓰고, 사전 추가 후보로 쌓인다. 후보는 화면에서 승인해야 사전에 쓰인다.
+#
+# 값은 개발용 RFQ와 일반 표현에서 고른 제안값이다. 도메인 팀 검토 대상이다.
+
+roles:
+  # 품목 번호 (행 번호)
+  'no': ['item #', 'item#', item, item no, item number, line, line no, pos, pos., position, nr., no., '#', 번호, 순번, 항번]
+  # 품번 (부품 번호)
+  part: [part no, part no., part number, 'part #', mfg part number, manufacturer part number, sku, teilenummer, sachnummer, artikelnummer, materialnummer, 품번, 부품번호]
+  # 품명·설명
+  description: [description, item description, part description, item, article, product, bezeichnung, benennung, artikel, artikelbezeichnung, leistung, 품명, 품목, 내역, 규격, 명칭]
+  # 수량
+  quantity: [quantity, qty, est. qty, estimated quantity, annual usage, est. annual usage, usage, volume, menge, stückzahl, anzahl, 수량, 물량]
+  # 단위
+  unit: [unit, uom, unit of measure, einheit, me, 단위]
+  # 기간 (수량이 월 단위일 때 곱하는 개월 수)
+  months: [months, monate, 개월, 개월수]
+  # 단가 (보통 공급사가 채울 빈 칸)
+  price: [unit price, unit cost, price, cost, preis, einzelpreis, ep, 단가]
+  # 금액 (단가 × 수량)
+  total: [extended price, ext. price, extended, extended amount, total, total price, amount, gesamtpreis, gesamt, gp, 금액, 합계]
+
+# 수량 머리글에 이 단어가 있으면 연간 수량이다.
+yearly: [yearly, annual, annually, per year, p.a., jährlich, jahresbedarf, jahresmenge, 연간]
+
+# 수량 머리글에 이 단어가 있고 기간 열이 있으면 수량 × 개월 수가 주문 기간의 수량이다.
+monthly: [per month, monthly, pro monat, monatlich, 월간, 월]
+
+# 이 모양의 줄은 품목이 아니라 묶음 제목이다 ("Category 1 – Brakes", "Lot 2: Filters"). 묶음 이름은 첫 번째 괄호.
+group: ['re:^(?:category|lot|los|group|gruppe)\s*\S*\s*[–—:-]?\s*(.+?)\s*[–—:-]?$']
+
+# 이 단어가 든 줄은 소계·합계 줄이다.
+total_row: [subtotal, sub-total, total, grand total, summe, zwischensumme, gesamtsumme, 소계, 합계]

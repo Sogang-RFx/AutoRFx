@@ -48,6 +48,7 @@ import {
   percentToFraction,
   unitOptions,
 } from "@/lib/rfq/precost";
+import { SheetTables } from "@/components/precost/sheet-tables";
 import { describeError, isForbidden, rfqApi } from "@/lib/rfq/provider";
 import { useSession } from "@/lib/rfq/session";
 import { useResource } from "@/lib/rfq/use-resource";
@@ -392,7 +393,9 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
   const [error, setError] = useState<{ message: string; forbidden: boolean } | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const processValues = setup.requirements.filter((r) => r.requirement === "process").map((r) => r.value);
-  const sheet = setup.lines.items;
+  // The sheet changes when the user assigns the columns of a table the dictionary could not read.
+  const [sheetLines, setSheetLines] = useState(setup.lines);
+  const sheet = sheetLines.items;
   const sheetYear = initialVolumes(setup)[0]?.year ?? String(new Date().getFullYear() + 1);
   const [byLine, setByLine] = useState(setup.award.mode === "split" || setup.award.mode === "either" || sheet.length > 0);
   const [award, setAward] = useState<AwardChoice>("rfq");
@@ -645,6 +648,11 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
               품목별로 계산
             </label>
           </div>
+          {!byLine && sheet.length === 0 && sheetLines.tables.some((t) => t.how === "none") && (
+            <p className="text-label text-ink-muted" data-testid="unread-tables-hint">
+              RFQ에서 가격표로 읽지 못한 표가 있습니다. 품목별로 계산하려면 &lsquo;품목별로 계산&rsquo;을 고른 뒤 그 표의 열을 지정하세요.
+            </p>
+          )}
           {byLine && (
             <div className="grid gap-3 sm:grid-cols-2">
               <Field
@@ -666,11 +674,21 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
             </div>
           )}
           {byLine && sheet.length > 0 && (
-            <SheetPicker sheet={sheet} total={setup.lines.total} limit={setup.lines.limit}
+            <SheetPicker key={sheet.length} sheet={sheet} total={sheetLines.total} limit={sheetLines.limit}
               apply={(rows) =>
                 // Lines added by hand are kept: the sheet reading missed them.
                 setLines((list) => [...linesFromRfq(rows, sheetYear, processValues), ...list.filter((l) => l.group === MANUAL)])
               } />
+          )}
+          {byLine && (
+            <SheetTables tables={sheetLines.tables} rfqId={rfqId} team={team}
+              onRead={(read) => {
+                setSheetLines(read);
+                const kept = (list: LineRow[]) => list.filter((l) => l.group === MANUAL);
+                setLines((list) =>
+                  read.items.length > 0 ? [...linesFromRfq(read.items, sheetYear, processValues), ...kept(list)] : list,
+                );
+              }} />
           )}
         </Step>
 

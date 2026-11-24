@@ -12,7 +12,7 @@ import decimal
 import uuid
 from datetime import date
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.concurrency import run_in_threadpool
@@ -39,6 +39,8 @@ from autorfx.precost import (
     requirements,
     rfq_lines,
 )
+from autorfx.precost.lines import find_grid, header_roles, signature
+from autorfx.precost.sheet_store import PriceSheetError, check_columns
 from autorfx.retrieval import answer_question
 from autorfx.work_areas import catalog
 
@@ -395,13 +397,90 @@ def precost_setup(rfq_id: str, state: State, team: Team = None) -> dict:
         company=state.company.company,
         ruleset=state.ruleset,
         today=date.today(),
-        lines=rfq_lines(
-            data.manifest,
-            data.parsed,
-            {f.id: data.workspace.canonical_pdf(f.id) for f in data.manifest.files},
-        ),
+        lines=_lines(state, data),
     )
     return envelope(result, precost="real")
+
+
+def _canonical(data: RfqData) -> dict[str, Path]:
+    return {f.id: data.workspace.canonical_pdf(f.id) for f in data.manifest.files}
+
+
+def _lines(state: AppState, data: RfqData) -> dict:
+    store = state.price_sheets
+    return rfq_lines(
+        data.manifest,
+        data.parsed,
+        _canonical(data),
+        state.ruleset.price_sheet,
+        words=store.approved,
+        layouts=store.layouts,
+    )
+
+
+class ColumnsBody(Model):
+    table: str = Field(min_length=1, max_length=120)
+    header_row: int = Field(ge=0, le=5)
+    columns: dict[str, int]
+
+
+@router.post("/rfqs/{rfq_id}/price-sheet/columns")
+def assign_columns(rfq_id: str, body: ColumnsBody, state: State, team: Team = None) -> dict:
+    """Read a table by the columns a user assigned; the same header is read this way from now on."""
+    _cost_visible(state.group_of(team))
+    data = state.data(rfq_id)
+    rules = state.ruleset.price_sheet
+    grid = find_grid(data.manifest, data.parsed, _canonical(data), rules, body.table)
+    if grid is None:
+        raise ApiError(404, "not_found", "표를 찾을 수 없습니다. 화면을 새로 고쳐 주세요.")
+    if body.header_row >= len(grid.rows):
+        raise ApiError(400, "invalid_request", "머리글 줄이 표 밖입니다.")
+    header = grid.rows[body.header_row]
+    try:
+        columns = check_columns(body.columns, len(header))
+    except PriceSheetError as exc:
+        raise ApiError(400, "invalid_request", str(exc)) from exc
+    # Header words the rules would have given another role (or none) are dictionary candidates.
+    known = header_roles(header, rules.compiled(state.price_sheets.approved))
+    words = {role: header[i] for role, i in columns.items() if known.get(role) != i and header[i].strip()}
+    state.price_sheets.assign(signature(header), columns, words, date.today())
+    return envelope({"lines": _lines(state, data)}, precost="real")
+
+
+def _words_payload(state: AppState) -> dict:
+    store = state.price_sheets
+    return envelope(
+        {
+            "candidates": [c.model_dump(mode="json") for c in store.candidates],
+            "approved": [
+                {"role": role, "text": text} for role, words in store.approved.items() for text in words
+            ],
+        },
+        precost="real",
+    )
+
+
+@router.get("/price-sheet/words")
+def price_sheet_words(state: State, team: Team = None) -> dict:
+    """Header words users assigned by hand, waiting for approval, and the approved ones."""
+    _cost_visible(state.group_of(team))
+    return _words_payload(state)
+
+
+class WordBody(Model):
+    role: str = Field(max_length=20)
+    text: str = Field(min_length=1, max_length=80)
+    action: Literal["approve", "reject", "remove"]
+
+
+@router.post("/price-sheet/words")
+def decide_word(body: WordBody, state: State, team: Team = None) -> dict:
+    _cost_visible(state.group_of(team))
+    try:
+        state.price_sheets.decide(body.role, body.text, body.action)
+    except PriceSheetError as exc:
+        raise ApiError(400, "invalid_request", str(exc)) from exc
+    return _words_payload(state)
 
 
 @router.post("/precost")
