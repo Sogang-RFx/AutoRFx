@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     """Cosine similarity a sentence needs to count as evidence in dense search. Empty = the measured value
     of the model (``min_score_for``): the scale differs a lot between models."""
 
+    chat_reasoning_effort: str | None = Field(default="low", validation_alias="OPENAI_CHAT_EFFORT")
+    """How long a reasoning model thinks before it answers a question. Empty: not sent."""
+
     confirm_policy: ConfirmPolicy = Field(default="ambiguous_only", validation_alias="AUTORFX_CONFIRM_POLICY")
     llm_concurrency: int = Field(default=4, ge=1, le=16, validation_alias="AUTORFX_LLM_CONCURRENCY")
 
@@ -74,7 +77,7 @@ class Settings(BaseSettings):
             return None
         return value
 
-    @field_validator("embedding_model", "embedding_min_score", mode="before")
+    @field_validator("embedding_model", "embedding_min_score", "chat_reasoning_effort", mode="before")
     @classmethod
     def _blank_is_unset(cls, value: object) -> object:
         if isinstance(value, str):
@@ -90,6 +93,11 @@ class Settings(BaseSettings):
     @property
     def rules_dir(self) -> Path:
         return self.data_dir / "rules"
+
+    @property
+    def chat_topics_path(self) -> Path:
+        """Outside ``rules_dir``: changing a wording must not invalidate stored analyses."""
+        return self.data_dir / "chat" / "topics.yaml"
 
     @property
     def samples_dir(self) -> Path:

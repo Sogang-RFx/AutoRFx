@@ -10,15 +10,24 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from autorfx.models import (
+    CitationStatus,
     Clause,
+    ClauseAnalysis,
     ClauseKind,
+    ConsistencyIssue,
     FileRecord,
+    Finding,
+    IssueCategory,
+    IssueEvidence,
     Lang,
     Locus,
     PackageManifest,
     ParsedSentence,
     Rect,
+    RedFlag,
     SentenceRole,
+    Severity,
+    VerifiedFinding,
 )
 
 SHA_A = "a" * 64
@@ -98,6 +107,57 @@ def make_clause(
         sentences=sentences,
         is_cost_sensitive=is_cost_sensitive,
         is_boilerplate=is_boilerplate,
+    )
+
+
+def with_heading(clause: Clause) -> Clause:
+    """The same clause whose first sentence is its heading, so its title is its own."""
+    first, *rest = clause.sentences
+    return clause.model_copy(
+        update={"sentences": (first.model_copy(update={"role": "heading"}), *rest), "title": first.text}
+    )
+
+
+def make_analysis(
+    clause: Clause,
+    *,
+    label: str | None = None,
+    reason: str = "",
+    cited: Sequence[Locus] | None = None,
+    status: CitationStatus = "verified",
+) -> ClauseAnalysis:
+    """A rule-made analysis citing the clause's first sentence; ``label`` adds a red flag."""
+    citations = tuple(cited) if cited is not None else (clause.sentences[0].locus,)
+    return ClauseAnalysis(
+        clause_id=clause.clause_id,
+        primary_department="legal",
+        priority="must",
+        red_flag=RedFlag(type="test_flag", label=label, reason=reason) if label else None,
+        summary=VerifiedFinding(
+            finding=Finding(kind="summary", text="", red_flag_reason=reason or None, citations=citations),
+            citation_status=status,
+        ),
+        origin="rule",
+    )
+
+
+def make_issue(
+    issue_id: str,
+    evidence: Sequence[ParsedSentence],
+    *,
+    category: IssueCategory = "conflict",
+    severity: Severity = "high",
+    title: str = "",
+    is_cost_sensitive: bool = False,
+) -> ConsistencyIssue:
+    return ConsistencyIssue(
+        id=issue_id,
+        category=category,
+        severity=severity,
+        title=title or f"{issue_id}: 문서마다 값이 다릅니다",
+        detail=f"{issue_id} 설명",
+        evidence=tuple(IssueEvidence(locus=s.locus, text=s.text) for s in evidence),
+        is_cost_sensitive=is_cost_sensitive,
     )
 
 

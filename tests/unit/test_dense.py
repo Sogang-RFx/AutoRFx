@@ -7,12 +7,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from autorfx.analysis import RuleOnlyProvider
 from autorfx.pipeline import _dense
-from autorfx.retrieval import SearchIndex, answer_question, compare
+from autorfx.retrieval import SearchIndex, compare
 from autorfx.retrieval.dense import CachedEncoder, DenseIndex, load_encoder
 from autorfx.rules import Ruleset
-from contract_schema import assert_valid
 from topic_encoder import CLAUSES, DEADLINE, PACKAGING, PRICE, QUALITY, TopicEncoder  # noqa: F401
 
 
@@ -67,20 +65,6 @@ def test_restricted_group_never_sees_cost_sentences(index: SearchIndex):
     assert dense is not None
     raw = dense.search("price EUR", group="cost_restricted", min_score=-1.0)
     assert all(hit.clause_id != "d01:2.2" for hit in raw)
-
-
-def test_chat_answers_a_paraphrase_with_a_verified_citation(index: SearchIndex):
-    data = answer_question(
-        "부품을 어떤 상자에 담아서 보내야 하나요?",
-        index=index,
-        clauses=CLAUSES,
-        group="cost_restricted",
-        provider=RuleOnlyProvider(),
-    )
-    assert_valid("chat", {"data": data, "provenance": {"chat": "real"}})
-    assert data["status"] == "answered"
-    assert data["answer"]["citation_status"] == "verified"
-    assert data["answer"]["finding"]["citations"][0]["section_id"] == "3.2"
 
 
 def test_cached_encoder_reuses_vectors(tmp_path: Path):

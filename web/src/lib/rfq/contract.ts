@@ -742,15 +742,30 @@ export const PrecostResponse = envelope(
 export type PrecostResponse = z.infer<typeof PrecostResponse>;
 
 // ── Chat ────────────────────────────────────────────────────────────────────
-export const ChatRequest = z.object({ team: z.string().optional(), question: z.string().min(1).max(500) });
+/** One earlier exchange. Used only to resolve what the new question refers to; never as evidence. */
+export const ChatTurn = z.object({ question: z.string().min(1).max(500), answer: z.string().max(4000) });
+export type ChatTurn = z.infer<typeof ChatTurn>;
+export const ChatRequest = z.object({
+  team: z.string().optional(),
+  question: z.string().min(1).max(500),
+  /** The latest turns, oldest first. Optional. */
+  history: z.array(ChatTurn).max(6).optional(),
+});
 export type ChatRequest = z.infer<typeof ChatRequest>;
 export const ChatResponse = envelope(
   z.object({
-    /** `no_evidence`: nothing in the RFQ supports an answer. `not_prepared`: mock only. */
-    status: z.enum(["answered", "no_evidence", "not_prepared", "restricted"]),
-    /** "scripted" (mock), "extractive" (original sentences, no LLM), "generative" (LLM). */
-    mode: z.enum(["scripted", "extractive", "generative"]),
+    /** `no_evidence`: nothing in the RFQ supports an answer. `guide`: how to use the chat. */
+    status: z.enum(["answered", "no_evidence", "restricted", "guide"]),
+    /** "extractive" (original sentences, no LLM), "generative" (LLM), "stored" (saved analysis, no LLM). */
+    mode: z.enum(["extractive", "generative", "stored"]),
+    /** `text` is the statements joined by newlines; `citations` are theirs, without duplicates. */
     answer: VerifiedFinding.nullable(),
+    /** One entry per answer sentence, each with its own citations. Empty when there is no answer. */
+    statements: z.array(z.object({ text: z.string(), citations: z.array(Locus).min(1) })),
+    /** Conflicts between documents that touch the cited sentences. Empty when none. */
+    conflicts: z.array(
+      z.object({ id: z.string(), title: z.string(), detail: z.string(), citations: z.array(Locus) }),
+    ),
     message: z.string(),
     suggestions: z.array(z.string()),
   }),

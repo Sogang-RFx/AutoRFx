@@ -20,6 +20,12 @@ from autorfx.rules import Ruleset
 from contract_schema import assert_valid
 from factories import PACKAGE_SECRET, make_package, precost_inputs
 
+TOPICS = """\
+topics:
+  - {intent: conflicts, label: 문서 간 불일치, patterns: [문서끼리]}
+  - {intent: red_flags, label: 불리한 조항, patterns: [독소]}
+  - {intent: overview, label: RFQ 요약, patterns: [RFQ 요약]}
+"""
 VISIBLE, RESTRICTED = "costing", "quality"
 SECRETS = (PACKAGE_SECRET, "1.2345", "target price", "rejected")
 PDF = "application/pdf"
@@ -31,6 +37,8 @@ def api(tmp_path_factory: pytest.TempPathFactory, ruleset: Ruleset) -> Iterator[
     root = tmp_path_factory.mktemp("api")
     settings = Settings(_env_file=None, data_dir=root / "data", embedding_model=None)
     make_package(settings.samples_dir / "synthetic-sample")
+    (settings.data_dir / "chat").mkdir(parents=True)
+    (settings.data_dir / "chat" / "topics.yaml").write_text(TOPICS, encoding="utf-8")
     sources = make_package(root / "upload")
     app = create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())
     with TestClient(app) as client:
@@ -308,7 +316,8 @@ def test_nothing_about_the_price_reaches_a_restricted_team(api: Api):
         for department in ("costing", "sales", "quality"):
             filtered = get(client, f"/rfqs/{rfq_id}/clauses", department=department, **params)
             texts.append(json.dumps(filtered, ensure_ascii=False))
-        for question in ("목표가는 얼마인가요?", "target price", "price", "rejected quotes", "1.2345"):
+        asked = ("목표가는 얼마인가요?", "target price", "price", "rejected quotes", "1.2345")
+        for question in (*asked, "독소조항이 있나요?", "문서끼리 다른 값은?", "RFQ 요약"):
             reply = client.post(f"/rfqs/{rfq_id}/chat", json={"team": team, "question": question})
             texts.append(reply.text)
         source = client.get(f"/rfqs/{rfq_id}/files/d01/source", params=params)
@@ -440,6 +449,157 @@ def test_chat_refuses_an_empty_question(api: Api):
     empty = client.post(f"/rfqs/{rfq_id}/chat", json={"team": VISIBLE, "question": "  "})
     assert error(empty) == (422, "invalid_request")
     assert error(client.post(f"/rfqs/{rfq_id}/chat", json={"team": VISIBLE})) == (422, "invalid_request")
+
+
+# ── chat ────────────────────────────────────────────────────────────────────
+TURN = {"question": "보증 기간은?", "answer": "36개월입니다."}
+
+
+@pytest.fixture(scope="module")
+def chat_api(tmp_path_factory: pytest.TempPathFactory, ruleset: Ruleset) -> Iterator[Api]:
+    """The same package, with a chat model that each test replaces."""
+    from autorfx.chat.model import ScriptedChatModel
+
+    root = tmp_path_factory.mktemp("chat-api")
+    settings = Settings(_env_file=None, data_dir=root / "data")
+    sources = make_package(root / "upload")
+    app = create_app(
+        settings,
+        ruleset=ruleset,
+        provider=RuleOnlyProvider(),
+        chat_model=ScriptedChatModel(plans=[], drafts=[]),
+    )
+    with TestClient(app) as client:
+        files = [("files", (p.name, p.read_bytes(), PDF)) for p in sources]
+        rfq_id = client.post("/rfqs", files=files).json()["data"]["id"]
+        app.state.autorfx.wait()
+        yield client, rfq_id, sources
+
+
+def script(client: TestClient, *drafts: object):
+    """Queue drafts for the next question and return the model to inspect its calls."""
+    from autorfx.chat.model import ScriptedChatModel
+
+    model = ScriptedChatModel(plans=[], drafts=list(drafts))
+    client.app.state.autorfx.chat_model = model
+    return model
+
+
+def test_history_is_accepted_and_reaches_the_planner(chat_api: Api):
+    """RAG-03, CONTRACT-01: a follow-up arrives with the conversation; a missing history is an empty one."""
+    from autorfx.chat.models import Draft, Turn
+
+    client, rfq_id, _ = chat_api
+    nothing = Draft(answered=False, complete=True, statements=())
+    body = {"team": VISIBLE, "question": "그럼 그건 언제부터야?", "history": [TURN]}
+    assert_valid("chat-request", body)
+    model = script(client, nothing)
+    response = client.post(f"/rfqs/{rfq_id}/chat", json=body)
+    assert response.status_code == 200, response.text
+    assert_valid("chat", response.json())
+    ((question, history, _),) = model.plan_calls
+    assert question == body["question"] and tuple(history) == (Turn(**TURN),)
+
+    model = script(client, nothing)
+    plain = client.post(f"/rfqs/{rfq_id}/chat", json={"team": VISIBLE, "question": "보증 기간은?"})
+    assert plain.status_code == 200 and tuple(model.plan_calls[0][1]) == ()
+
+
+def test_the_longest_allowed_history_is_accepted(chat_api: Api):
+    """CONTRACT-01: six turns, 500 characters asked, 4000 answered."""
+    from autorfx.chat.models import Draft
+
+    client, rfq_id, _ = chat_api
+    script(client, Draft(answered=False, complete=True, statements=()))
+    body = {
+        "team": VISIBLE,
+        "question": "보증 기간은?",
+        "history": [{"question": "q" * 500, "answer": "a" * 4000}] * 6,
+    }
+    assert_valid("chat-request", body)
+    assert client.post(f"/rfqs/{rfq_id}/chat", json=body).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        "보증",
+        [["q", "a"]],
+        [{"answer": "a"}],
+        [{"question": "", "answer": "a"}],
+        [{"question": "q" * 501, "answer": "a"}],
+        [{"question": "q", "answer": "a" * 4001}],
+        [{"question": "q", "answer": 1}],
+        [{**TURN, "role": "system"}],
+        [TURN] * 7,
+    ],
+    ids=["text", "list", "no-question", "empty", "long-q", "long-a", "number", "extra", "seven"],
+)
+def test_a_malformed_history_is_refused(api: Api, history: object):
+    """§5, INV-9: checked at the boundary; more than six turns is malformed too."""
+    client, rfq_id, _ = api
+    body = {"team": VISIBLE, "question": "보증 기간은?", "history": history}
+    assert error(client.post(f"/rfqs/{rfq_id}/chat", json=body)) == (422, "invalid_request")
+
+
+def test_a_generated_answer_is_served_with_its_citations(chat_api: Api):
+    """CITE-01, INV-12: the API passes the model's answer through the same checks."""
+    from autorfx.chat.models import Draft, Statement
+
+    client, rfq_id, _ = chat_api
+
+    class Reader:
+        """Cites the warranty sentence by the number it was given, whatever that is."""
+
+        id = "reader"
+
+        def plan(self, question, history, languages):
+            from autorfx.chat.models import Plan
+
+            return Plan(intent="lookup", question=question, queries=())
+
+        def answer(self, question, evidence, *, overview, feedback):
+            number = next(e.number for e in evidence if "36 months" in e.text)
+            statement = Statement(text="보증 기간은 36개월입니다.", citations=(number,))
+            return Draft(answered=True, complete=True, statements=(statement,))
+
+    client.app.state.autorfx.chat_model = Reader()
+    reply = client.post(f"/rfqs/{rfq_id}/chat", json={"team": RESTRICTED, "question": "보증 기간은?"})
+    assert_valid("chat", reply.json())
+    data = reply.json()["data"]
+    assert (data["status"], data["mode"]) == ("answered", "generative")
+    assert data["statements"][0]["citations"][0]["source_doc"] == "d01"
+
+
+def test_stored_results_answer_without_a_model(api: Api):
+    """INV-12: the delivery terms contradict each other; the consistency check found it, no LLM did."""
+    client, rfq_id, _ = api
+    issues = get(client, f"/rfqs/{rfq_id}/consistency", team=VISIBLE)["data"]["issues"]
+    assert issues, "the delivery terms contradict each other"
+    reply = client.post(f"/rfqs/{rfq_id}/chat", json={"team": VISIBLE, "question": "문서끼리 다른 값은?"})
+    assert_valid("chat", reply.json())
+    data = reply.json()["data"]
+    assert (data["status"], data["mode"]) == ("answered", "stored")
+    assert {s["text"] for s in data["statements"]} == {i["title"] for i in issues}
+
+
+def test_the_chat_model_follows_settings_and_injection(tmp_path: Path, ruleset: Ruleset):
+    """§5, ENGINE-03: an injected provider means no chat model unless one is injected too."""
+    from autorfx.chat.model import ScriptedChatModel
+
+    keyed = Settings(_env_file=None, data_dir=tmp_path / "data", OPENAI_API_KEY="sk-test-not-real")  # type: ignore[call-arg]
+    plain = Settings(_env_file=None, data_dir=tmp_path / "data", OPENAI_API_KEY="")  # type: ignore[call-arg]
+    scripted = ScriptedChatModel(plans=[], drafts=[])
+    for settings, options, expected in (
+        (keyed, {"provider": RuleOnlyProvider()}, None),
+        (plain, {}, None),
+        (keyed, {}, "openai:gpt-4o"),
+        (plain, {"provider": RuleOnlyProvider(), "chat_model": scripted}, scripted.id),
+    ):
+        with TestClient(create_app(settings, ruleset=ruleset, **options)) as client:
+            model = client.app.state.autorfx.chat_model
+        assert (model.id if model is not None else None) == expected
+    assert plain.chat_topics_path == tmp_path / "data" / "chat" / "topics.yaml"
 
 
 def test_security_headers_and_cors(api: Api):
