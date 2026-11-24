@@ -54,6 +54,8 @@ CAPTION = re.compile(
 SUBCAPTION = re.compile(r"^\s*(?:table|tabelle|form|price|bid|표|양식)\b", re.IGNORECASE)
 """A caption that names the table itself ("TABLE 1: Offer to Supply Goods")."""
 PART = re.compile(r"^(?=.*\d)[A-Z0-9][A-Z0-9./-]{3,}$")
+COUNT = re.compile(r"^\s*(\d[\d,]*(?:\.\d+)?)\s*[^\W\d_][^\d]{0,14}$")
+"""A quantity with its unit ("1 pc.", "2 units", "3 sets", "10 Stk.")."""
 INTEGER = re.compile(r"^\s*[$€£]?\s*\d[\d,.]*\s*$")
 
 
@@ -84,6 +86,8 @@ class Reading:
     how: str = "none"
     """"rules", "layout" (a layout a user assigned), "continued" or "none"."""
     lines: list[dict] = field(default_factory=list)
+    priced: bool = False
+    """A price or total column is named in or just around the header (a header of several rows)."""
 
 
 def normalize(text: str) -> str:
@@ -199,6 +203,110 @@ def _box(page: pymupdf.Page, number: int, bbox: Sequence[float]) -> tuple[int, f
     )
 
 
+RULE = 1.5
+"""A drawn rectangle this thin (in points) is a ruling line; a wider filled one is shading."""
+SNAP = 2.0
+"""Ruling lines closer than this are the same line."""
+MARGIN = 12.0
+"""PyMuPDF's table box can stop inside the outer border; lines this far outside it still count."""
+
+Cell = tuple[float, float, float, float]
+
+
+def _rulings(page: pymupdf.Page) -> tuple[list[tuple[float, float, float]], list[tuple[float, float, float]]]:
+    """Horizontal (y, x0, x1) and vertical (x, y0, y1) ruling lines drawn on a page.
+
+    Lines, thin filled rectangles and the edges of stroked rectangles count; filled shading does
+    not. A word processor often shades each line of text in a cell, and those edges are not cells.
+    """
+    across: list[tuple[float, float, float]] = []
+    down: list[tuple[float, float, float]] = []
+
+    def add(r: pymupdf.Rect) -> None:
+        if r.height <= RULE and r.width > RULE:
+            across.append(((r.y0 + r.y1) / 2, r.x0, r.x1))
+        elif r.width <= RULE and r.height > RULE:
+            down.append(((r.x0 + r.x1) / 2, r.y0, r.y1))
+
+    for drawing in page.get_drawings():
+        stroked = drawing.get("color") is not None and drawing.get("type") in ("s", "fs")
+        for item in drawing["items"]:
+            if item[0] == "l":
+                a, b = item[1], item[2]
+                add(pymupdf.Rect(min(a.x, b.x), min(a.y, b.y), max(a.x, b.x), max(a.y, b.y)))
+            elif item[0] == "re":
+                r = pymupdf.Rect(item[1])
+                if min(r.width, r.height) <= RULE:
+                    add(r)
+                elif stroked:
+                    for edge in (
+                        (r.x0, r.y0, r.x1, r.y0),
+                        (r.x0, r.y1, r.x1, r.y1),
+                        (r.x0, r.y0, r.x0, r.y1),
+                        (r.x1, r.y0, r.x1, r.y1),
+                    ):
+                        add(pymupdf.Rect(*edge))
+    return across, down
+
+
+def _snap(values: Iterable[float]) -> list[float]:
+    found: list[float] = []
+    for v in sorted(values):
+        if not found or v - found[-1] > SNAP:
+            found.append(v)
+    return found
+
+
+def _covered(lines: Sequence[tuple[float, float, float]], at: float, start: float, end: float) -> bool:
+    """A ruling line at ``at`` runs along most of ``start``..``end``."""
+    need = (end - start) * 0.6
+    run = sum(max(0.0, min(b, end) - max(a, start)) for pos, a, b in lines if abs(pos - at) <= SNAP)
+    return run >= need
+
+
+def _ruled_cells(
+    rulings: tuple[list[tuple[float, float, float]], list[tuple[float, float, float]]],
+    bbox: Sequence[float],
+) -> list[list[Cell | None]] | None:
+    """Cells of a table as its ruling lines draw them; a merged cell is one cell over its rows.
+
+    Rows of cells, as PyMuPDF gives them: a merged cell sits at its top-left position and the
+    positions it covers are None. None when the lines do not draw a grid (an unruled table).
+    """
+    x0, y0, x1, y1 = bbox
+
+    def inside(pos: float, a: float, b: float, lo: float, hi: float, l2: float, h2: float) -> bool:
+        return lo - MARGIN <= pos <= hi + MARGIN and b > l2 - MARGIN and a < h2 + MARGIN
+
+    across = [(y, a, b) for y, a, b in rulings[0] if inside(y, a, b, y0, y1, x0, x1) and b - a > SNAP]
+    down = [(x, a, b) for x, a, b in rulings[1] if inside(x, a, b, x0, x1, y0, y1) and b - a > SNAP]
+    xs, ys = _snap(x for x, _, _ in down), _snap(y for y, _, _ in across)
+    if len(xs) < 3 or len(ys) < 3:
+        return None
+    n_rows, n_cols = len(ys) - 1, len(xs) - 1
+    taken = [[False] * n_cols for _ in range(n_rows)]
+    rows: list[list[Cell | None]] = [[None] * n_cols for _ in range(n_rows)]
+    for r in range(n_rows):
+        for c in range(n_cols):
+            if taken[r][c]:
+                continue
+            right = c
+            while right + 1 < n_cols and not _covered(down, xs[right + 1], ys[r], ys[r + 1]):
+                right += 1
+            bottom = r
+            while bottom + 1 < n_rows and not any(
+                _covered(across, ys[bottom + 1], xs[k], xs[k + 1]) for k in range(c, right + 1)
+            ):
+                bottom += 1
+            for rr in range(r, bottom + 1):
+                for cc in range(c, right + 1):
+                    taken[rr][cc] = True
+            rows[r][c] = (xs[c], ys[r], xs[right + 1], ys[bottom + 1])
+    # A column that is a cell of its own in no row is a sliver between lines: nothing to show.
+    keep = [c for c in range(n_cols) if any(row[c] is not None for row in rows)]
+    return [[row[c] for c in keep] for row in rows]
+
+
 def _header_line(words: Sequence[tuple], compiled: Mapping[str, tuple]) -> bool:
     """A rendered line naming a quantity and a description: a price sheet without ruling lines."""
     lines: dict[int, list[str]] = {}
@@ -229,6 +337,7 @@ def _pdf_grids(
         """Column x ranges of the last table on the previous page."""
         for page in pdf:
             words = page.get_text("words")
+            rulings = _rulings(page)
             if not words:
                 last = None
                 continue
@@ -251,18 +360,20 @@ def _pdf_grids(
                     )
             last = None
             for n, table in enumerate(tables, start=1):
+                # The cells as the PDF draws them, when it rules the table; else PyMuPDF's.
+                grid = _ruled_cells(rulings, table.bbox) or [list(row.cells) for row in table.rows]
                 rows: list[tuple[str, ...]] = []
                 spans: list[int | None] = []
-                for row in table.rows:
-                    cells = [_cell_text(words, c) if c else "" for c in row.cells]
+                for row_cells in grid:
+                    cells = [_cell_text(words, c) if c else "" for c in row_cells]
                     if not any(cells):
                         continue
                     rows.append(tuple(cells))
-                    present = [i for i, c in enumerate(row.cells) if c is not None]
-                    spans.append(present[0] if len(present) == 1 and len(row.cells) > 1 else None)
-                widest = max(table.rows, key=lambda r: sum(1 for c in r.cells if c))
-                if all(widest.cells):
-                    last = [(c[0], c[2]) for c in widest.cells]
+                    present = [i for i, c in enumerate(row_cells) if c is not None]
+                    spans.append(present[0] if len(present) == 1 and len(row_cells) > 1 else None)
+                widest = max(grid, key=lambda r: sum(1 for c in r if c))
+                if all(widest):
+                    last = [(c[0], c[2]) for c in widest if c]
                 if rows:
                     grids.append(
                         Grid(
@@ -367,6 +478,39 @@ def _check_number(grid: Grid, header: int, columns: dict[str, int]) -> dict[str,
     return fixed
 
 
+def _filled(grid: Grid, start: int, index: int) -> int:
+    return sum(1 for row in grid.rows[start:] if _cell(row, index))
+
+
+def _align(grid: Grid, header: int, columns: dict[str, int]) -> dict[str, int]:
+    """Move a role to the next column when the values are printed one cell off their header.
+
+    A table read from a PDF may split a header cell from the cells under it ("Description" in one
+    column, the names in the next). A role whose column is empty under the header moves to a
+    neighbouring column that has values, no header text and no other role. Price columns are
+    left alone: they are blank on a sheet sent out for quotation.
+    """
+    head = grid.rows[header]
+    fixed = dict(columns)
+    for role, index in columns.items():
+        if role in ("price", "total", "unit") or _filled(grid, header + 1, index):
+            continue  # price cells are blank for the supplier to fill
+        for near in (index + 1, index - 1):
+            free = 0 <= near < len(head) and not head[near].strip() and near not in fixed.values()
+            if free and _filled(grid, header + 1, near):
+                fixed[role] = near
+                break
+    return fixed
+
+
+def _quantity(text: str) -> float | None:
+    text = text.strip(" $€£")
+    amount = parse_number(text, "en")
+    if amount is None and (match := COUNT.match(text)):
+        amount = parse_number(match.group(1), "en")
+    return amount
+
+
 def _cell(row: Sequence[str], index: int | None) -> str:
     return row[index].strip() if index is not None and index < len(row) else ""
 
@@ -393,8 +537,14 @@ def _read_rows(reading: Reading, start: int, state: dict, compiled: Mapping[str,
         span = grid.spans[index] if grid.spans else None
         if _hits(text, compiled["total_row"]) and not INTEGER.match(_cell(row, columns.get("no")) or "x"):
             continue  # "Category 1 – Brakes Subtotal: $"
-        if span is not None and span > 0 and len(filled) == 1 and not heading:
-            # A merged cell under the description ("Input current: 16A"): more of the item above.
+        at = next((i for i, c in enumerate(row) if c), 0)
+        numeric = {i for role, i in columns.items() if role not in ("description", "spec")}
+        note = (
+            len(filled) == 1 and not heading and at > 0 and at not in numeric and not INTEGER.match(filled[0])
+        )
+        if note and ((span is not None and span > 0) or at != columns.get("description")):
+            # A note on its own row, under the specification or merged across the row
+            # ("Input current: 16A"): more of the item above.
             if state["last"] is not None and state["last_at"] and state["last_at"][0] == grid.id:
                 state["last"]["name"] = normalize(f"{state['last']['name']}; {text}")[:200]
                 state["last_at"] = (grid.id, index)
@@ -403,7 +553,7 @@ def _read_rows(reading: Reading, start: int, state: dict, compiled: Mapping[str,
             state["group"] = heading or text[:80]
             state["run"] += 1
             continue
-        amount = parse_number(_cell(row, columns["quantity"]).strip(" $€£"), "en")
+        amount = _quantity(_cell(row, columns["quantity"]))
         if monthly and amount is not None:
             count = parse_number(_cell(row, months), "en")
             amount = amount * count if count is not None else None
@@ -474,7 +624,16 @@ def read_grids(
                 break
         if reading.header is not None:
             if reading.how == "rules":
-                reading.columns = _check_number(grid, reading.header, reading.columns)
+                reading.columns = _check_number(
+                    grid, reading.header, _align(grid, reading.header, reading.columns)
+                )
+            around = grid.rows[max(0, reading.header - 3) : reading.header + 2]
+            reading.priced = any(
+                _hits(normalize(c), compiled[role])
+                for row in around
+                for c in row
+                for role in ("price", "total")
+            )
             head = grid.rows[reading.header]
             state.update(header=head, columns=reading.columns, last=None)
             if reading.header > 0 and (heading := _group(normalize(" ".join(grid.rows[0])), compiled)):
@@ -553,6 +712,8 @@ def _lists(readings: Sequence[Reading]) -> list[dict]:
         if reading.how == "none":
             current = None
             continue
+        if reading.how == "continued" and not reading.lines:
+            continue  # text under the sheet on the next page, read by its columns: nothing to add
         head = (
             grid.rows[reading.header]
             if reading.header is not None
@@ -575,6 +736,7 @@ def _lists(readings: Sequence[Reading]) -> list[dict]:
                 "header": tuple(head),
                 "columns": dict(reading.columns),
                 "how": reading.how,
+                "priced": False,
                 "pages": [],
                 "boxes": [],
                 "tables": [],
@@ -584,6 +746,7 @@ def _lists(readings: Sequence[Reading]) -> list[dict]:
             if page not in current["pages"]:
                 current["pages"].append(page)
         current["boxes"].extend(grid.boxes)
+        current["priced"] = current["priced"] or reading.priced
         current["tables"].append(grid.id)
         for line in reading.lines:
             line["list"] = current["id"]
@@ -665,7 +828,7 @@ def rfq_lines(
     counts: dict[str, int] = {}
     for item in found:
         counts[item["list"]] = counts.get(item["list"], 0) + 1
-    priced = {lst["id"] for lst in lists if {"price", "total"} & set(lst["columns"])}
+    priced = {lst["id"] for lst in lists if lst["priced"] or {"price", "total"} & set(lst["columns"])}
     suggested = {
         lst["id"]
         for lst in lists

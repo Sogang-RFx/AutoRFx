@@ -45,6 +45,80 @@ function rolesOf(table: SheetTable, width: number): Roles {
   return roles;
 }
 
+/**
+ * A column as shown: one or two columns of the table, and the one whose cells hold the values.
+ * ``extra`` are hidden columns beside it whose only text is a title above the header.
+ */
+type Shown = { cols: number[]; data: number; extra: number[] };
+
+/**
+ * The columns worth showing. A table read from a PDF often has empty columns, and a header cell
+ * one column away from the values under it ("Description" over nothing, the names in the next
+ * column): empty columns are left out, and such a header is shown over its values as one column.
+ */
+function shownColumns(rows: string[][], header: number, end: number, width: number): Shown[] {
+  const text = (r: number, i: number) => (rows[r]?.[i] ?? "").trim() !== "";
+  const head = (i: number) => text(header, i);
+  const value = (i: number) => rows.some((_, r) => r >= end && text(r, i));
+  // Titles above the header span the table; a column used only by them is not a column. Rows of
+  // several cells with numbers above it are items (the header was guessed too low): they count.
+  const items = (r: number) => rows[r].filter((c) => c.trim()).length >= 2 && rows[r].some((c) => /\d/.test(c));
+  const used = (i: number) => rows.some((_, r) => (r >= header || items(r)) && text(r, i));
+  const shown: Shown[] = [];
+  const leading: number[] = [];
+  for (let i = 0; i < width; i++) {
+    if (!used(i)) {
+      (shown.length ? shown[shown.length - 1].extra : leading).push(i);
+      continue;
+    }
+    if (head(i) && !value(i)) {
+      let j = i + 1;
+      while (j < width && !used(j)) j++;
+      if (j < width && !head(j) && value(j)) {
+        shown.push({ cols: [i, j], data: j, extra: [] });
+        i = j;
+        continue;
+      }
+    }
+    shown.push({ cols: [i], data: i, extra: [] });
+  }
+  shown[0]?.extra.unshift(...leading);
+  return shown;
+}
+
+/**
+ * Rows under the header that still belong to it, and how. A header cell may wrap onto the rows
+ * below it ("ABC, inclusive of all" / "applicable taxes"): such a row, without digits and with
+ * text only under header cells, is joined into the header ("wrap"), and so is the header printed
+ * again. A row of sub-headings under a merged heading ("Total Bid Price" over "Unit Price | Total
+ * Amount") stays a row of its own, shown as header ("sub"). A row with text in its first column
+ * only is a group heading ("General equipment"), not part of the header.
+ */
+function headerRows(rows: string[][], header: number): ("wrap" | "sub")[] {
+  const first = rows[header].findIndex((c) => c.trim());
+  const found: ("wrap" | "sub")[] = [];
+  for (let r = header + 1; r < rows.length && r <= header + 3; r++) {
+    const filled = rows[r].map((c, i) => [c.trim(), i] as const).filter(([c]) => c);
+    const heading = filled.length === 1 && filled[0][1] <= Math.max(first, 0);
+    if (filled.length === 0 || heading || filled.some(([c]) => /\d/.test(c))) break;
+    const under = filled.every(([, i]) => (rows[header][i] ?? "").trim());
+    if (under) found.push("wrap");
+    else if (filled.length >= 2) found.push("sub");
+    else break;
+  }
+  return found;
+}
+
+/** Header lines of one column joined; a line that repeats or extends the text so far replaces it. */
+function joinHeader(parts: string[]): string {
+  return parts.reduce((acc, part) => {
+    const text = part.trim();
+    if (!text) return acc;
+    if (!acc || text.startsWith(acc)) return text;
+    return acc.includes(text) ? acc : `${acc} ${text}`;
+  }, "");
+}
+
 function problem(roles: Roles): string | null {
   if (!roles.includes("quantity")) return "수량 열을 지정하세요.";
   if (!roles.includes("description") && !roles.includes("part")) return "품명(설명) 열이나 품번 열을 지정하세요.";
@@ -69,16 +143,32 @@ function ColumnAssigner({
   const [roles, setRoles] = useState<Roles>(() => rolesOf(table, width));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const missing = problem(roles);
+  const below = headerRows(table.rows, header);
+  const end = header + 1 + below.length;
+  const isHeader = (r: number) => r === header || (r > header && below[r - header - 1] === "sub");
+  const shown = shownColumns(table.rows, header, end, width);
+  // The header's wrapped lines are joined into it and not repeated; sub-heading rows stay.
+  const wrapped = table.rows.slice(header, end).filter((_, k) => k === 0 || below[k - 1] === "wrap");
+  const rows = table.rows
+    .map((row, r) => (r === header ? row.map((_, i) => joinHeader(wrapped.map((x) => x[i] ?? ""))) : row))
+    .map((row, r) => ({ row, r }))
+    .filter(({ r }) => r <= header || r >= end || below[r - header - 1] === "sub");
+  const roleOf = (col: Shown): ColumnRole | "" => col.cols.map((i) => roles[i]).find(Boolean) ?? "";
+  const picked = shown.map(roleOf);
+  const missing = problem(picked);
 
-  // One role per column and one column per role: picking a role elsewhere clears it here.
-  const pick = (index: number, role: ColumnRole | "") =>
-    setRoles((prev) => prev.map((r, i) => (i === index ? role : r === role && role !== "" ? "" : r)));
+  // One role per column and one column per role: picking a role elsewhere clears it there.
+  // The role goes to the column that holds the values, which is what the server reads.
+  const pick = (col: Shown, role: ColumnRole | "") =>
+    setRoles((prev) =>
+      prev.map((r, i) => (i === col.data ? role : col.cols.includes(i) || (r === role && role !== "") ? "" : r)),
+    );
 
   const submit = async () => {
     const columns: Partial<Record<ColumnRole, number>> = {};
-    roles.forEach((r, i) => {
-      if (r) columns[r] = i;
+    shown.forEach((col, k) => {
+      const r = picked[k];
+      if (r) columns[r] = col.data;
     });
     setBusy(true);
     setError(null);
@@ -114,10 +204,10 @@ function ColumnAssigner({
         <table className="w-full min-w-[32rem] text-left text-dense">
           <thead>
             <tr>
-              {Array.from({ length: width }, (_, i) => (
-                <th key={i} className="p-1 align-bottom font-normal">
-                  <select className={select} aria-label={`${i + 1}열 역할`} value={roles[i]} data-testid={`assign-role-${i}`}
-                    onChange={(e) => pick(i, e.target.value as ColumnRole | "")}>
+              {shown.map((col, k) => (
+                <th key={col.data} className="min-w-[7.5rem] p-1 align-bottom font-normal">
+                  <select className={select} aria-label={`${k + 1}열 역할`} value={picked[k]} data-testid={`assign-role-${k}`}
+                    onChange={(e) => pick(col, e.target.value as ColumnRole | "")}>
                     <option value="">— 쓰지 않음</option>
                     {ColumnRole.options.map((r) => (
                       <option key={r} value={r}>
@@ -130,13 +220,16 @@ function ColumnAssigner({
             </tr>
           </thead>
           <tbody>
-            {table.rows.map((row, r) => (
-              <tr key={r} className={cx("border-t border-line", r === header && "bg-accent-tint font-semibold", r < header && "text-ink-muted")}>
-                {Array.from({ length: width }, (_, i) => (
-                  <td key={i} className="max-w-[14rem] truncate p-1 text-ink" title={row[i] ?? ""}>
-                    {row[i] ?? ""}
-                  </td>
-                ))}
+            {rows.map(({ row, r }) => (
+              <tr key={r} className={cx("border-t border-line", isHeader(r) && "bg-accent-tint font-semibold", r < header && "text-ink-muted")}>
+                {shown.map((col) => {
+                  const cell = [...col.cols, ...col.extra].sort((a, b) => a - b).map((i) => row[i] ?? "").filter(Boolean).join(" ");
+                  return (
+                    <td key={col.data} className="max-w-[14rem] truncate p-1 text-ink" title={cell}>
+                      {cell}
+                    </td>
+                  );
+                })}
               </tr>
             ))}
           </tbody>

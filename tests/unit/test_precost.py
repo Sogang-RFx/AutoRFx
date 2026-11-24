@@ -834,7 +834,8 @@ EVERETT_ITEM = "“Item by Item”: The City awards on an item-by-item basis to 
 
 def test_two_methods_the_customer_chooses_between_are_read_as_either(ruleset: Ruleset):
     found = award_mode([make_clause("1.8", [EVERETT, EVERETT_ITEM])], ruleset)
-    assert found["mode"] == "either" and found["label"] == "둘 다 가능 (발주처가 선택)"
+    assert found["mode"] == "either"
+    assert found["label"] == "품목별 낙찰 가능 (일괄 낙찰도 가능, 발주처가 선택)"
     assert found["evidence"] is not None
 
 
@@ -847,6 +848,13 @@ def test_two_methods_the_customer_chooses_between_are_read_as_either(ruleset: Ru
         ("Bids are evaluated on an all-or-nothing basis.", "all_or_none"),
         ("Die Vergabe erfolgt losweise.", "split"),
         ("Partial bids will not be accepted; award by lot is not possible.", "all_or_none"),
+        (
+            "For multiple lots, suppliers may quote on any OR all lots and contract award shall be "
+            "undertaken on a per lot basis.",
+            "split",
+        ),
+        ("The Buyer reserves the right to reject any or all quotations.", None),
+        ("Quotations exceeding the ABC per lot shall be disqualified.", None),
         ("Payment within 30 days.", None),
     ],
 )

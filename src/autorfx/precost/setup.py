@@ -21,6 +21,7 @@ from decimal import Decimal
 from autorfx.analysis.citation import verify
 from autorfx.consistency.normalize import parse_number
 from autorfx.models import Clause, EntityMention, Finding, Locus, ParsedSentence
+from autorfx.precost.calc import EITHER_LABEL
 from autorfx.precost.company import Company, canonical
 from autorfx.precost.lines import MAX_LINES
 from autorfx.rules import RequirementRule, Ruleset
@@ -202,9 +203,6 @@ def pass_through(clauses: Sequence[Clause], ruleset: Ruleset) -> dict[str, dict 
                 }
                 break
     return found
-
-
-EITHER_LABEL = "둘 다 가능 (발주처가 선택)"
 
 
 def award_mode(clauses: Sequence[Clause], ruleset: Ruleset) -> dict:

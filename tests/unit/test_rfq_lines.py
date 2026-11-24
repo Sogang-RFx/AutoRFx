@@ -291,6 +291,89 @@ def test_a_sheet_whose_header_wording_changes_on_the_next_page_stays_one_list(
     assert (only["pages"], only["lines"], only["suggested"]) == ([1, 2], 2, True)
 
 
+def test_quantities_with_units_and_values_one_cell_off_their_header_are_read(
+    rules: PriceSheetRules,
+) -> None:
+    """A PDF table may split a header cell from the values under it; quantities carry their unit."""
+    header = ("Lot No.", "", "Description", "", "Quantity", "", "Total Price")
+    rows = [
+        ("", "1", "", "Refrigerant Recovery Machine", "", "1 pc.", ""),
+        ("", "2", "", "Automotive Battery Charger", "", "2 units", ""),
+        ("", "3", "", "Manifold Gauge", "", "3 sets", ""),
+    ]
+    grids = table_grids("d01", [_sheet_table(header, rows)])
+    (reading,) = read_grids(grids, rules.compiled(), {})
+    assert reading.priced
+    assert [(r["no"], r["name"], r["quantity"]) for r in reading.lines] == [
+        ("1", "Refrigerant Recovery Machine", 1),
+        ("2", "Automotive Battery Charger", 2),
+        ("3", "Manifold Gauge", 3),
+    ]
+
+
+def test_cells_follow_the_ruling_lines_not_the_shading_behind_each_line_of_text(
+    tmp_path: Path, rules: PriceSheetRules
+) -> None:
+    """A word processor shades each line of a cell; only the ruling lines make cells.
+
+    "Approved Budget / for the Contract" is one cell over two header rows, and "Total Bid Price"
+    one cell over "Unit Price | Total Amount". Borders are thin filled rectangles, as in the PDF
+    a word processor writes.
+    """
+    xs = (40, 80, 230, 360, 420, 520, 620)
+    ys = (60, 80, 100, 120, 140)
+    doc = pymupdf.open()
+    page = doc.new_page(width=792, height=612)
+
+    def rule(x0: float, y0: float, x1: float, y1: float) -> None:
+        page.draw_rect(pymupdf.Rect(x0, y0, x1, y1), color=None, fill=(0, 0, 0))
+
+    def text(x: float, y: float, words: str) -> None:
+        page.draw_rect(pymupdf.Rect(x, y - 9, x + 90, y + 2), color=None, fill=(0.87, 0.92, 0.96))
+        page.insert_text((x + 2, y), words, fontsize=8)
+
+    for y in (ys[0], ys[2], ys[3], ys[4]):
+        rule(xs[0], y - 0.4, xs[-1], y + 0.4)
+    rule(xs[4], ys[1] - 0.4, xs[-1], ys[1] + 0.4)  # only under "Total Bid Price"
+    for x in xs:
+        if x == xs[5]:
+            rule(x - 0.4, ys[1], x + 0.4, ys[-1])  # Unit | Total split starts below the heading
+        else:
+            rule(x - 0.4, ys[0], x + 0.4, ys[-1])
+    text(43, 72, "Lot No.")
+    text(83, 72, "Item Description")
+    text(233, 72, "Approved Budget")
+    text(233, 92, "for the Contract")
+    text(363, 72, "Qty")
+    text(423, 72, "Total Bid Price")
+    text(423, 112 - 20, "Unit Price")
+    text(523, 92, "Total Amount")
+    for y, row in (
+        (112, ("1", "Battery Charger", "168,000.00", "2 units")),
+        (132, ("2", "Manifold Gauge", "28,500.00", "3 sets")),
+    ):
+        for x, words in zip(xs, row, strict=False):
+            page.insert_text((x + 3, y), words, fontsize=8)
+    path = tmp_path / "a.pdf"
+    doc.save(str(path))
+
+    (grid,) = pdf_grids("d01", path, rules)
+    assert grid.rows[0] == (
+        "Lot No.",
+        "Item Description",
+        "Approved Budget for the Contract",
+        "Qty",
+        "Total Bid Price",
+        "",
+    )
+    assert grid.rows[1] == ("", "", "", "", "Unit Price", "Total Amount")
+    rows = _read(path, rules)
+    assert [(r["no"], r["name"], r["quantity"]) for r in rows] == [
+        ("1", "Battery Charger", 2),
+        ("2", "Manifold Gauge", 3),
+    ]
+
+
 def _sheet_table(header: tuple[str, ...], rows: list[tuple[str, ...]]) -> Table:
     locus = Locus(source_doc="d01", page_number=1, section_id="0", paragraph_index=1, sentence_index=1)
     return Table(
