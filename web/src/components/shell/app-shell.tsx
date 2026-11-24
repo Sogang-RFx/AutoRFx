@@ -12,6 +12,7 @@ import { departmentFilters, type DeptFilter } from "@/lib/rfq/departments";
 import { PackageProvider } from "@/lib/rfq/package-context";
 import { rfqApi } from "@/lib/rfq/provider";
 import { useSession } from "@/lib/rfq/session";
+import { untilReady } from "@/lib/rfq/until-ready";
 import { useResource } from "@/lib/rfq/use-resource";
 import {
   IconCalc,
@@ -62,7 +63,11 @@ export function AppShell({ rfqId, children }: { rfqId: string; children: ReactNo
   const pathname = usePathname();
   const session = useSession();
   const { restricted, teams, engines } = useTeamGroup();
-  const doc = useResource(session.ready ? `doc:${rfqId}` : null, (s) => rfqApi.document(rfqId, s));
+  // Right after upload the analysis is still running and the backend answers 409 not_ready;
+  // the shell stays mounted across screens, so it must wait rather than keep that error.
+  const doc = useResource(session.ready ? `doc:${rfqId}` : null, (s) =>
+    untilReady(() => rfqApi.document(rfqId, s), s),
+  );
   const info = doc.status === "ok" ? doc.data.data : null;
 
   const base = `/rfq/${encodeURIComponent(rfqId)}`;

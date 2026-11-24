@@ -26,12 +26,20 @@ from autorfx.models import Clause, ClauseAnalysis, EntityMention, PackageManifes
 from autorfx.parser import ParseError, parse_file
 from autorfx.precost import extract_cost_inputs
 from autorfx.retrieval import SearchIndex
+from autorfx.retrieval.dense import DenseIndex, Encoder
 from autorfx.rules import Ruleset
 from autorfx.workspace import Workspace
 
 log = logging.getLogger(__name__)
 
 RETRIEVAL_ENGINE = "bm25-glossary"
+
+
+def retrieval_engine(encoder: Encoder | None) -> str:
+    """How questions are retrieved: BM25 alone, or BM25 fused with an embedding model."""
+    return RETRIEVAL_ENGINE if encoder is None else f"{RETRIEVAL_ENGINE}+dense:{encoder.name}"
+
+
 PIPELINE_VERSION = "2026-11-23.1"
 """Raise when a change alters stored results (parsing, chunking, masking): older results are then
 re-computed, like after a rules change. .2: page-level masking, index runs, body-less leaf clauses.
@@ -137,6 +145,7 @@ def run_pipeline(
     now_ms: int,
     reporter: JobReporter | None = None,
     cache: CacheStore | None = None,
+    retrieval: str = RETRIEVAL_ENGINE,
 ) -> Workspace:
     """Process a package end to end and store the results in its workspace."""
     report = reporter or NullReporter()
@@ -169,7 +178,7 @@ def run_pipeline(
     workspace.write_json(
         workspace.run_path,
         {
-            "engines": {**engine_ids(provider), "retrieval": RETRIEVAL_ENGINE},
+            "engines": {**engine_ids(provider), "retrieval": retrieval},
             "ruleset_digest": ruleset.digest,
             "pipeline_version": PIPELINE_VERSION,
             "finished_at": now_ms,
@@ -185,8 +194,14 @@ def run_pipeline(
     return workspace
 
 
-def load_rfq(workspace: Workspace, ruleset: Ruleset) -> RfqData:
-    """The stored results of a finished job."""
+def load_rfq(
+    workspace: Workspace,
+    ruleset: Ruleset,
+    *,
+    encoder: Encoder | None = None,
+    min_score: float | None = None,
+) -> RfqData:
+    """The stored results of a finished job. With an encoder, the search index is hybrid."""
     manifest = workspace.manifest()
     clauses = workspace.clauses()
     run = workspace.read_json(workspace.run_path)
@@ -205,5 +220,13 @@ def load_rfq(workspace: Workspace, ruleset: Ruleset) -> RfqData:
         consistency=workspace.read_model(workspace.consistency_path, ConsistencyReport),
         cost_inputs=cost_inputs,
         engines=run["engines"],
-        index=SearchIndex(clauses, ruleset),
+        index=SearchIndex(clauses, ruleset, dense=_dense(clauses, encoder, min_score)),
     )
+
+
+def _dense(clauses: Sequence[Clause], encoder: Encoder | None, min_score: float | None) -> DenseIndex | None:
+    if encoder is None:
+        return None
+    if min_score is None:
+        return DenseIndex(clauses, encoder)
+    return DenseIndex(clauses, encoder, min_score=min_score)
