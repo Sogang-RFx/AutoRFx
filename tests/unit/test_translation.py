@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 
@@ -18,6 +19,7 @@ from autorfx.analysis import (
     SqliteCache,
     TransientProviderError,
     analyze,
+    cache_key,
     engine_ids,
     make_provider,
 )
@@ -670,6 +672,8 @@ def test_cached_text_gets_the_number_check_again():
         '["a", ""]',
         '["a", "  "]',
         '["a", 2]',
+        '"ab"',
+        '{"a":"x","b":"y"}',
     ],
 )
 def test_a_broken_cache_value_is_ignored_and_overwritten(value: str):
@@ -713,13 +717,85 @@ def test_a_batch_that_moved_in_its_clause_hits():
     assert result.sentences == tuple(korean[20:])
 
 
+class CountingCache(MemoryCache):
+    """A memory cache that records every access."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.gets: list[str] = []
+        self.puts: list[str] = []
+
+    def get(self, key: str) -> str | None:
+        self.gets.append(key)
+        return super().get(key)
+
+    def put(self, key: str, value: str) -> None:
+        self.puts.append(key)
+        super().put(key, value)
+
+
 def test_nothing_is_cached_when_the_provider_does_not_translate():
-    """TRANS-03: without a translation id nothing is read or written."""
-    cache = MemoryCache()
+    """TRANS-03: without a translation id the cache is neither read nor written."""
+    cache = CountingCache()
     provider = cached_provider()
     provider.translation_id = None
     translate_clause(CACHED, provider, cache=cache)
-    assert cache.get(translation_key(texts_of(CACHED), "en", "scripted", "")) is None
+    assert (cache.gets, cache.puts) == ([], [])
+
+
+CAFE = ["Delivery to the Café costs 8 EUR.", "Samples are due 8 weeks before SOP."]
+CAFE_KO = ["카페 배송은 8유로이다.", "샘플은 SOP 8주 전까지이다."]
+CAFE_VARIANT = ["Delivery  to the Café\tcosts 8 EUR. ", " Samples are due\n8 weeks before SOP."]
+
+
+def test_whitespace_and_unicode_form_do_not_change_the_key():
+    """TRANS-01: the same sentences in NFC or NFD form, with other spacing, hit the same entry."""
+    cache = MemoryCache()
+    first = make_clause("7.3", CAFE)
+    translate_clause(first, cached_provider(first, CAFE_KO), cache=cache)
+    variant = make_clause("7.4", CAFE_VARIANT)
+    provider = cached_provider(variant)
+    result = translate_clause(variant, provider, cache=cache)
+    assert provider.translate_calls == []
+    assert (result.status, result.sentences) == ("translated", tuple(CAFE_KO))
+
+
+def test_a_hit_by_a_variant_is_checked_against_the_clauses_own_sentences():
+    """CITE-02: a stored text with a number the source lacks is withheld on a hit by a variant too."""
+    cache = MemoryCache()
+    bad = [CAFE_KO[0], "샘플은 SOP 99주 전까지이다."]
+    first = make_clause("7.3", CAFE)
+    translate_clause(first, cached_provider(first, bad), cache=cache)
+    variant = make_clause("7.4", CAFE_VARIANT)
+    provider = cached_provider(variant)
+    result = translate_clause(variant, provider, cache=cache)
+    assert provider.translate_calls == []
+    assert result.sentences == (bad[0], None)
+    assert "extra_numbers=1" in result.note
+
+
+def test_kind_and_schema_are_part_of_the_key(monkeypatch: pytest.MonkeyPatch):
+    """TRANS-01: a translation never shares a key with a judgement; a new value shape drops old ones."""
+    args = (texts_of(CACHED), "en", "scripted", "")
+    key = translation_key(*args)
+    seen: list[dict] = []
+    real_dumps = json.dumps
+
+    class Spy:
+        loads = staticmethod(json.loads)
+
+        @staticmethod
+        def dumps(payload: dict, **kwargs: object) -> str:
+            seen.append(payload)
+            return real_dumps(payload, **kwargs)  # type: ignore[arg-type]
+
+    with monkeypatch.context() as patch:
+        patch.setattr(translation_module, "json", Spy())
+        translation_key(*args)
+    assert seen[0]["kind"] == "translation"
+    assert key != cache_key(CACHED, "scripted", "digest")
+    monkeypatch.setattr(translation_module, "CACHE_SCHEMA", translation_module.CACHE_SCHEMA + 1)
+    assert translation_key(*args) != key
 
 
 def test_four_threads_with_a_shared_cache_give_the_same_result(ruleset: Ruleset):
