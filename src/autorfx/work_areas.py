@@ -81,7 +81,7 @@ GROUPS: dict[str, tuple[str, dict[str, str]]] = {
         "생산 공정·소재·협력사",
         {
             "production": (
-                "production process,equipment,manufacturing process,fertigungsprozess,anlage,생산 공정,설비"
+                "production process,equipment,manufacturing process,fertigungsprozess,생산 공정,설비"
             ),
             "material": "raw material,material sourcing,steel grade,rohstoff,werkstoff,소재,원자재",
             "subcontract": (

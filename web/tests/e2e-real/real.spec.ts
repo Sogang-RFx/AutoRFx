@@ -21,6 +21,7 @@ import type {
   DocumentResponse,
   MetaResponse,
   PrecostResponse,
+  PrecostSetupResponse,
   Team,
 } from "../../src/lib/rfq/contract";
 
@@ -246,11 +247,15 @@ test.describe.serial("real backend with user-supplied files", () => {
       expect(res.status()).toBe(200);
       return ((await res.json()) as PrecostResponse).data;
     };
+    const setup = await request.get(`${API}/rfqs/${rfqId}/precost-setup?team=${visible!.id}`);
+    const note = ((await setup.json()) as PrecostSetupResponse).data.assumption_note;
+    expect(note).not.toBe("");
     const assertShown = async (d: PrecostResponse["data"]) => {
       // The tile drops trailing zeros (1.2100 → 1.21); S1 quotes are below 1 000, so no grouping commas.
       await expect(page.getByTestId("min-quote")).toContainText(String(Number(d.cost?.min_quote)));
       await expect(page.getByTestId("decision")).toHaveAttribute("data-status", d.decision.status);
       await expect(page.getByTestId("decision-rule")).toContainText(d.decision.rule);
+      await expect(page.getByTestId("assumption-note")).toHaveText(note);
     };
     await assertShown(await decide());
 

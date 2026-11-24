@@ -809,6 +809,11 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
 
       <Panel title="결과" labelId="result-title" provenance={result?.provenance} className="xl:sticky xl:top-4 xl:self-start">
         {!result && <EmptyState title="아직 계산하지 않았습니다" />}
+        {result && setup.assumption_note && (
+          <p role="note" className="border-b border-warn/40 bg-warn-tint px-4 py-2 text-label text-warn" data-testid="assumption-note">
+            {setup.assumption_note}
+          </p>
+        )}
         {result && <Result run={result} />}
       </Panel>
     </div>

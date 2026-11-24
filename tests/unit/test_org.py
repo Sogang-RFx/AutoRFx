@@ -14,6 +14,7 @@ from autorfx.analysis import RuleOnlyProvider
 from autorfx.api import create_app
 from autorfx.config import Settings
 from autorfx.rules import Ruleset
+from autorfx.work_areas import matching_areas
 from contract_schema import assert_valid
 from factories import PACKAGE_SECRET, make_package, precost_inputs
 
@@ -228,3 +229,9 @@ def test_an_earlier_fine_grained_area_is_saved_as_its_group(client: TestClient, 
     """Settings made with the first 34 areas keep working: each id becomes the group that holds it."""
     (team,) = save(client, dept("견적 담당", ["quote", "breakdown", "packaging"]))
     assert team["areas"] == ["pricing", "delivery"]
+
+
+def test_a_german_attachment_reference_is_not_a_production_clause():
+    """US10: "Anlage N" names an attachment; the production area must not take the clause."""
+    assert "production" not in matching_areas("Die Zeichnungen sind in Anlage 3 beigefügt.")
+    assert "production" in matching_areas("Der Lieferant beschreibt den Fertigungsprozess.")
