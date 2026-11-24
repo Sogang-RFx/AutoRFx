@@ -37,6 +37,7 @@ import {
   type PriceRow,
   type RequirementCheck,
   type RfqLine,
+  type RfqLines,
   type VerifiedFinding,
 } from "@/lib/rfq/contract";
 import {
@@ -48,7 +49,8 @@ import {
   percentToFraction,
   unitOptions,
 } from "@/lib/rfq/precost";
-import { SheetTables } from "@/components/precost/sheet-tables";
+import { SheetLists, SheetTables, listRegion } from "@/components/precost/sheet-tables";
+import { SourceViewer, type SourceRegion } from "@/components/source-viewer/source-viewer";
 import { describeError, isForbidden, rfqApi } from "@/lib/rfq/provider";
 import { useSession } from "@/lib/rfq/session";
 import { useResource } from "@/lib/rfq/use-resource";
@@ -395,7 +397,16 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
   const processValues = setup.requirements.filter((r) => r.requirement === "process").map((r) => r.value);
   // The sheet changes when the user assigns the columns of a table the dictionary could not read.
   const [sheetLines, setSheetLines] = useState(setup.lines);
-  const sheet = sheetLines.items;
+  // The item lists to price: an RFQ may print the same items as a specification and as the bid form.
+  const suggestedLists = (read: RfqLines) => new Set(read.lists.filter((l) => l.suggested).map((l) => l.id));
+  const [chosenLists, setChosenLists] = useState<Set<string>>(() => suggestedLists(setup.lines));
+  const pickedItems = (read: RfqLines, chosen: Set<string>) => read.items.filter((r) => chosen.has(r.list));
+  const sheetAll = pickedItems(sheetLines, chosenLists);
+  const sheet = sheetAll.slice(0, sheetLines.limit);
+  const firstList = sheetLines.lists.find((l) => l.suggested) ?? sheetLines.lists[0];
+  const [region, setRegion] = useState<{ id: string; region: SourceRegion } | null>(() =>
+    firstList ? { id: firstList.id, region: listRegion(firstList) } : null,
+  );
   const sheetYear = initialVolumes(setup)[0]?.year ?? String(new Date().getFullYear() + 1);
   const [byLine, setByLine] = useState(setup.award.mode === "split" || setup.award.mode === "either" || sheet.length > 0);
   const [award, setAward] = useState<AwardChoice>("rfq");
@@ -673,8 +684,21 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
               </Field>
             </div>
           )}
+          {byLine && sheetLines.lists.length > 0 && (
+            <div className="grid gap-3 lg:grid-cols-2">
+              <SheetLists lists={sheetLines.lists} chosen={chosenLists} shown={region?.id ?? null}
+                onShow={(l) => setRegion({ id: l.id, region: listRegion(l) })}
+                onChange={(next) => {
+                  setChosenLists(next);
+                  const rows = pickedItems(sheetLines, next).slice(0, sheetLines.limit);
+                  setLines((list) => [...linesFromRfq(rows, sheetYear, processValues), ...list.filter((l) => l.group === MANUAL)]);
+                }} />
+              <SourceViewer rfqId={rfqId} ctx={{ team }} restricted={false} target={null} region={region?.region ?? null}
+                className="h-[36rem]" />
+            </div>
+          )}
           {byLine && sheet.length > 0 && (
-            <SheetPicker key={sheet.length} sheet={sheet} total={sheetLines.total} limit={sheetLines.limit}
+            <SheetPicker key={[...chosenLists].join("|")} sheet={sheet} total={sheetAll.length} limit={sheetLines.limit}
               apply={(rows) =>
                 // Lines added by hand are kept: the sheet reading missed them.
                 setLines((list) => [...linesFromRfq(rows, sheetYear, processValues), ...list.filter((l) => l.group === MANUAL)])
@@ -684,10 +708,11 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
             <SheetTables tables={sheetLines.tables} rfqId={rfqId} team={team}
               onRead={(read) => {
                 setSheetLines(read);
+                const chosen = suggestedLists(read);
+                setChosenLists(chosen);
+                const rows = pickedItems(read, chosen).slice(0, read.limit);
                 const kept = (list: LineRow[]) => list.filter((l) => l.group === MANUAL);
-                setLines((list) =>
-                  read.items.length > 0 ? [...linesFromRfq(read.items, sheetYear, processValues), ...kept(list)] : list,
-                );
+                setLines((list) => (rows.length > 0 ? [...linesFromRfq(rows, sheetYear, processValues), ...kept(list)] : list));
               }} />
           )}
         </Step>

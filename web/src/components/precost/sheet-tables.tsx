@@ -4,17 +4,21 @@
  * could not read is shown as printed, and the user says what each column holds. The server
  * then reads it, remembers that header for the next RFQ with the same layout, and queues
  * the header words as dictionary candidates (approved under 설정 › 가격표 사전).
+ * The tables read are grouped in item lists, and the user picks the lists to price.
  */
 import Link from "next/link";
 import { useState } from "react";
+import type { SourceRegion } from "@/components/source-viewer/source-viewer";
 import { Button, cx } from "@/components/ui/primitives";
-import { ColumnRole, type RfqLines, type SheetTable } from "@/lib/rfq/contract";
+import { ColumnRole, type RfqLines, type SheetList, type SheetTable } from "@/lib/rfq/contract";
+import { fileTag, usePackageFiles } from "@/lib/rfq/package-context";
 import { describeError, rfqApi } from "@/lib/rfq/provider";
 
 export const ROLE_LABEL: Record<ColumnRole, string> = {
   no: "번호",
   part: "품번",
   description: "품명·설명",
+  spec: "규격·사양",
   quantity: "수량",
   unit: "단위",
   months: "개월 수",
@@ -218,6 +222,96 @@ export function SheetTables({
           <ul className="mt-2 flex flex-col gap-2">{read.map(row)}</ul>
         </details>
       )}
+    </div>
+  );
+}
+
+function pagesLabel(pages: number[]): string {
+  return pages.length > 1 ? `${pages[0]}–${pages[pages.length - 1]}쪽` : `${pages[0]}쪽`;
+}
+
+/** The part of the source a list is printed on, for the viewer beside the picker. */
+export function listRegion(list: SheetList): SourceRegion {
+  const page = list.boxes[0]?.page ?? list.pages[0];
+  return {
+    source_doc: list.source_doc,
+    page,
+    boxes: list.boxes,
+    label: `${list.caption || "품목 목록"} · ${pagesLabel(list.pages)}`,
+  };
+}
+
+/**
+ * Which item lists of the RFQ to price. An RFQ may print the same items twice, as a specification
+ * and again as the bid form: the lists with price columns are suggested, the user decides, and
+ * two picked lists that repeat each other are flagged (nothing is merged automatically).
+ */
+export function SheetLists({
+  lists,
+  chosen,
+  onChange,
+  shown,
+  onShow,
+}: {
+  lists: SheetList[];
+  chosen: Set<string>;
+  onChange: (next: Set<string>) => void;
+  shown: string | null;
+  onShow: (list: SheetList) => void;
+}) {
+  const files = usePackageFiles();
+  const byId = new Map(lists.map((l) => [l.id, l]));
+  const name = (id: string) => byId.get(id)?.caption || "다른 목록";
+  const toggle = (id: string, on: boolean) => {
+    const next = new Set(chosen);
+    if (on) next.add(id);
+    else next.delete(id);
+    onChange(next);
+  };
+  return (
+    <div className="flex flex-col gap-2" data-testid="sheet-lists">
+      <p className="text-label text-ink-muted">
+        <span className="font-semibold text-ink">RFQ에서 품목 목록 {lists.length}개를 찾았습니다.</span> 가격을 매길 목록을
+        고르세요. 단가·금액 칸이 있는 목록(견적 기입표)을 먼저 골라 두었습니다. 목록을 누르면 오른쪽 원문에서 그 표를
+        보여줍니다.
+      </p>
+      <ul className="flex flex-col gap-2">
+        {lists.map((l) => {
+          const clash = chosen.has(l.id) ? l.overlaps.filter((o) => chosen.has(o.list)) : [];
+          return (
+            <li key={l.id} data-testid={`sheet-list-${l.id}`} data-chosen={chosen.has(l.id)}
+              className={cx("flex flex-col gap-1 rounded-control border p-2", shown === l.id ? "border-accent" : "border-line")}>
+              <div className="flex items-start gap-2">
+                <input type="checkbox" className="mt-1" checked={chosen.has(l.id)} disabled={l.lines === 0}
+                  aria-label={`${l.caption || "품목 목록"} 가격 매기기`} data-testid="list-check"
+                  onChange={(e) => toggle(l.id, e.target.checked)} />
+                <button type="button" className="flex min-w-0 flex-1 flex-col items-start gap-0.5 text-left" data-testid="list-show"
+                  onClick={() => onShow(l)}>
+                  <span className="text-dense font-semibold text-ink">{l.caption || "품목 목록"}</span>
+                  <span className="text-label text-ink-muted">
+                    {files.length > 1 && `${fileTag(files, l.source_doc)} · `}
+                    {pagesLabel(l.pages)} · 품목 {l.lines}개 · {l.has_price ? "단가·금액 칸 있음" : "단가 칸 없음"}
+                    {l.how === "layout" && " · 전에 지정한 양식"}
+                  </span>
+                  <span className="w-full truncate text-label text-ink-muted" title={l.header.filter(Boolean).join(" · ")}>
+                    {l.header.filter(Boolean).join(" · ")}
+                  </span>
+                </button>
+              </div>
+              {l.replaced_by && (
+                <p className="text-label text-ink-muted" data-testid="list-replaced">
+                  수정본 &lsquo;{name(l.replaced_by)}&rsquo;이 이 목록의 품목을 모두 대체했습니다.
+                </p>
+              )}
+              {clash.map((o) => (
+                <p key={o.list} role="status" className="text-label text-warn" data-testid="list-overlap">
+                  &lsquo;{name(o.list)}&rsquo;와 품목 {o.items}개가 같아 보입니다. 같은 품목의 사양표와 견적표라면 하나만 고르세요.
+                </p>
+              ))}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

@@ -25,6 +25,8 @@ roles:
   part: [part no, part no., part number, 'part #', mfg part number, manufacturer part number, sku, teilenummer, sachnummer, artikelnummer, materialnummer, 품번, 부품번호]
   # 품명·설명
   description: [description, item description, part description, item, article, product, bezeichnung, benennung, artikel, artikelbezeichnung, leistung, 품명, 품목, 내역, 규격, 명칭]
+  # 규격·사양 (품명 옆에 따로 적힌 사양. 품명 뒤에 붙여 읽는다)
+  spec: [specification, specifications, technical specification, technical specifications, spec, specs, size, model, size and model, spezifikation, technische daten, 사양, 상세 규격]
   # 수량
   quantity: [quantity, qty, est. qty, estimated quantity, annual usage, est. annual usage, usage, volume, menge, stückzahl, anzahl, 수량, 물량]
   # 단위

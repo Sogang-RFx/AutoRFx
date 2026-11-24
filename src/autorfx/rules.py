@@ -369,11 +369,12 @@ class WorkAreaRules(Model):
         return self._patterns
 
 
-ColumnRole = Literal["no", "part", "description", "quantity", "unit", "months", "price", "total"]
+ColumnRole = Literal["no", "part", "description", "spec", "quantity", "unit", "months", "price", "total"]
 COLUMN_ROLES: tuple[ColumnRole, ...] = (
     "no",
     "part",
     "description",
+    "spec",
     "quantity",
     "unit",
     "months",
