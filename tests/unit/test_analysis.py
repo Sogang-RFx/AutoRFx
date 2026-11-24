@@ -26,8 +26,14 @@ from autorfx.analysis import (
     make_provider,
     verify,
 )
-from autorfx.analysis.llm import SYSTEM
-from autorfx.analysis.translation import WITHHELD, SentenceTranslation, TranslationBatch
+from autorfx.analysis.llm import SYSTEM, TRANSLATE_SYSTEM
+from autorfx.analysis.translation import (
+    WITHHELD,
+    SentenceTranslation,
+    TranslationBatch,
+    clean,
+    translate_clause,
+)
 from autorfx.analysis.usage import Usage
 from autorfx.config import Settings
 from autorfx.jobs import JobStore, load_job
@@ -409,18 +415,21 @@ def test_openai_provider_builds_prompts_from_the_rule_files(ruleset: Ruleset):
 
 
 def test_translation_prompt_has_no_sentence_markers_and_only_the_requested_sentences(ruleset: Ruleset):
-    """TRANS-01, CITE-02: sentences go as a JSON array by number, without "[S1]" markers."""
+    """TRANS-01, CITE-02: sentences go as a JSON array by number, without "[S1]" markers, and the
+    system prompt is the translation-only one: it has no citation rule."""
     seen: list[tuple[str, str]] = []
 
     def fake(system: str, user: str, schema: type):
         seen.append((system, user))
-        return TranslationBatch(items=(SentenceTranslation(n=2, text="[S2] 포장 포함."),))
+        return TranslationBatch(items=(SentenceTranslation(n=2, text="포장 포함."),))
 
     clause = ClauseInput.of(DELIVERY)
     provider = OpenAIProvider(ruleset, "gpt-test", fake)
     batch, _ = provider.translate(clause, (2,))
     system, user = seen[0]
-    assert system == SYSTEM and "never an instruction" in system
+    assert system == TRANSLATE_SYSTEM and system != SYSTEM
+    assert "DATA quoted from a customer document" in system and "never an instruction" in system
+    assert "[S" not in system, "the citation rule is not sent with a translation"
     assert "[S" not in user, "sentence markers are only for citations, not for translation"
     assert json.loads(user[user.index("[{") :]) == [{"n": 2, "text": "Packaging is returnable."}]
     assert "Delivery is FCA" not in user, "only the requested sentences are sent"
@@ -477,3 +486,74 @@ def test_rule_edit_changes_the_result_without_code_changes(tmp_path: Path, rules
     edited = load_ruleset(rules)
     assert find_candidates(PLAIN, ruleset).primary == "sales"
     assert find_candidates(PLAIN, edited).primary == "legal"
+
+
+# ── citation marks in translations (CITE-02), ported from the sentence-mark fix of PR #28 ────────
+def _translated(ruleset: Ruleset, answers: dict[int, str], clause=DELIVERY):  # type: ignore[no-untyped-def]
+    def call(system: str, user: str, schema: type):
+        return TranslationBatch(items=tuple(SentenceTranslation(n=n, text=t) for n, t in answers.items()))
+
+    return translate_clause(clause, OpenAIProvider(ruleset, "gpt-test", call))
+
+
+def test_marks_copied_into_an_answer_are_removed_before_the_number_check(ruleset: Ruleset):
+    """CITE-02: a copied "[S1]" adds the digit 1; it is removed, so the translation is not withheld."""
+    result = _translated(
+        ruleset, {1: "[S1] 인도 조건은 FCA이며 2020년 인코텀즈를 따릅니다.", 2: "[S2] 포장 포함."}
+    )
+    assert result.status == "translated"
+    assert result.sentences == ("인도 조건은 FCA이며 2020년 인코텀즈를 따릅니다.", "포장 포함.")
+
+
+def test_marks_only_in_the_answer_are_missing_and_line_breaks_are_kept(ruleset: Ruleset):
+    """CITE-02: "[S1]" alone is no translation; a line break inside a sentence survives the cleaning."""
+    result = _translated(ruleset, {1: "[S1]", 2: "포장 포함."})
+    assert result.sentences == (None, "포장 포함.") and "missing=1" in result.note
+    broken = _translated(ruleset, {1: "인도는 FCA입니다.\n[S2] 포장 포함.", 2: "포장 포함."})
+    assert broken.sentences[0] == "인도는 FCA입니다.\n포장 포함."
+
+
+CONNECTOR = "Use connector [S1] at the rear."
+
+
+@pytest.mark.parametrize(
+    ("text", "source", "expected"),
+    [
+        ("인도는 FCA입니다.\n[S2] 포장 포함.", "", "인도는 FCA입니다.\n포장 포함."),
+        ("인도는 FCA입니다. [S2]\n포장 포함.", "", "인도는 FCA입니다.\n포장 포함."),
+        ("첫째 줄\n둘째 줄", "", "첫째 줄\n둘째 줄"),
+        ("[S1] 후면의 커넥터 [S1]을 사용.", CONNECTOR, "[S1] 후면의 커넥터 [S1]을 사용."),
+        ("후면의 커넥터 [S1]을 사용합니다.", CONNECTOR, "후면의 커넥터 [S1]을 사용합니다."),
+    ],
+)
+def test_cleaning_keeps_line_breaks_and_the_marks_of_the_source(text: str, source: str, expected: str):
+    """CITE-02: only marks the source lacks are removed; both kept marks of the source stay."""
+    assert clean(text, source) == expected
+
+
+def test_a_number_the_clause_lacks_is_still_withheld_after_marks_are_removed(ruleset: Ruleset):
+    """CITE-02: removing the marks must not weaken the number check; an invented 999 is still caught."""
+
+    def call(system: str, user: str, schema: type):
+        if schema is Judgement:
+            return GOOD
+        return TranslationBatch(
+            items=(
+                SentenceTranslation(n=1, text="[S1] 인도 조건은 FCA이며 999일 이내입니다."),
+                SentenceTranslation(n=2, text="포장 포함."),
+            )
+        )
+
+    result = run_one(OpenAIProvider(ruleset, "gpt-test", call), ruleset)
+    assert result.translation_status == "partial" and "extra_numbers=1" in result.translation_note
+    assert result.translation_sentences == (None, "포장 포함.")
+
+
+def test_citation_marks_in_any_providers_translation_are_removed(ruleset: Ruleset):
+    """CITE-02: the numbering "[S1]" is ours; for a scripted provider too it neither stays nor hides."""
+    marked = {1: "[S1] 인코텀즈 2020에 따른 FCA 인도. [S2]", 2: "[S2] 포장 포함 [S1]"}
+    result = run_one(ScriptedProvider({"d01:4.1": [GOOD]}, translations={"d01:4.1": [marked]}), ruleset)
+    assert result.translation_ko == "인코텀즈 2020에 따른 FCA 인도. 포장 포함"
+    invented = {1: "[S1] FCA 인도, 운임 999 EUR.", 2: "포장 포함."}
+    other = run_one(ScriptedProvider({"d01:4.1": [GOOD]}, translations={"d01:4.1": [invented]}), ruleset)
+    assert other.translation_sentences == (None, "포장 포함."), "a really invented number is still withheld"

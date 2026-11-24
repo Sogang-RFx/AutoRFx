@@ -46,7 +46,8 @@ WITHHELD = "〔번역 보류: 원문 확인〕"
 MAX_BATCH_SENTENCES = 20
 MAX_BATCH_CHARS = 4000
 CACHE_SCHEMA = 1  # shape of a cached value: a JSON list of texts in batch order
-MARKER = re.compile(r"\s*\[S\d+\]\s*")
+MARKER = re.compile(r"[ \t]*\[S\d+\][ \t]*")  # spaces and tabs only: a line break is part of the text
+LINE_BREAK = re.compile(r" *\n *")
 GAP = "\x00"  # stands where a removed marker was, until the spacing around it is settled
 GAP_RUN = re.compile(GAP + "+")
 GAP_EDGE = re.compile(f"^{GAP}|{GAP}(?=[.,;:!?。、)]|$)")
@@ -103,13 +104,14 @@ def clean(text: str, source: str) -> str:
     """Remove copied "[S<n>]" markers, unless that exact marker is part of the source sentence.
 
     The text around a removed marker is joined with one space, or with none at an end or before punctuation.
+    Line breaks stay, without spaces around them.
     """
 
     def drop(match: re.Match[str]) -> str:
         return match.group(0) if match.group(0).strip() in source else GAP
 
     text = GAP_EDGE.sub("", GAP_RUN.sub(GAP, MARKER.sub(drop, text)))
-    return text.replace(GAP, " ").strip()
+    return LINE_BREAK.sub("\n", text.replace(GAP, " ")).strip()
 
 
 def _accept(batch: TranslationBatch, wanted: set[int], sources: Sequence[str]) -> dict[int, str]:

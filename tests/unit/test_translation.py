@@ -25,8 +25,14 @@ from autorfx.analysis import (
     engine_ids,
     make_provider,
 )
+from autorfx.analysis import llm as llm_module
 from autorfx.analysis import translation as translation_module
-from autorfx.analysis.llm import openai_translation_call, translation_options, usage_from_metadata
+from autorfx.analysis.llm import (
+    TRANSLATE_SYSTEM,
+    openai_translation_call,
+    translation_options,
+    usage_from_metadata,
+)
 from autorfx.analysis.translation import (
     WITHHELD,
     ClauseTranslation,
@@ -400,8 +406,11 @@ def test_judgement_calls_never_use_the_translation_model(ruleset: Ruleset):
         judged.append(schema)
         return Answer(text="답", citations=(1,), answered=True)
 
+    systems: list[str] = []
+
     def translate(system: str, user: str, schema: type):
         translated.append(schema)
+        systems.append(system)
         return TranslationBatch(items=(SentenceTranslation(n=1, text="번역"),)), USED
 
     provider = OpenAIProvider(ruleset, "gpt-4o", judge, translation_model="gpt-x", translation_call=translate)
@@ -410,6 +419,10 @@ def test_judgement_calls_never_use_the_translation_model(ruleset: Ruleset):
     provider.answer("q", [], None)
     assert translated == [TranslationBatch] and judged == [Answer]
     assert batch.items[0].text == "번역" and usage == USED
+    assert systems == [TRANSLATE_SYSTEM], "the translation call gets the translation-only system prompt"
+    assert llm_module.TRANSLATION_PROMPT_VERSION == "2026-11-25.1", (
+        "the prompt changed: the cache key moved on"
+    )
 
 
 def test_a_reply_without_usage_counts_one_call(ruleset: Ruleset):
