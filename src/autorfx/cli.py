@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -162,7 +163,16 @@ def _score_search(args: argparse.Namespace) -> int:
     if not model:
         sys.stderr.write("임베딩 모델을 정해 주세요: --model BAAI/bge-m3 또는 .env의 EMBEDDING_MODEL\n")
         return 2
-    samples = [(s, answer_key.for_sample(s.label)) for s in list_samples(settings)]
+    samples = []
+    for sample in list_samples(settings):
+        keys = [k.match for k in answer_key.samples if k.match in sample.label]
+        if len(keys) > 1:
+            sys.stderr.write(
+                f"정답 표의 {', '.join(keys)}이(가) 모두 같은 RFQ({sample.label})를 가리킵니다. "
+                "하나만 남겨 주세요.\n"
+            )
+            return 2
+        samples.append((sample, answer_key.for_sample(sample.label)))
     found = {k.match for _, k in samples if k is not None}
     missing = [k.match for k in answer_key.samples if k.match not in found]
     if missing and not args.allow_missing:
@@ -178,22 +188,27 @@ def _score_search(args: argparse.Namespace) -> int:
         sys.stderr.write(f"임베딩 모델 '{model}'을(를) 불러오지 못했습니다. 위 로그를 확인하세요.\n")
         return 1
     runs = []
-    for sample, sample_key in samples:
-        if sample_key is None:
-            continue
-        workspace = run_pipeline(
-            list(sample.files),
-            name=sample.label,
-            settings=settings,
-            ruleset=ruleset,
-            provider=RuleOnlyProvider(),
-            is_sample=True,
-            now_ms=int(time.time() * 1000),
-            retrieval=retrieval_engine(encoder),
-        )
-        data = load_rfq(workspace, ruleset, encoder=encoder)
-        runs.append((sample_key.match, data.index, sample_key))
-        sys.stdout.write(f"채점 대상: {sample.label}\n")
+    # A scoring run is rule-only, so it gets its own workspace: the served analysis of the
+    # same files (possibly GPT) lives under data/work and must not be replaced (review on #22).
+    # The embedding cache and the score report stay where they are.
+    with tempfile.TemporaryDirectory(prefix="autorfx-score-") as tmp:
+        scratch = settings.model_copy(update={"data_dir": Path(tmp)})
+        for sample, sample_key in samples:
+            if sample_key is None:
+                continue
+            workspace = run_pipeline(
+                list(sample.files),
+                name=sample.label,
+                settings=scratch,
+                ruleset=ruleset,
+                provider=RuleOnlyProvider(),
+                is_sample=True,
+                now_ms=int(time.time() * 1000),
+                retrieval=retrieval_engine(encoder),
+            )
+            data = load_rfq(workspace, ruleset, encoder=encoder)
+            runs.append((sample_key.match, data.index, sample_key))
+            sys.stdout.write(f"채점 대상: {sample.label}\n")
     if not runs:
         sys.stderr.write("정답 표의 samples와 맞는 개발용 RFQ가 data/raw/dev에 없습니다.\n")
         return 2

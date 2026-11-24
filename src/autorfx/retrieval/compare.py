@@ -51,9 +51,13 @@ def load_questions(path: Path) -> list[Question]:
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     items = raw.get("questions", raw) if isinstance(raw, dict) else raw
     questions = []
+    if not isinstance(items, list):
+        raise ValueError(f"질문 파일은 questions 목록이어야 합니다: {path}")
     for number, item in enumerate(items, start=1):
         if isinstance(item, str):
             questions.append(Question(f"Q{number:02d}", item))
+        elif not isinstance(item, dict) or not item.get("text"):
+            raise ValueError(f"질문 {number}번에 text가 없습니다: {item!r} ({path})")
         else:
             questions.append(
                 Question(str(item.get("id") or f"Q{number:02d}"), item["text"], item.get("intent", ""))

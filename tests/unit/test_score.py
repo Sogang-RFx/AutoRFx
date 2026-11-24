@@ -113,11 +113,21 @@ def test_report_without_hybrid_rows(index: SearchIndex, key: score.AnswerKey):
         {"Q01": {"answers": [{"file": "d01"}]}},
         {"Q01": "maybe"},
         {"Q01": {"answers": [{"pattern": "([unclosed"}]}},
+        {"Q01": {"answers": ["d01:1.3"]}},
+        {"Q01": {"answers": {"clause": "d01:1.3"}}},
+        {"Q01": ["none"]},
     ],
 )
 def test_malformed_keys_are_refused(tmp_path: Path, bad: dict):
     with pytest.raises(ValueError):
         score.load_key(write_key(tmp_path / "bad.yaml", bad))
+
+
+def test_samples_as_a_list_are_refused(tmp_path: Path):
+    path = tmp_path / "list.yaml"
+    path.write_text("samples:\n  - S1_Nordwerk\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="samples"):
+        score.load_key(path)
 
 
 def test_unknown_question_ids_are_refused(tmp_path: Path):

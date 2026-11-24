@@ -95,11 +95,11 @@ class AnswerKey:
 def _expected(raw: object) -> Expected:
     if raw in (NONE, SKIP):
         return Expected(str(raw))
-    if not isinstance(raw, dict) or not raw.get("answers"):
+    if not isinstance(raw, dict) or not isinstance(raw.get("answers"), list) or not raw["answers"]:
         raise ValueError(f"정답 항목은 'none', 'skip' 또는 answers 목록이어야 합니다: {raw!r}")
     answers = []
     for item in raw["answers"]:
-        if not (item.get("clause") or item.get("pattern")):
+        if not isinstance(item, dict) or not (item.get("clause") or item.get("pattern")):
             raise ValueError(f"answers 항목에 clause 또는 pattern이 필요합니다: {item!r}")
         pattern = None
         if item.get("pattern"):
@@ -121,6 +121,11 @@ def load_key(path: Path, *, question_ids: Iterable[str] | None = None) -> Answer
     """
     assert_not_held_out(path)
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict) or not isinstance(raw.get("samples") or {}, dict):
+        raise ValueError(f"정답 표의 samples는 'RFQ 이름: 질문별 정답' 형태여야 합니다: {path}")
+    for match, questions in raw["samples"].items() if raw.get("samples") else ():
+        if questions is not None and not isinstance(questions, dict):
+            raise ValueError(f"정답 표의 {match} 아래는 'Q01: ...' 형태여야 합니다: {questions!r}")
     samples = tuple(
         SampleKey(str(match), {str(q): _expected(v) for q, v in (questions or {}).items()})
         for match, questions in (raw.get("samples") or {}).items()

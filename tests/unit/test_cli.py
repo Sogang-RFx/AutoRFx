@@ -107,6 +107,40 @@ def test_score_search_runs_on_rules_only(
     assert "일부만 채점" not in out
 
 
+def test_score_search_leaves_stored_results_alone(data_dir: Path, score_files, fake_encoder):
+    """A rule-only scoring run never replaces the served analysis of the same files (review on #22)."""
+    questions, _ = score_files
+    assert main(["analyze", "--sample", "synthetic-sample"]) == 0
+    stored = {p: p.read_bytes() for p in (data_dir / "work").glob("rfq-*/*.json")}
+    assert stored
+    assert main(["score-search", "--model", "fake", "--questions", str(questions), "--gates", "0.5"]) == 0
+    assert {p: p.read_bytes() for p in (data_dir / "work").glob("rfq-*/*.json")} == stored
+
+
+def test_score_search_refuses_two_names_for_one_sample(
+    data_dir: Path, score_files, fake_encoder, capsys: pytest.CaptureFixture[str]
+):
+    """Review on #22: 'synthetic-sample' and 'synthetic' both match one RFQ; say so plainly."""
+    questions, key = score_files
+    key.write_text(key.read_text(encoding="utf-8") + "  synthetic:\n    Q02: none\n", encoding="utf-8")
+    assert main(["score-search", "--model", "fake", "--questions", str(questions)]) == 2
+    err = capsys.readouterr().err
+    assert "같은 RFQ" in err and "data/raw/dev에 없습니다" not in err
+
+
+@pytest.mark.parametrize(
+    "questions_yaml",
+    ["questions:\n  - {id: Q01, intent: x}\n", "questions: {Q01: text}\n"],
+)
+def test_score_search_explains_a_malformed_question_file(
+    data_dir: Path, score_files, fake_encoder, capsys: pytest.CaptureFixture[str], questions_yaml: str
+):
+    questions, _ = score_files
+    questions.write_text(questions_yaml, encoding="utf-8")
+    assert main(["score-search", "--model", "fake", "--questions", str(questions)]) == 2
+    assert "질문" in capsys.readouterr().err
+
+
 def test_score_search_explains_what_is_missing(
     data_dir: Path, score_files, fake_encoder, capsys: pytest.CaptureFixture[str]
 ):
