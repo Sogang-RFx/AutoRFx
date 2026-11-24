@@ -172,3 +172,33 @@ def pdf_from_html(path: Path, html: str) -> Path:
         writer.end_page()
     writer.close()
     return path
+
+
+def precost_inputs(**change: object) -> dict:
+    """A valid pre-cost request body (``inputs``): one material line, one year of volume."""
+    inputs = {
+        "item": "x",
+        "currency": "EUR",
+        "target_price": None,
+        "volumes": [{"year": 2028, "quantity": 1000}],
+        "annual_reduction_rate": "0",
+        "reduction_starts_at_index": 1,
+        "payment_days": None,
+        "items": [
+            {
+                "label": "강판",
+                "category": "material",
+                "quantity": "1",
+                "unit": "kg",
+                "unit_price": "1",
+                "price_id": None,
+            }
+        ],
+        "tooling": {"amount": "0", "payment": "lump_sum", "deferred_years": 0},
+        "material_indexed": None,
+        "fx_adjusted": None,
+        "capacity_utilization": None,
+        "strategic": None,
+        "answers": {},
+    }
+    return {**inputs, **change}

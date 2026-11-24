@@ -20,6 +20,7 @@ import {
   IconCompare,
   IconDoc,
   IconGauge,
+  IconGear,
   IconPresent,
   IconTable,
   IconTimeline,
@@ -132,6 +133,18 @@ export function AppShell({ rfqId, children }: { rfqId: string; children: ReactNo
             >
               부서 설정
             </Link>
+            {!restricted && (
+              <Link
+                href="/settings/company"
+                data-testid="company-settings-link"
+                aria-label="사전원가 기본 설정"
+                title="사전원가 기본 설정 (단가표 · 회사 프로필 · 비율)"
+                className="inline-flex min-h-8 items-center gap-1 rounded-control border border-line-control px-2 text-label font-medium text-ink transition-soft hover:bg-canvas"
+              >
+                <IconGear size={14} />
+                기본 설정
+              </Link>
+            )}
             <button
               type="button"
               aria-pressed={session.present}

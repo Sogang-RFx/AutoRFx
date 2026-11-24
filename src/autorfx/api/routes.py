@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import decimal
 import uuid
+from datetime import date
 from pathlib import Path
 from typing import Annotated
 
@@ -22,11 +23,24 @@ from autorfx import access, scoring
 from autorfx.api.state import ApiError, AppState, discard, now_ms
 from autorfx.export import rtm_workbook
 from autorfx.ingest import ACCEPT, IngestError
-from autorfx.models import BreakdownInput, FileRecord, Group, Model, PrecostInput
+from autorfx.models import Answer, FileRecord, Group, Model, PrecostInput
 from autorfx.org import OrgError
 from autorfx.pipeline import RfqData
-from autorfx.precost import PrecostInputError, compute, cost_context
+from autorfx.precost import (
+    CompanyError,
+    PrecostInputError,
+    RfqCostContext,
+    StoredAnswer,
+    award_mode,
+    classify,
+    evaluate,
+    pass_through,
+    prepare,
+    requirements,
+    rfq_lines,
+)
 from autorfx.retrieval import answer_question
+from autorfx.work_areas import catalog
 
 router = APIRouter()
 CHUNK = 1024 * 1024
@@ -39,8 +53,15 @@ class PrecostBody(Model):
     team: str | None = None
     rfq_id: str | None = None
     inputs: PrecostInput
-    breakdown: BreakdownInput | None = None
     resolved: dict[str, str] = Field(default_factory=dict)
+    remember: bool = True
+    """Keep the yes/no answers to fact questions, so the next RFQ does not ask them again."""
+
+
+class CompanyBody(Model):
+    settings: dict
+    profile: dict
+    prices: list[dict] = Field(max_length=400)
 
 
 class ChatBody(Model):
@@ -92,6 +113,7 @@ def meta(state: State) -> dict:
     )
     data = {
         "teams": teams,
+        "work_areas": catalog(rules.work_areas),
         "departments": [
             {"id": d.id, "label": d.label, "role": d.role, "receives_all": d.receives_all}
             for d in rules.departments
@@ -315,27 +337,85 @@ def source(rfq_id: str, file_id: str, state: State, team: Team = None) -> FileRe
 
 
 # ── pre-cost ────────────────────────────────────────────────────────────────
-@router.get("/rfqs/{rfq_id}/cost-inputs")
-def cost_inputs(rfq_id: str, state: State, team: Team = None) -> dict:
+def _company_payload(state: AppState) -> dict:
+    company = state.company.company
+    return envelope(
+        {
+            **company.model_dump(mode="json"),
+            "today": date.today().isoformat(),
+            "categories": state.ruleset.cost_model.item_categories,
+        },
+        precost="real",
+    )
+
+
+@router.get("/company")
+def company(state: State, team: Team = None) -> dict:
+    """Initial setup: unit prices, profile and rates. Cost figures, so cost-visible teams only."""
     _cost_visible(state.group_of(team))
-    return envelope(state.data(rfq_id).cost_inputs, cost_inputs="real")
+    return _company_payload(state)
+
+
+@router.put("/company")
+def save_company(body: CompanyBody, state: State, team: Team = None) -> dict:
+    """Replace the settings, profile and price table as a whole; stored answers are kept."""
+    _cost_visible(state.group_of(team))
+    try:
+        state.company.replace(body.model_dump())
+    except CompanyError as exc:
+        raise ApiError(400, "invalid_request", str(exc)) from exc
+    return _company_payload(state)
+
+
+def _context(state: AppState, rfq_id: str | None) -> RfqCostContext:
+    if rfq_id is None:
+        return RfqCostContext()
+    data = state.data(rfq_id)
+    company = state.company.company
+    found = pass_through(data.clauses, state.ruleset)
+    return RfqCostContext(
+        issues=tuple(i for i in data.consistency.issues if i.affects_cost),
+        classification=classify(data.clauses, state.ruleset),
+        requirements=tuple(requirements(data.clauses, data.mentions, company, state.ruleset)),
+        pass_through=tuple(k for k, v in found.items() if v),
+        red_flag_types=tuple(sorted({a.red_flag.type for a in data.analyses if a.red_flag})),
+        award=award_mode(data.clauses, state.ruleset)["mode"],
+    )
+
+
+@router.get("/rfqs/{rfq_id}/precost-setup")
+def precost_setup(rfq_id: str, state: State, team: Team = None) -> dict:
+    """Steps ①–⑤ for one RFQ: type, knockout questions, cost inputs with citations, suggested items."""
+    _cost_visible(state.group_of(team))
+    data = state.data(rfq_id)
+    result = prepare(
+        cost_inputs=data.cost_inputs,
+        clauses=data.clauses,
+        mentions=data.mentions,
+        company=state.company.company,
+        ruleset=state.ruleset,
+        today=date.today(),
+        lines=rfq_lines(
+            data.manifest,
+            data.parsed,
+            {f.id: data.workspace.canonical_pdf(f.id) for f in data.manifest.files},
+        ),
+    )
+    return envelope(result, precost="real")
 
 
 @router.post("/precost")
 def precost(body: PrecostBody, state: State) -> dict:
     _cost_visible(state.group_of(body.team))
-    if body.rfq_id is None:
-        context = cost_context((), (), ())
-    else:
-        data = state.data(body.rfq_id)
-        context = cost_context(data.mentions, data.consistency.issues, tuple(data.parsed.values()))
+    context = _context(state, body.rfq_id)
     try:
-        result = compute(
+        result = evaluate(
             body.inputs,
-            breakdown=body.breakdown,
             context=context,
+            company=state.company.company,
             resolved=body.resolved,
             ruleset=state.ruleset,
+            today=date.today(),
         )
     except PrecostInputError as exc:
         raise ApiError(422, "invalid_request", str(exc)) from exc
@@ -343,7 +423,24 @@ def precost(body: PrecostBody, state: State) -> dict:
         raise ApiError(
             422, "invalid_request", "계산할 수 없는 크기의 값이 있습니다. 입력을 확인해 주세요."
         ) from exc
+    if body.remember:
+        facts = [
+            StoredAnswer(
+                key=c["key"], label=c["question"], answer=_answer(c["answer"]), saved_on=date.today()
+            )
+            for c in result["knockout"]["checks"]
+            if c["kind"] == "fact" and c["source"] == "answer" and c["answer"] in ("yes", "no")
+        ]
+        if facts:
+            try:
+                state.company.remember(facts)
+            except CompanyError as exc:
+                raise ApiError(400, "invalid_request", str(exc)) from exc
     return envelope(result, precost="real")
+
+
+def _answer(value: str) -> Answer:
+    return "yes" if value == "yes" else "no"
 
 
 # ── chat and evaluation ─────────────────────────────────────────────────────

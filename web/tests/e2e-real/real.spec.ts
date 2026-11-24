@@ -21,6 +21,7 @@ import type {
   DocumentResponse,
   MetaResponse,
   PrecostResponse,
+  PrecostSetupResponse,
   Team,
 } from "../../src/lib/rfq/contract";
 
@@ -133,7 +134,7 @@ test.describe.serial("real backend with user-supplied files", () => {
     await page.goto("/settings/departments");
     await page.getByTestId("org-add").click();
     await page.getByTestId("org-label-0").fill(label);
-    await page.getByTestId("org-area-0-production_engineering").check({ force: true });
+    await page.getByTestId("org-area-0-production").check({ force: true });
     await page.getByTestId("org-save").click();
     await expect(page.getByTestId("org-ok")).toBeVisible();
 
@@ -219,13 +220,24 @@ test.describe.serial("real backend with user-supplied files", () => {
 
   test("pre-cost: the screen shows the backend's result; 403 for a restricted team", async ({ page, request }) => {
     await go(page, "precost", visible!.id);
-    await expect(page.getByTestId("cost-candidates")).toBeVisible();
+    await expect(page.getByTestId("rfq-type")).toBeVisible();
     // Inputs chosen by the test, not taken from any RFQ.
-    await page.getByTestId("input-min_quantity").fill("1000");
-    await page.getByTestId("input-fixed_costs").fill("5000");
-    await page.getByTestId("input-variable_cost_per_unit").fill("2");
-    await page.getByTestId("input-currency").fill("EUR");
-    await page.getByTestId("input-target_price").fill("10");
+    // A value the RFQ states sits in the summary until "수정" opens it; a missing one is an input already.
+    const open = async (id: string, input: string) => {
+      if (!(await page.getByTestId(input).isVisible())) await page.getByTestId(`edit-${id}`).click();
+      return page.getByTestId(input);
+    };
+    await (await open("currency", "input-currency")).selectOption("EUR");
+    await (await open("target_price", "input-target_price")).fill("10");
+    const items = page.getByTestId("cost-item");
+    const first = items.first();
+    await first.getByRole("combobox").first().selectOption("");
+    await first.getByLabel("1행 이름").fill("테스트 재료");
+    await first.getByLabel("1행 수량").fill("1");
+    await first.getByLabel("1행 단가", { exact: true }).fill("2");
+    for (const q of await page.getByTestId("knockout-questions").getByRole("radiogroup").all()) {
+      await q.getByRole("radio", { name: "예" }).click();
+    }
 
     const decide = async () => {
       const [res] = await Promise.all([
@@ -235,10 +247,15 @@ test.describe.serial("real backend with user-supplied files", () => {
       expect(res.status()).toBe(200);
       return ((await res.json()) as PrecostResponse).data;
     };
+    const setup = await request.get(`${API}/rfqs/${rfqId}/precost-setup?team=${visible!.id}`);
+    const note = ((await setup.json()) as PrecostSetupResponse).data.assumption_note;
+    expect(note).not.toBe("");
     const assertShown = async (d: PrecostResponse["data"]) => {
-      await expect(page.getByTestId("unit-cost")).toContainText(d.unit_cost);
+      // The tile drops trailing zeros (1.2100 → 1.21); S1 quotes are below 1 000, so no grouping commas.
+      await expect(page.getByTestId("min-quote")).toContainText(String(Number(d.cost?.min_quote)));
       await expect(page.getByTestId("decision")).toHaveAttribute("data-status", d.decision.status);
       await expect(page.getByTestId("decision-rule")).toContainText(d.decision.rule);
+      await expect(page.getByTestId("assumption-note")).toHaveText(note);
     };
     await assertShown(await decide());
 
@@ -250,7 +267,8 @@ test.describe.serial("real backend with user-supplied files", () => {
       await assertShown(await decide());
     }
 
-    expect((await request.get(`${API}/rfqs/${rfqId}/cost-inputs?team=${restricted!.id}`)).status()).toBe(403);
+    expect((await request.get(`${API}/rfqs/${rfqId}/precost-setup?team=${restricted!.id}`)).status()).toBe(403);
+    expect((await request.get(`${API}/company?team=${restricted!.id}`)).status()).toBe(403);
     await go(page, "precost", restricted!.id);
     await expect(page.getByText("이 팀에는 원가 정보가 제공되지 않습니다")).toBeVisible();
     await expect(page.getByRole("link", { name: "사전원가" })).toHaveCount(0);

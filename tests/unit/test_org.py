@@ -14,22 +14,12 @@ from autorfx.analysis import RuleOnlyProvider
 from autorfx.api import create_app
 from autorfx.config import Settings
 from autorfx.rules import Ruleset
+from autorfx.work_areas import matching_areas
 from contract_schema import assert_valid
-from factories import PACKAGE_SECRET, make_package
+from factories import PACKAGE_SECRET, make_package, precost_inputs
 
 PDF = "application/pdf"
-PRECOST = {
-    "inputs": {
-        "item": "x",
-        "min_quantity": 1,
-        "fixed_costs": "0",
-        "variable_cost_per_unit": "1",
-        "currency": "EUR",
-        "target_price": None,
-    },
-    "breakdown": None,
-    "resolved": {},
-}
+PRECOST = {"inputs": precost_inputs(), "resolved": {}}
 Org = tuple[TestClient, str, Settings]
 
 
@@ -184,13 +174,14 @@ def test_a_company_department_is_cost_restricted_unless_switched_on(client: Test
         assert PACKAGE_SECRET not in text, f"{path} leaks cost text"
     chat = client.post(f"/rfqs/{rfq_id}/chat", json={"team": team, "question": "목표가는 얼마인가?"})
     assert PACKAGE_SECRET not in chat.text
-    assert client.get(f"/rfqs/{rfq_id}/cost-inputs", params={"team": team}).status_code == 403
+    assert client.get(f"/rfqs/{rfq_id}/precost-setup", params={"team": team}).status_code == 403
+    assert client.get("/company", params={"team": team}).status_code == 403
     assert client.post("/precost", json={**PRECOST, "rfq_id": rfq_id, "team": team}).status_code == 403
 
     seen = client.get(f"/rfqs/{rfq_id}/clauses", params={"team": opened["id"]})
     assert seen.json()["data"]["group"] == "cost_visible"
     assert PACKAGE_SECRET in seen.text
-    assert client.get(f"/rfqs/{rfq_id}/cost-inputs", params={"team": opened["id"]}).status_code == 200
+    assert client.get(f"/rfqs/{rfq_id}/precost-setup", params={"team": opened["id"]}).status_code == 200
 
 
 def test_the_browser_may_send_the_save_request(client: TestClient, org: Org):
@@ -216,3 +207,32 @@ def test_a_removed_company_department_is_restricted_again(client: TestClient, or
     save(client)
     body = client.get(f"/rfqs/{rfq_id}/clauses", params={"team": gone["id"]}).json()
     assert body["data"]["group"] == "cost_restricted"
+
+
+def test_work_areas_route_matching_clauses(client: TestClient, org: Org):
+    catalog = client.get("/meta").json()["data"]["work_areas"]
+    assert len({a["id"] for a in catalog}) == len(catalog) == 10
+    (team,) = save(client, dept("견적 담당", ["pricing"], cost_visible=True))
+    url = f"/rfqs/{org[1]}/clauses"
+
+    def rows(**params):
+        return client.get(url, params={"team": team["id"], **params}).json()["data"]["clauses"]
+
+    all_rows = rows()
+    selected = rows(department=team["id"])
+    assert 0 < len(selected) < len(all_rows)
+    assert all("pricing" in row["work_areas"] for row in selected)
+    assert PACKAGE_SECRET in str(selected)
+
+
+def test_an_earlier_fine_grained_area_is_saved_as_its_group(client: TestClient, org: Org):
+    """Settings made with the first 34 areas keep working: each id becomes the group that holds it."""
+    (team,) = save(client, dept("견적 담당", ["quote", "breakdown", "packaging"]))
+    assert team["areas"] == ["pricing", "delivery"]
+
+
+def test_a_german_attachment_reference_is_not_a_production_clause(ruleset: Ruleset):
+    """US10: "Anlage N" names an attachment; the production area must not take the clause."""
+    areas = ruleset.work_areas
+    assert "production" not in matching_areas(areas, "Die Zeichnungen sind in Anlage 3 beigefügt.")
+    assert "production" in matching_areas(areas, "Der Lieferant beschreibt den Fertigungsprozess.")

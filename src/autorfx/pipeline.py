@@ -40,7 +40,7 @@ def retrieval_engine(encoder: Encoder | None) -> str:
     return RETRIEVAL_ENGINE if encoder is None else f"{RETRIEVAL_ENGINE}+dense:{encoder.name}"
 
 
-PIPELINE_VERSION = "2026-11-18.4"
+PIPELINE_VERSION = "2026-11-23.1"
 """Raise when a change alters stored results (parsing, chunking, masking): older results are then
 re-computed, like after a rules change. .2: page-level masking, index runs, body-less leaf clauses.
 .3: page-level masking spares the lines of visible sentences.

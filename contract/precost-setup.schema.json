@@ -1,0 +1,1361 @@
+{
+  "$id": "https://autorfx.local/contract/precost-setup.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "data": {
+      "type": "object",
+      "properties": {
+        "classification": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "decision_unit": {
+              "type": "string",
+              "enum": [
+                "rfq",
+                "item"
+              ]
+            },
+            "baseline": {
+              "type": "string",
+              "enum": [
+                "target_price",
+                "none"
+              ]
+            },
+            "automatic": {
+              "type": "boolean"
+            },
+            "signals": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string"
+              },
+              "additionalProperties": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              }
+            },
+            "note": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "label",
+            "decision_unit",
+            "baseline",
+            "automatic",
+            "signals",
+            "note"
+          ],
+          "additionalProperties": false
+        },
+        "award": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "split",
+                    "all_or_none",
+                    "either"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "label": {
+              "type": "string"
+            },
+            "evidence": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "finding": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "enum": [
+                            "summary",
+                            "priority",
+                            "red_flag",
+                            "answer",
+                            "cost_input",
+                            "consistency"
+                          ]
+                        },
+                        "departments": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "text": {
+                          "type": "string"
+                        },
+                        "priority": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "enum": [
+                                "must",
+                                "should",
+                                "optional",
+                                "info"
+                              ]
+                            },
+                            {
+                              "type": "null"
+                            }
+                          ]
+                        },
+                        "red_flag_reason": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "citations": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "source_doc": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "page_number": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              },
+                              "section_id": {
+                                "type": "string",
+                                "minLength": 1
+                              },
+                              "paragraph_index": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              },
+                              "sentence_index": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 9007199254740991
+                              },
+                              "anchor": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              }
+                            },
+                            "required": [
+                              "source_doc",
+                              "page_number",
+                              "section_id",
+                              "paragraph_index",
+                              "sentence_index",
+                              "anchor"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "departments",
+                        "text",
+                        "priority",
+                        "red_flag_reason",
+                        "citations"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "citation_status": {
+                      "type": "string",
+                      "enum": [
+                        "verified",
+                        "unverified"
+                      ]
+                    },
+                    "failed_citations": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "source_doc": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "page_number": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991
+                          },
+                          "section_id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "paragraph_index": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991
+                          },
+                          "sentence_index": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 9007199254740991
+                          },
+                          "anchor": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "source_doc",
+                          "page_number",
+                          "section_id",
+                          "paragraph_index",
+                          "sentence_index",
+                          "anchor"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "finding",
+                    "citation_status",
+                    "failed_citations"
+                  ],
+                  "additionalProperties": false
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "mode",
+            "label",
+            "evidence"
+          ],
+          "additionalProperties": false
+        },
+        "requirements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string"
+              },
+              "requirement": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "department": {
+                "type": "string"
+              },
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "fact",
+                  "judgment"
+                ]
+              },
+              "value": {
+                "type": "string"
+              },
+              "question": {
+                "type": "string"
+              },
+              "status": {
+                "type": "string",
+                "enum": [
+                  "ask",
+                  "pass",
+                  "fail",
+                  "unknown"
+                ]
+              },
+              "source": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "profile",
+                      "stored",
+                      "answer"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "evidence": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "finding": {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "summary",
+                              "priority",
+                              "red_flag",
+                              "answer",
+                              "cost_input",
+                              "consistency"
+                            ]
+                          },
+                          "departments": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "priority": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "must",
+                                  "should",
+                                  "optional",
+                                  "info"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "red_flag_reason": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "citations": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "source_doc": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "page_number": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                },
+                                "section_id": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "paragraph_index": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                },
+                                "sentence_index": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                },
+                                "anchor": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "source_doc",
+                                "page_number",
+                                "section_id",
+                                "paragraph_index",
+                                "sentence_index",
+                                "anchor"
+                              ],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "departments",
+                          "text",
+                          "priority",
+                          "red_flag_reason",
+                          "citations"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "citation_status": {
+                        "type": "string",
+                        "enum": [
+                          "verified",
+                          "unverified"
+                        ]
+                      },
+                      "failed_citations": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "source_doc": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "page_number": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "section_id": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "paragraph_index": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "sentence_index": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "anchor": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "source_doc",
+                            "page_number",
+                            "section_id",
+                            "paragraph_index",
+                            "sentence_index",
+                            "anchor"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "finding",
+                      "citation_status",
+                      "failed_citations"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "key",
+              "requirement",
+              "label",
+              "department",
+              "kind",
+              "value",
+              "question",
+              "status",
+              "source",
+              "evidence"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "pass_through": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "evidence": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "finding": {
+                        "type": "object",
+                        "properties": {
+                          "kind": {
+                            "type": "string",
+                            "enum": [
+                              "summary",
+                              "priority",
+                              "red_flag",
+                              "answer",
+                              "cost_input",
+                              "consistency"
+                            ]
+                          },
+                          "departments": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "priority": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "must",
+                                  "should",
+                                  "optional",
+                                  "info"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "red_flag_reason": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "citations": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "source_doc": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "page_number": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                },
+                                "section_id": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "paragraph_index": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                },
+                                "sentence_index": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                },
+                                "anchor": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "source_doc",
+                                "page_number",
+                                "section_id",
+                                "paragraph_index",
+                                "sentence_index",
+                                "anchor"
+                              ],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": [
+                          "kind",
+                          "departments",
+                          "text",
+                          "priority",
+                          "red_flag_reason",
+                          "citations"
+                        ],
+                        "additionalProperties": false
+                      },
+                      "citation_status": {
+                        "type": "string",
+                        "enum": [
+                          "verified",
+                          "unverified"
+                        ]
+                      },
+                      "failed_citations": {
+                        "type": "array",
+                        "items": {
+                          "type": "object",
+                          "properties": {
+                            "source_doc": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "page_number": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "section_id": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "paragraph_index": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "sentence_index": {
+                              "type": "integer",
+                              "minimum": 1,
+                              "maximum": 9007199254740991
+                            },
+                            "anchor": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "source_doc",
+                            "page_number",
+                            "section_id",
+                            "paragraph_index",
+                            "sentence_index",
+                            "anchor"
+                          ],
+                          "additionalProperties": false
+                        }
+                      }
+                    },
+                    "required": [
+                      "finding",
+                      "citation_status",
+                      "failed_citations"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "label",
+              "evidence"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "cost_inputs": {
+          "type": "object",
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "candidates": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "field": {
+                    "type": "string",
+                    "enum": [
+                      "currency",
+                      "volume",
+                      "target_price",
+                      "annual_reduction_rate",
+                      "payment_days",
+                      "incoterm",
+                      "thickness",
+                      "net_weight",
+                      "material"
+                    ]
+                  },
+                  "label": {
+                    "type": "string"
+                  },
+                  "unit": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "value": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "source": {
+                    "type": "string",
+                    "enum": [
+                      "rfq",
+                      "inferred",
+                      "assumption",
+                      "missing"
+                    ]
+                  },
+                  "note": {
+                    "type": "string"
+                  },
+                  "evidence": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "finding": {
+                            "type": "object",
+                            "properties": {
+                              "kind": {
+                                "type": "string",
+                                "enum": [
+                                  "summary",
+                                  "priority",
+                                  "red_flag",
+                                  "answer",
+                                  "cost_input",
+                                  "consistency"
+                                ]
+                              },
+                              "departments": {
+                                "type": "array",
+                                "items": {
+                                  "type": "string"
+                                }
+                              },
+                              "text": {
+                                "type": "string"
+                              },
+                              "priority": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "enum": [
+                                      "must",
+                                      "should",
+                                      "optional",
+                                      "info"
+                                    ]
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              },
+                              "red_flag_reason": {
+                                "type": [
+                                  "string",
+                                  "null"
+                                ]
+                              },
+                              "citations": {
+                                "type": "array",
+                                "items": {
+                                  "type": "object",
+                                  "properties": {
+                                    "source_doc": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "page_number": {
+                                      "type": "integer",
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "section_id": {
+                                      "type": "string",
+                                      "minLength": 1
+                                    },
+                                    "paragraph_index": {
+                                      "type": "integer",
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "sentence_index": {
+                                      "type": "integer",
+                                      "minimum": 1,
+                                      "maximum": 9007199254740991
+                                    },
+                                    "anchor": {
+                                      "type": [
+                                        "string",
+                                        "null"
+                                      ]
+                                    }
+                                  },
+                                  "required": [
+                                    "source_doc",
+                                    "page_number",
+                                    "section_id",
+                                    "paragraph_index",
+                                    "sentence_index",
+                                    "anchor"
+                                  ],
+                                  "additionalProperties": false
+                                }
+                              }
+                            },
+                            "required": [
+                              "kind",
+                              "departments",
+                              "text",
+                              "priority",
+                              "red_flag_reason",
+                              "citations"
+                            ],
+                            "additionalProperties": false
+                          },
+                          "citation_status": {
+                            "type": "string",
+                            "enum": [
+                              "verified",
+                              "unverified"
+                            ]
+                          },
+                          "failed_citations": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "source_doc": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "page_number": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                },
+                                "section_id": {
+                                  "type": "string",
+                                  "minLength": 1
+                                },
+                                "paragraph_index": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                },
+                                "sentence_index": {
+                                  "type": "integer",
+                                  "minimum": 1,
+                                  "maximum": 9007199254740991
+                                },
+                                "anchor": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                }
+                              },
+                              "required": [
+                                "source_doc",
+                                "page_number",
+                                "section_id",
+                                "paragraph_index",
+                                "sentence_index",
+                                "anchor"
+                              ],
+                              "additionalProperties": false
+                            }
+                          }
+                        },
+                        "required": [
+                          "finding",
+                          "citation_status",
+                          "failed_citations"
+                        ],
+                        "additionalProperties": false
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "alternatives": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "value": {
+                          "type": "string"
+                        },
+                        "evidence": {
+                          "type": "object",
+                          "properties": {
+                            "finding": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string",
+                                  "enum": [
+                                    "summary",
+                                    "priority",
+                                    "red_flag",
+                                    "answer",
+                                    "cost_input",
+                                    "consistency"
+                                  ]
+                                },
+                                "departments": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "string"
+                                  }
+                                },
+                                "text": {
+                                  "type": "string"
+                                },
+                                "priority": {
+                                  "anyOf": [
+                                    {
+                                      "type": "string",
+                                      "enum": [
+                                        "must",
+                                        "should",
+                                        "optional",
+                                        "info"
+                                      ]
+                                    },
+                                    {
+                                      "type": "null"
+                                    }
+                                  ]
+                                },
+                                "red_flag_reason": {
+                                  "type": [
+                                    "string",
+                                    "null"
+                                  ]
+                                },
+                                "citations": {
+                                  "type": "array",
+                                  "items": {
+                                    "type": "object",
+                                    "properties": {
+                                      "source_doc": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "page_number": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "section_id": {
+                                        "type": "string",
+                                        "minLength": 1
+                                      },
+                                      "paragraph_index": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "sentence_index": {
+                                        "type": "integer",
+                                        "minimum": 1,
+                                        "maximum": 9007199254740991
+                                      },
+                                      "anchor": {
+                                        "type": [
+                                          "string",
+                                          "null"
+                                        ]
+                                      }
+                                    },
+                                    "required": [
+                                      "source_doc",
+                                      "page_number",
+                                      "section_id",
+                                      "paragraph_index",
+                                      "sentence_index",
+                                      "anchor"
+                                    ],
+                                    "additionalProperties": false
+                                  }
+                                }
+                              },
+                              "required": [
+                                "kind",
+                                "departments",
+                                "text",
+                                "priority",
+                                "red_flag_reason",
+                                "citations"
+                              ],
+                              "additionalProperties": false
+                            },
+                            "citation_status": {
+                              "type": "string",
+                              "enum": [
+                                "verified",
+                                "unverified"
+                              ]
+                            },
+                            "failed_citations": {
+                              "type": "array",
+                              "items": {
+                                "type": "object",
+                                "properties": {
+                                  "source_doc": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "page_number": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "section_id": {
+                                    "type": "string",
+                                    "minLength": 1
+                                  },
+                                  "paragraph_index": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "sentence_index": {
+                                    "type": "integer",
+                                    "minimum": 1,
+                                    "maximum": 9007199254740991
+                                  },
+                                  "anchor": {
+                                    "type": [
+                                      "string",
+                                      "null"
+                                    ]
+                                  }
+                                },
+                                "required": [
+                                  "source_doc",
+                                  "page_number",
+                                  "section_id",
+                                  "paragraph_index",
+                                  "sentence_index",
+                                  "anchor"
+                                ],
+                                "additionalProperties": false
+                              }
+                            }
+                          },
+                          "required": [
+                            "finding",
+                            "citation_status",
+                            "failed_citations"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "value",
+                        "evidence"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "issue_id": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  }
+                },
+                "required": [
+                  "field",
+                  "label",
+                  "unit",
+                  "value",
+                  "source",
+                  "note",
+                  "evidence",
+                  "alternatives",
+                  "issue_id"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "volumes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "year": {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  "quantity": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "year",
+                  "quantity"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "annual_reduction_rate": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "pattern": "^\\d+(\\.\\d+)?$"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "reduction_starts_at_index": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "item",
+            "candidates",
+            "volumes",
+            "annual_reduction_rate",
+            "reduction_starts_at_index"
+          ],
+          "additionalProperties": false
+        },
+        "suggested_items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "category": {
+                "type": "string",
+                "enum": [
+                  "material",
+                  "process",
+                  "labor",
+                  "purchased",
+                  "outsourced",
+                  "logistics",
+                  "freight",
+                  "other",
+                  "credit"
+                ]
+              },
+              "quantity": {
+                "type": "string",
+                "pattern": "^\\d+(\\.\\d+)?$"
+              },
+              "unit": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 16
+              },
+              "unit_price": {
+                "type": "string",
+                "pattern": "^\\d+(\\.\\d+)?$"
+              },
+              "price_id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "expired": {
+                "type": "boolean"
+              },
+              "note": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "label",
+              "category",
+              "quantity",
+              "unit",
+              "unit_price",
+              "price_id",
+              "expired",
+              "note"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "assumption_note": {
+          "type": "string"
+        },
+        "lines": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "no": {
+                    "type": "string"
+                  },
+                  "part": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "quantity": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "yearly": {
+                    "type": "boolean"
+                  },
+                  "group": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "source_doc": {
+                    "type": "string"
+                  },
+                  "page": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0,
+                    "maximum": 9007199254740991
+                  }
+                },
+                "required": [
+                  "no",
+                  "part",
+                  "name",
+                  "quantity",
+                  "yearly",
+                  "group",
+                  "source_doc",
+                  "page"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "total": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "limit": {
+              "type": "integer",
+              "exclusiveMinimum": 0,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "items",
+            "total",
+            "limit"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "classification",
+        "award",
+        "requirements",
+        "pass_through",
+        "cost_inputs",
+        "suggested_items",
+        "assumption_note",
+        "lines"
+      ],
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "enum": [
+          "document",
+          "parsing",
+          "analysis",
+          "citation",
+          "translation",
+          "source",
+          "consistency",
+          "cost_inputs",
+          "precost",
+          "chat",
+          "evaluation"
+        ]
+      },
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "mock",
+          "real"
+        ]
+      }
+    }
+  },
+  "required": [
+    "data",
+    "provenance"
+  ],
+  "additionalProperties": false
+}

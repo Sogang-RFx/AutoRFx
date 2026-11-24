@@ -46,8 +46,9 @@ function displayTitle(c: VisibleClause): string {
 
 /** Role of a department (its rule departments) on a clause, for the "주관만 / 참조만" filter. */
 export function roleOf(c: VisibleClause, areas: readonly string[]): "primary" | "reference" | null {
-  if (areas.includes(c.primary_department)) return "primary";
-  if (c.reference_departments.some((d) => areas.includes(d))) return "reference";
+  const [leadArea, ...refAreas] = c.work_areas ?? [];
+  if (areas.includes(c.primary_department) || (leadArea && areas.includes(leadArea))) return "primary";
+  if ([...refAreas, ...c.reference_departments].some((d) => areas.includes(d))) return "reference";
   return null;
 }
 

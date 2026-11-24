@@ -1,11 +1,11 @@
-"""Cost input candidates found in the RFQ (COST-05).
+"""Cost inputs the RFQ itself states (COST-05, step ④).
 
 A value the RFQ states is offered with its citation and is not used until the
 user confirms it. When files disagree, the candidate has no value: it lists
 the alternatives, each with its own citation, and names the consistency issue
-that must be resolved. A supplier assumption is never presented as an RFQ
-fact: the only assumptions offered are the examples in ``cost_model.yaml``,
-labelled as examples. Nothing is invented.
+that must be resolved. The supplier's own figures (unit prices, rates) are not
+here: they come from the company settings (:mod:`autorfx.precost.company`).
+Nothing is invented.
 """
 
 from __future__ import annotations
@@ -27,46 +27,79 @@ from autorfx.models import (
     Table,
     VerifiedFinding,
 )
-from autorfx.precost.calc import RfqCostContext
 from autorfx.rules import COST_FIELDS, Ruleset
 
 FIELDS: dict[str, tuple[str, str | None]] = {
     "currency": ("통화", None),
-    "min_quantity": ("총 계획 물량", "개"),
-    "fixed_costs": ("고정비 (금형·개발비)", None),
-    "variable_cost_per_unit": ("단위당 변동비", None),
+    "volume": ("총 계획 물량", "개"),
     "target_price": ("목표가", None),
     "annual_reduction_rate": ("연간 단가 인하율", "%"),
-    "gross_weight": ("투입 중량", "kg"),
-    "net_weight": ("순중량", "kg"),
-    "material_price": ("소재 단가", "/kg"),
-    "scrap_credit": ("스크랩 환입 단가", "/kg"),
-    "machine_hour_rate": ("설비 시간당 비용", "/h"),
-    "strokes_per_minute": ("분당 타수", "spm"),
-    "parts_per_stroke": ("타당 생산 수", "개"),
-    "oee": ("설비종합효율(OEE)", None),
-    "surface_cost": ("표면처리비", "/개"),
-    "packaging_cost": ("포장비", "/개"),
-    "freight_cost": ("운임", "/개"),
-    "warehousing_cost": ("창고·안전재고비", "/개"),
-    "scrap_rate": ("불량·재작업률", None),
-    "sga_rate": ("판관비율", None),
-    "profit_rate": ("이익률", None),
-    "thickness": ("판재 두께", "mm"),
-    "incoterm": ("인도조건", None),
     "payment_days": ("결제 기한", "일"),
+    "incoterm": ("인도조건", None),
+    "thickness": ("판재 두께", "mm"),
+    "net_weight": ("순중량", "kg"),
+    "material": ("소재", None),
 }
+ENTITY_OF = {"volume": "total_volume"}
 YEAR = re.compile(r"^20\d{2}$")
-VOLUME_ROW = re.compile(r"pcs|pieces|stück|stk", re.IGNORECASE)
+VOLUME_ROW = re.compile(r"pcs|pieces|stück|stk|units|대|개", re.IGNORECASE)
 NOT_BINDING = re.compile(
-    r"purchase commitment|Abnahmeverpflichtung|planning figures|Planwerte", re.IGNORECASE
+    r"purchase commitment|Abnahmeverpflichtung|planning figures|Planwerte|not (a )?binding", re.IGNORECASE
 )
 # "from the 2nd/second year", "ab dem zweiten / 2. Jahr". The ordinal "2." must stand alone:
 # "2.5 % from the first year" is a rate, not the second year.
 FROM_SECOND = re.compile(r"\b(?:2nd|second|zweite[nmr]?)\b|(?<![\d.,])2\.(?=\s)", re.IGNORECASE)
 
 
-def _evidence(
+# Inferred values: filled in for the user with the sentence they come from, marked as inferred.
+# "Within thirty (30) days after delivery … the City will pay the Supplier": the days come first.
+PAY_WORD = re.compile(r"\b(?:pay|paid|payment|zahlung|zahlbar|bezahlt)\b|지급|결제", re.IGNORECASE)
+NEAR = 60
+PAY_TITLE = re.compile(r"payment|zahlung|결제|지급", re.IGNORECASE)
+DAYS = re.compile(
+    r"(?:\((\d{1,3})\)|(?<![\d.,])(\d{1,3}))\s*(?:calendar\s+|business\s+|working\s+)?(?:days?|tage[n]?)\b|(\d{1,3})\s*일",
+    re.IGNORECASE,
+)
+NAMED_CURRENCY = re.compile(r"\b(?:EUR|USD|KRW|GBP|JPY|CNY|CAD|AUD|CHF)\b|€|£|¥|₩")
+DOLLAR = re.compile(r"\$")
+
+
+def inferred_payment_days(clauses: Sequence[Clause]) -> tuple[str, Locus, str] | None:
+    """Days of a payment sentence that names the days before (or without) a payment label.
+
+    In a clause titled "payment" any number of days counts. Elsewhere the days must stand
+    within a few words of paying ("make payment within 30 days"); an invoice-checking period
+    or a notice period is not a payment term.
+    """
+    ranked = sorted(clauses, key=lambda c: not PAY_TITLE.search(c.title or ""))
+    for clause in ranked:
+        titled = bool(PAY_TITLE.search(clause.title or ""))
+        for sentence in clause.sentences:
+            text = sentence.text
+            pays = [m.start() for m in PAY_WORD.finditer(text)]
+            for found in DAYS.finditer(text):
+                near = any(abs(at - found.start()) <= NEAR for at in pays)
+                if not (titled or near):
+                    continue
+                days = next(g for g in found.groups() if g)
+                if 0 < int(days) <= 365:
+                    return days, sentence.locus, text
+    return None
+
+
+def inferred_currency(clauses: Sequence[Clause]) -> tuple[str, Locus, str] | None:
+    """USD when the RFQ names no currency and its only money sign is "$" (it may also be CAD or AUD)."""
+    first = None
+    for clause in clauses:
+        for sentence in clause.sentences:
+            if NAMED_CURRENCY.search(sentence.text):
+                return None
+            if first is None and DOLLAR.search(sentence.text):
+                first = sentence
+    return ("USD", first.locus, first.text) if first else None
+
+
+def evidence(
     label: str, raw: str, locus: Locus, department: str, clauses: Sequence[Clause]
 ) -> VerifiedFinding:
     finding = Finding(
@@ -75,8 +108,8 @@ def _evidence(
     return verify(finding, clauses)
 
 
-def _volume(tables: Sequence[Table]) -> tuple[int, tuple[int, ...], Locus, str] | None:
-    """Total planned volume of the first part row of a year grid, the years, and the row cited."""
+def yearly_volumes(tables: Sequence[Table]) -> tuple[tuple[tuple[int, int], ...], Locus, str] | None:
+    """Planned quantity per year of the first part row of a year grid, and the row cited."""
     for table in tables:
         # The row of years is the table's header, or a row below a caption line.
         years_row: tuple[str, ...] = table.header
@@ -88,38 +121,39 @@ def _volume(tables: Sequence[Table]) -> tuple[int, tuple[int, ...], Locus, str] 
                 continue
             if len(columns) < 2 or not row or not VOLUME_ROW.search(row[0]):
                 continue
-            values = [parse_number(row[i], "en") for i in columns if i < len(row)]
+            values = [parse_number(row[i], "en") if i < len(row) else None for i in columns]
             if not values or any(v is None for v in values):
                 continue
-            total = sum(v for v in values if v is not None) * multiplier_of(row[0])
-            years = tuple(int(years_row[i]) for i in columns)
-            return int(total), years, locus, " | ".join(c for c in row if c)
+            factor = multiplier_of(row[0])
+            per_year = tuple(
+                (int(years_row[i]), int(v * factor))
+                for i, v in zip(columns, values, strict=True)
+                if v is not None
+            )
+            return per_year, locus, " | ".join(c for c in row if c)
     return None
 
 
-def cost_context(
-    mentions: Sequence[EntityMention],
-    issues: Sequence[ConsistencyIssue],
-    parsed: Sequence[ParsedFile],
-) -> RfqCostContext:
-    """Annual reduction, delivery years and the cost-related issues of an RFQ."""
-    rate: Decimal | None = None
-    starts = 1
+def reduction(mentions: Sequence[EntityMention]) -> tuple[Decimal | None, int]:
+    """Annual reduction as a fraction, and the index of the first reduced year."""
     for mention in mentions:
         if mention.entity == "annual_reduction_rate":
             try:
                 rate = Decimal(mention.normalized) / Decimal(100)
             except InvalidOperation:
                 continue
-            starts = 1 if FROM_SECOND.search(mention.text) else 0
-            break
-    volume = _volume([t for file in parsed for t in file.tables])
-    return RfqCostContext(
-        issues=tuple(i for i in issues if i.affects_cost),
-        annual_reduction_rate=rate,
-        reduction_starts_at_index=starts,
-        years=volume[1] if volume else (),
-    )
+            return rate, 1 if FROM_SECOND.search(mention.text) else 0
+    return None, 1
+
+
+INFER = {"payment_days": inferred_payment_days, "currency": inferred_currency}
+INFER_NOTE = {
+    "payment_days": "결제 조항의 문장에서 읽은 일수입니다(라벨 없이 적혀 있어 추정). 근거 문장을 확인하세요.",
+    "currency": (
+        "RFQ에 통화가 적혀 있지 않아 금액 기호 $로 미국 달러를 추정했습니다. "
+        "캐나다·호주 달러일 수 있으니 확인하세요."
+    ),
+}
 
 
 def extract_cost_inputs(
@@ -130,20 +164,21 @@ def extract_cost_inputs(
     issues: Sequence[ConsistencyIssue],
     ruleset: Ruleset,
 ) -> dict:
-    """The ``data`` object of ``contract/cost-inputs.schema.json``: one candidate per cost field."""
+    """The ``data`` object of ``contract/cost-inputs.schema.json``: one candidate per RFQ cost field."""
     entities = {rule.id: rule for rule in ruleset.entities}
     # Only a cost-affecting conflict can be resolved in a calculation; others are not offered.
     conflicts = {i.entity: i for i in issues if i.category == "conflict" and i.entity and i.affects_cost}
     blocking = {field: i.id for i in issues if i.affects_cost for field in i.cost_fields}
-    examples = ruleset.cost_model.example_assumptions
-    volume = _volume([t for file in parsed for t in file.tables])
+    volume = yearly_volumes([t for file in parsed for t in file.tables])
     not_binding = any(NOT_BINDING.search(s.text) for file in parsed for s in file.sentences)
     part = next((m.scope for m in mentions if m.scope), None)
+    rate, starts = reduction(mentions)
 
     candidates = []
     for field in COST_FIELDS:
         label, unit = FIELDS[field]
-        found = [m for m in mentions if m.entity == field]
+        entity = ENTITY_OF.get(field, field)
+        found = [m for m in mentions if m.entity == entity]
         base = {
             "field": field,
             "label": label,
@@ -155,8 +190,8 @@ def extract_cost_inputs(
             "alternatives": [],
             "issue_id": blocking.get(field),
         }
-        rule = entities.get(field)
-        conflict = conflicts.get(field)
+        rule = entities.get(entity)
+        conflict = conflicts.get(entity)
         if found and rule and conflict:
             seen: dict[str, EntityMention] = {}
             for mention in found:
@@ -168,7 +203,7 @@ def extract_cost_inputs(
                 "alternatives": [
                     {
                         "value": value,
-                        "evidence": _evidence(label, m.raw, m.locus, rule.department, clauses).model_dump(
+                        "evidence": evidence(label, m.raw, m.locus, rule.department, clauses).model_dump(
                             mode="json"
                         ),
                     }
@@ -181,26 +216,34 @@ def extract_cost_inputs(
                 "value": first.normalized,
                 "source": "rfq",
                 "note": "RFQ에 적힌 값입니다. 확인한 뒤 사용하세요.",
-                "evidence": _evidence(label, first.raw, first.locus, rule.department, clauses).model_dump(
+                "evidence": evidence(label, first.raw, first.locus, rule.department, clauses).model_dump(
                     mode="json"
                 ),
             }
-        elif field == "min_quantity" and volume:
-            total, _, locus, text = volume
+        elif field == "volume" and volume:
+            per_year, locus, text = volume
             note = "연도별 계획 물량의 합입니다."
             if not_binding:
                 note += " RFQ는 이 물량이 구매 확약이 아니라고 밝히고 있습니다."
             base |= {
-                "value": str(total),
+                "value": str(sum(q for _, q in per_year)),
                 "source": "rfq",
                 "note": note,
-                "evidence": _evidence(label, text, locus, "sales", clauses).model_dump(mode="json"),
+                "evidence": evidence(label, text, locus, "sales", clauses).model_dump(mode="json"),
             }
-        elif field in examples:
+        elif field in INFER and (guess := INFER[field](clauses)) is not None:
+            value, locus, text = guess
             base |= {
-                "value": examples[field],
-                "source": "assumption",
-                "note": "RFQ에 없는 값입니다. 예시 가정이므로 자사 값으로 바꿔야 합니다.",
+                "value": value,
+                "source": "inferred",
+                "note": INFER_NOTE[field],
+                "evidence": evidence(label, text, locus, "costing", clauses).model_dump(mode="json"),
             }
         candidates.append(base)
-    return {"item": part or manifest.name, "candidates": candidates}
+    return {
+        "item": part or manifest.name,
+        "candidates": candidates,
+        "volumes": [{"year": y, "quantity": q} for y, q in (volume[0] if volume else ())],
+        "reduction_starts_at_index": starts,
+        "annual_reduction_rate": format(rate, "f") if rate is not None else None,
+    }

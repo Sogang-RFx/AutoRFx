@@ -21,7 +21,7 @@ entities:
     department: development
     severity: high
     affects_cost: true
-    cost_fields: [gross_weight, net_weight]
+    cost_fields: [thickness]
 
   - id: net_weight
     label: 순중량
@@ -57,7 +57,7 @@ entities:
     department: logistics
     severity: high
     affects_cost: true
-    cost_fields: [freight_cost]
+    cost_fields: [incoterm]
 
   - id: sop
     label: 양산 시작(SOP)
@@ -166,7 +166,7 @@ entities:
     department: sales
     severity: medium
     affects_cost: true
-    cost_fields: [min_quantity]
+    cost_fields: [volume]
 
   - id: salt_spray_hours
     label: 염수분무 시험 시간

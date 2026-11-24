@@ -59,6 +59,12 @@
                       "unknown"
                     ]
                   },
+                  "work_areas": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
                   "primary_department": {
                     "type": "string",
                     "minLength": 1

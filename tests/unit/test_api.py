@@ -18,7 +18,7 @@ from autorfx.api import create_app
 from autorfx.config import Settings
 from autorfx.rules import Ruleset
 from contract_schema import assert_valid
-from factories import PACKAGE_SECRET, make_package
+from factories import PACKAGE_SECRET, make_package, precost_inputs
 
 VISIBLE, RESTRICTED = "costing", "quality"
 SECRETS = (PACKAGE_SECRET, "1.2345", "target price", "rejected")
@@ -324,87 +324,101 @@ def test_nothing_about_the_price_reaches_a_restricted_team(api: Api):
 
 
 def test_cost_screens_are_closed_to_restricted_teams(api: Api):
-    """RBAC-01, COST-04: cost inputs and the calculation are refused, not emptied."""
+    """RBAC-01, COST-04: company figures, the setup and the calculation are refused, not emptied."""
     client, rfq_id, _ = api
-    body = {
-        "rfq_id": rfq_id,
-        "inputs": {
-            "item": "x",
-            "min_quantity": 1,
-            "fixed_costs": "0",
-            "variable_cost_per_unit": "1",
-            "currency": "EUR",
-            "target_price": None,
-        },
-        "breakdown": None,
-        "resolved": {},
-    }
+    body = {"rfq_id": rfq_id, "inputs": precost_inputs(), "resolved": {}}
     for team in (RESTRICTED, None, "nobody"):
         params = {"team": team} if team else {}
-        assert error(client.get(f"/rfqs/{rfq_id}/cost-inputs", params=params)) == (403, "forbidden")
+        assert error(client.get(f"/rfqs/{rfq_id}/precost-setup", params=params)) == (403, "forbidden")
+        assert error(client.get("/company", params=params)) == (403, "forbidden")
         assert error(client.post("/precost", json={**body, "team": team})) == (403, "forbidden")
 
 
 # ── pre-cost ────────────────────────────────────────────────────────────────
-def test_cost_inputs_and_calculation_for_a_cost_visible_team(api: Api):
-    """COST-01, COST-05, COST-08: cited inputs from the RFQ, the verified unit cost, a held decision."""
+def test_company_settings_round_trip_and_bad_rows_are_refused(api: Api):
+    """Initial setup: the price table and profile are saved whole; a bad row names itself."""
+    client, _, _ = api
+    company = get(client, "/company", "company", team=VISIBLE)["data"]
+    assert company["settings"]["discount_rate"] == "0.08"
+    row = {
+        "id": None,
+        "category": "material",
+        "name": "HC420LA",
+        "unit": "kg",
+        "price": "1.05",
+        "currency": "EUR",
+        "valid_until": "2099-12-31",
+        "department": "purchasing",
+    }
+    body = {
+        "settings": company["settings"],
+        "profile": {**company["profile"], "certifications": ["IATF 16949"]},
+        "prices": [row],
+    }
+    assert_valid("company-request", body)
+    saved = client.put("/company", params={"team": VISIBLE}, json=body)
+    assert saved.status_code == 200, saved.text
+    assert_valid("company", saved.json())
+    stored = saved.json()["data"]
+    assert stored["prices"][0]["id"].startswith("price-") and stored["profile"]["certifications"] == [
+        "IATF 16949"
+    ]
+    bad = {**body, "prices": [{**row, "department": "nobody"}]}
+    assert error(client.put("/company", params={"team": VISIBLE}, json=bad)) == (400, "invalid_request")
+    twice = {**body, "prices": [row, row]}
+    assert error(client.put("/company", params={"team": VISIBLE}, json=twice)) == (400, "invalid_request")
+
+
+def test_setup_and_calculation_for_a_cost_visible_team(api: Api):
+    """COST-01, COST-05: cited inputs from the RFQ, a computed minimum quote, a decision with its rule."""
     client, rfq_id, _ = api
-    inputs = get(client, f"/rfqs/{rfq_id}/cost-inputs", "cost-inputs", team=VISIBLE)["data"]
-    by_field = {c["field"]: c for c in inputs["candidates"]}
+    setup = get(client, f"/rfqs/{rfq_id}/precost-setup", "precost-setup", team=VISIBLE)["data"]
+    by_field = {c["field"]: c for c in setup["cost_inputs"]["candidates"]}
     assert by_field["target_price"]["value"] == "1.2345"
     assert by_field["target_price"]["evidence"]["citation_status"] == "verified"
     assert [a["value"] for a in by_field["incoterm"]["alternatives"]] == ["FCA", "DDP"]
+    assert setup["classification"]["type"] == "other", "one drawing is not enough to call it manufacturing"
 
-    legacy = {
-        "team": VISIBLE,
-        "rfq_id": None,
-        "inputs": {
-            "item": "Bracket",
-            "min_quantity": 400000,
-            "fixed_costs": "227000",
-            "variable_cost_per_unit": "9.35",
-            "currency": "EUR",
-            "target_price": None,
-        },
-        "breakdown": None,
-        "resolved": {},
-    }
-    response = client.post("/precost", json=legacy)
+    plain = {"team": VISIBLE, "rfq_id": None, "inputs": precost_inputs(target_price="2"), "resolved": {}}
+    response = client.post("/precost", json=plain)
     assert response.status_code == 200, response.text
     assert_valid("precost", response.json())
     data = response.json()["data"]
-    assert (data["fixed_cost_per_unit"], data["unit_cost"]) == ("0.5675", "9.9175")
-    assert data["decision"]["status"] == "baseline_undefined"
+    # 1 kg × 1 EUR × 1.015 × 1.08 = 1.0962; the minimum quote adds the 5 % minimum margin.
+    assert (data["cost"]["piece_cost"], data["cost"]["min_quote"]) == ("1.0962", "1.1510")
+    assert data["decision"]["rule"] == "score" and data["decision"]["score"] is not None
 
-    with_rfq = {**legacy, "rfq_id": rfq_id, "inputs": {**legacy["inputs"], "target_price": "12"}}
-    held = client.post("/precost", json=with_rfq).json()["data"]["decision"]
-    assert (held["status"], held["rule"]) == ("hold", "missing_inputs"), "the delivery-term conflict is open"
+    result = client.post("/precost", json={**plain, "rfq_id": rfq_id}).json()["data"]
+    assert (result["decision"]["status"], result["decision"]["rule"]) == ("not_applicable", "rfq_type")
 
 
 @pytest.mark.parametrize(
     "change",
     [
-        {"min_quantity": 0},
-        {"fixed_costs": "-1"},
+        {"volumes": []},
         {"currency": "eur"},
-        {"fixed_costs": "abc"},
+        {"target_price": "-1"},
+        {"annual_reduction_rate": "1"},
+        {
+            "items": [
+                {
+                    "label": "a",
+                    "category": "steel",
+                    "quantity": "1",
+                    "unit": "kg",
+                    "unit_price": "1",
+                    "price_id": None,
+                }
+            ]
+        },
         {"extra": 1},
-        {"fixed_costs": "1E+999999999"},
+        {"target_price": "1E+999999999"},
     ],
 )
 def test_invalid_cost_input_is_refused(api: Api, change: dict):
     """COST-01: no number is computed from an invalid input."""
     client, _, _ = api
-    inputs = {
-        "item": "x",
-        "min_quantity": 1,
-        "fixed_costs": "0",
-        "variable_cost_per_unit": "1",
-        "currency": "EUR",
-        "target_price": None,
-        **change,
-    }
-    body = {"team": VISIBLE, "rfq_id": None, "inputs": inputs, "breakdown": None, "resolved": {}}
+    body = {"team": VISIBLE, "rfq_id": None, "inputs": precost_inputs(**change), "resolved": {}}
     assert error(client.post("/precost", json=body)) == (422, "invalid_request")
 
 
