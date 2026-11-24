@@ -1,0 +1,51 @@
+{
+  "$id": "https://autorfx.local/contract/ok.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "data": {
+      "type": "object",
+      "properties": {
+        "ok": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "ok"
+      ],
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "enum": [
+          "document",
+          "parsing",
+          "analysis",
+          "citation",
+          "translation",
+          "source",
+          "consistency",
+          "cost_inputs",
+          "precost",
+          "chat",
+          "evaluation"
+        ]
+      },
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "mock",
+          "real"
+        ]
+      }
+    }
+  },
+  "required": [
+    "data",
+    "provenance"
+  ],
+  "additionalProperties": false
+}

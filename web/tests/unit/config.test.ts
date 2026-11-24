@@ -28,21 +28,21 @@ describe("backend address", () => {
     expect(() => config.baseUrlOf("document")).toThrow(config.ConfigError);
 
     // The way screens call it: useResource wraps the call in a promise chain.
-    const pending = Promise.resolve().then(() => provider.rfqApi.clauses("x", { team: "sales" }, null));
+    const pending = Promise.resolve().then(() => provider.rfqApi.clauses("x"));
     await expect(pending).rejects.toBeInstanceOf(config.ConfigError);
     await pending.catch((e: unknown) => expect(provider.describeError(e)).toContain("다른 데이터로 대신하지 않습니다"));
   });
 
-  it("sends requests to the backend with the team only", async () => {
+  it("sends requests to the backend", async () => {
     const { provider } = await freshProvider({ NEXT_PUBLIC_RFQ_API_BASE: "https://backend.example/api/" });
     const seen: string[] = [];
     vi.stubGlobal("fetch", async (url: string) => {
       seen.push(url);
       return json({ error: { code: "x", message: "down" } }, 503);
     });
-    await expect(provider.rfqApi.clauses("doc", { team: "sales" }, null)).rejects.toThrow("down");
+    await expect(provider.rfqApi.clauses("doc")).rejects.toThrow("down");
     await expect(provider.rfqApi.job("r1")).rejects.toThrow("down");
-    expect(seen).toEqual(["https://backend.example/api/rfqs/doc/clauses?team=sales", "https://backend.example/api/rfqs/r1/job"]);
+    expect(seen).toEqual(["https://backend.example/api/rfqs/doc/clauses", "https://backend.example/api/rfqs/r1/job"]);
   });
 
   it("uploads the picked files as multipart form data", async () => {
@@ -69,14 +69,14 @@ describe("only real data is shown (INV-10)", () => {
   it("accepts a response marked real", async () => {
     const { provider } = await freshProvider({ NEXT_PUBLIC_RFQ_API_BASE: "http://api.test" });
     vi.stubGlobal("fetch", async () => json(body("real")));
-    const res = await provider.rfqApi.clauses("doc", { team: null }, null);
+    const res = await provider.rfqApi.clauses("doc");
     expect(res.data.clauses).toEqual([]);
   });
 
   it("refuses a response marked mock instead of showing it", async () => {
     const { provider } = await freshProvider({ NEXT_PUBLIC_RFQ_API_BASE: "http://api.test" });
     vi.stubGlobal("fetch", async () => json(body("mock")));
-    const pending = provider.rfqApi.clauses("doc", { team: null }, null);
+    const pending = provider.rfqApi.clauses("doc");
     await expect(pending).rejects.toMatchObject({ code: "not_real_data" });
   });
 });

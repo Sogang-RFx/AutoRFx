@@ -2,17 +2,18 @@
  * Client-only (imported from the client workspace page).
  * Clause list and clause detail (TASKS S011, S014, SPEC §14). Interpretation
  * sits on white sans surfaces; original text on the paper-coloured serif
- * surface. Masked clauses render as fixed-height rows with number + lock only.
+ * surface. Locked clauses render as fixed-height rows with number + lock only.
  * Clause ids come from real documents and may contain spaces, colons or "§",
  * so they are never used raw as DOM ids or selectors (see `clauseDomId`).
  */
 import { useState } from "react";
 import type { KeyboardEvent } from "react";
-import type { ClauseItem, Locus, ProvenanceMap, VisibleClause } from "@/lib/rfq/contract";
-import type { DeptFilter } from "@/lib/rfq/departments";
+import type { ClauseItem, Department, Locus, ProvenanceMap, VisibleClause } from "@/lib/rfq/contract";
 import { fileName, fileTag, usePackageFiles } from "@/lib/rfq/package-context";
+import { departmentOptions, departmentRole, inDepartment, scopeLine } from "@/lib/rfq/scope";
+import { useViewer } from "@/lib/rfq/session";
 import { noTranslationMessage } from "@/lib/rfq/translation";
-import { useTeamGroup } from "../shell/app-shell";
+import { useMeta } from "@/lib/rfq/use-meta";
 import { IconClose, IconLock, IconWarn } from "../ui/icons";
 import {
   CitationChip,
@@ -31,7 +32,6 @@ import {
   useLocusLabel,
 } from "../ui/primitives";
 
-type Dept = { id: string; label: string; receives_all?: boolean };
 export type DeptRole = "all" | "primary" | "reference";
 
 const MASKED_ROW_H = 56;
@@ -41,17 +41,9 @@ export function clauseDomId(clauseId: string): string {
   return `clause-${clauseId.replace(/[^A-Za-z0-9]/g, (ch) => `_${ch.charCodeAt(0).toString(16)}`)}`;
 }
 
-/** Title for display; rule-only parsing may leave it empty. */
+/** Title for display. It is empty when the clause has none, or when its heading is out of the account's scope. */
 function displayTitle(c: VisibleClause): string {
-  return c.title || c.excerpt[0]?.text || "(제목 없음)";
-}
-
-/** Role of a department (its rule departments) on a clause, for the "주관만 / 참조만" filter. */
-export function roleOf(c: VisibleClause, areas: readonly string[]): "primary" | "reference" | null {
-  const [leadArea, ...refAreas] = c.work_areas ?? [];
-  if (areas.includes(c.primary_department) || (leadArea && areas.includes(leadArea))) return "primary";
-  if ([...refAreas, ...c.reference_departments].some((d) => areas.includes(d))) return "reference";
-  return null;
+  return c.title || c.excerpt[0]?.text || "(표시할 제목 없음)";
 }
 
 // ── List ─────────────────────────────────────────────────────────────────────
@@ -60,10 +52,8 @@ type ListProps = {
   error: string | null;
   clauses: ClauseItem[];
   provenance?: ProvenanceMap;
-  /** Rule departments, for the labels of a clause's lead and reference chips. */
-  departments: Dept[];
-  /** Buttons of the department filter: the company's departments, or the rule departments. */
-  filters: DeptFilter[];
+  /** Rule departments: labels of the chips, and the view filter (those of visible clauses only). */
+  departments: Department[];
   department: string | null;
   onDepartment: (d: string | null) => void;
   role: DeptRole;
@@ -79,7 +69,6 @@ export function ClauseList({
   clauses,
   provenance,
   departments,
-  filters,
   department,
   onDepartment,
   role,
@@ -88,24 +77,24 @@ export function ClauseList({
   onSelect,
   className,
 }: ListProps) {
+  const viewer = useViewer();
   const files = usePackageFiles();
   const multiFile = files.length > 1;
   const deptLabel = (id: string) => departments.find((d) => d.id === id)?.label ?? id;
-  const dept = filters.find((d) => d.id === department) ?? null;
-  const areas = dept?.areas ?? (department ? [department] : []);
+  const options = departmentOptions(clauses, departments);
+  const dept = options.find((d) => d.id === department) ?? null;
 
-  // Masked rows stay in every view: the filter must not reveal a hidden clause's department.
-  const shown = clauses.filter((c) => {
-    if (c.kind === "masked" || !department || role === "all") return true;
-    return roleOf(c, areas) === role;
-  });
+  // Lock rows stay in every view: the filter must not tell whose clause a lock is.
+  const inView = clauses.filter((c) => inDepartment(c, dept));
+  const shown = inView.filter(
+    (c) => c.kind === "masked" || !dept || role === "all" || departmentRole(c, dept.id) === role,
+  );
   const visible = shown.filter((c): c is VisibleClause => c.kind === "clause");
   const redFlags = visible.filter((c) => c.red_flag).length;
   const unverified = visible.filter((c) => c.summary.citation_status === "unverified").length;
   const masked = shown.length - visible.length;
-  const allVisible = clauses.filter((c): c is VisibleClause => c.kind === "clause");
-  const leads = department ? allVisible.filter((c) => roleOf(c, areas) === "primary").length : 0;
-  const refs = department ? allVisible.filter((c) => roleOf(c, areas) === "reference").length : 0;
+  const countRole = (r: "primary" | "reference") =>
+    dept ? inView.filter((c) => c.kind === "clause" && departmentRole(c, dept.id) === r).length : 0;
 
   function onKeyDown(e: KeyboardEvent<HTMLUListElement>) {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
@@ -128,23 +117,35 @@ export function ClauseList({
 
   return (
     <Panel title="부서별 조항" provenance={provenance} labelId="clauses-title" className={className} bodyClassName="flex flex-col">
-      <div className="flex gap-1 overflow-x-auto border-b border-line px-3 py-2" role="group" aria-label="부서 필터">
-        {[{ id: "", label: "전체" }, ...filters].map((d) => {
-          const active = (department ?? "") === d.id;
-          return (
-            <button key={d.id || "all"} type="button" aria-pressed={active} onClick={() => onDepartment(d.id || null)} className={pill(active)}>
-              {d.label}
-            </button>
-          );
-        })}
-      </div>
-      {department && status === "ok" && (
+      {status === "ok" && (
+        <p className="border-b border-line px-4 py-2 text-label font-semibold text-ink tabular" data-testid="scope-line">
+          {scopeLine(viewer, clauses)}
+        </p>
+      )}
+      {options.length > 0 && (
+        <div className="flex items-center gap-2 border-b border-line px-4 py-2">
+          <span id="view-filter" className="shrink-0 text-label text-ink-muted">
+            보기: 부서
+          </span>
+          <div className="flex gap-1 overflow-x-auto p-0.5" role="group" aria-labelledby="view-filter">
+            {[{ id: "", label: "전체" }, ...options].map((d) => {
+              const active = (dept?.id ?? "") === d.id;
+              return (
+                <button key={d.id || "all"} type="button" aria-pressed={active} onClick={() => onDepartment(d.id || null)} className={pill(active)}>
+                  {d.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+      {dept && status === "ok" && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-b border-line px-4 py-2 text-label text-ink-muted" data-testid="role-filter">
-          {dept?.receives_all ? (
-            <span>{dept.label}은(는) 모든 조항을 받습니다 · 주관 {leads}</span>
+          {dept.receives_all ? (
+            <span>{dept.label}은(는) 모든 조항을 받습니다 · 주관 {countRole("primary")}</span>
           ) : (
             <span className="tabular">
-              주관 {leads} · 참조 {refs}
+              주관 {countRole("primary")} · 참조 {countRole("reference")}
             </span>
           )}
           <span className="ml-auto flex gap-1" role="group" aria-label="역할 필터">
@@ -169,7 +170,7 @@ export function ClauseList({
           {unverified > 0 && <span className="text-warn">미검증 {unverified}</span>}
           {masked > 0 && (
             <span className="inline-flex items-center gap-1">
-              <IconLock size={12} /> 가림 {masked}
+              <IconLock size={12} /> 자물쇠 {masked}
             </span>
           )}
         </p>
@@ -179,7 +180,7 @@ export function ClauseList({
         {status === "error" && error && <ErrorState message={error} />}
         {status === "ok" && shown.length === 0 && (
           <EmptyState title="표시할 조항이 없습니다">
-            <p>이 부서에 배정된 조항이 없거나, 분석 결과가 비어 있습니다.</p>
+            <p>이 보기에 해당하는 조항이 없거나, 분석 결과가 비어 있습니다.</p>
           </EmptyState>
         )}
         {status === "ok" && shown.length > 0 && (
@@ -262,7 +263,7 @@ export function ClauseList({
 type DetailProps = {
   clause: ClauseItem | null;
   provenance?: ProvenanceMap;
-  departments: Dept[];
+  departments: Department[];
   target: Locus | null;
   onCite: (l: Locus) => void;
   onClose?: () => void;
@@ -283,7 +284,7 @@ export function ClauseDetail({
 }: DetailProps) {
   const files = usePackageFiles();
   const locusLabel = useLocusLabel();
-  const { engines } = useTeamGroup();
+  const { engines } = useMeta();
   const [showTranslation, setShowTranslation] = useState(true);
   const deptLabel = (id: string) => departments.find((d) => d.id === id)?.label ?? id;
 
@@ -310,12 +311,12 @@ export function ClauseDetail({
 
   if (clause.kind === "masked") {
     return (
-      <Panel title={`${clause.section_id} 조항`} labelId={`${idPrefix}-title`} as="aside" className={className} actions={closeButton}>
+      <Panel title={`${clause.section_id} 조항`.trim()} labelId={`${idPrefix}-title`} as="aside" className={className} actions={closeButton}>
         <div className="flex flex-col gap-2 p-4" data-testid="masked-detail">
           <MaskedLabel />
           <p className="text-label text-ink-muted">{fileName(files, clause.source_doc)}</p>
           <p className="text-dense text-ink-muted">
-            금액 정보가 들어 있는 조항입니다. 이 팀의 권한으로는 원문, 요약, 수치를 볼 수 없습니다.
+            이 계정의 열람 범위로는 원문, 요약, 수치를 볼 수 없습니다.
           </p>
         </div>
       </Panel>
@@ -329,7 +330,7 @@ export function ClauseDetail({
 
   return (
     <Panel
-      title={`${clause.section_id} ${clause.title}`.trim()}
+      title={`${clause.section_id} ${clause.title}`.trim() || "조항 상세"}
       labelId={`${idPrefix}-title`}
       as="aside"
       provenance={provenance}

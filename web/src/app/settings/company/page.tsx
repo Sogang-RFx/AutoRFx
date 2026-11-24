@@ -4,13 +4,13 @@
  * which no RFQ contains: a unit-price table, the five knockout core items
  * (certifications, processes, supply qualifications, payment limit, liability
  * limit) and a few rates. Saved as a whole on the server. Cost figures, so only
- * cost-visible teams can open it.
+ * cost-visible accounts can open it; only an administrator can save it.
  */
 import Link from "next/link";
 import { useState } from "react";
-import { useTeamGroup } from "@/components/shell/app-shell";
+import { PageHeader } from "@/components/shell/page-header";
 import { IconLock } from "@/components/ui/icons";
-import { Button, EmptyState, ErrorState, ForbiddenState, Panel, Skeleton, cx } from "@/components/ui/primitives";
+import { Button, ErrorState, ForbiddenState, Panel, Skeleton, cx } from "@/components/ui/primitives";
 import { ITEM_CATEGORIES, type CompanyRequest, type CompanyResponse, type ItemCategory } from "@/lib/rfq/contract";
 import {
   CATEGORY_DEPARTMENT,
@@ -24,7 +24,8 @@ import {
   percentToFraction,
 } from "@/lib/rfq/precost";
 import { describeError, rfqApi } from "@/lib/rfq/provider";
-import { useSession } from "@/lib/rfq/session";
+import { isCostVisible } from "@/lib/rfq/scope";
+import { useViewer } from "@/lib/rfq/session";
 import { useResource } from "@/lib/rfq/use-resource";
 
 type Row = {
@@ -97,11 +98,10 @@ function problems(form: Form, rows: Row[]): string[] {
 }
 
 export default function CompanySettingsPage() {
-  const session = useSession();
-  const { restricted, ready } = useTeamGroup();
-  const loaded = useResource(ready && !restricted ? `company:${session.team}` : null, (s) =>
-    rfqApi.company({ team: session.team }, s),
-  );
+  const viewer = useViewer();
+  const canSee = isCostVisible(viewer);
+  const canSave = viewer.can_manage;
+  const loaded = useResource(canSee ? "company" : null, (s) => rfqApi.company(s));
   const [state, setState] = useState<{ form: Form; rows: Row[]; data: CompanyResponse["data"] } | null>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [notice, setNotice] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
@@ -111,30 +111,21 @@ export default function CompanySettingsPage() {
   }
 
   const header = (
-    <header className="flex flex-wrap items-baseline gap-x-4 gap-y-2">
-      <Link href="/" className="font-serif text-heading font-semibold text-ink">
-        AutoRFx
-      </Link>
-      <h1 className="text-heading font-semibold text-ink">사전원가 기본 설정</h1>
-      <Link href="/settings/price-sheet" className="text-label text-accent hover:underline" data-testid="sheet-words-link">
-        가격표 사전
-      </Link>
-      <button type="button" onClick={() => history.back()} className="ml-auto text-label text-ink-muted hover:text-ink">
-        ← 돌아가기
-      </button>
-    </header>
+    <PageHeader title="사전원가 기본 설정">
+      {canSee && (
+        <Link href="/settings/price-sheet" className="text-label text-accent hover:underline" data-testid="sheet-words-link">
+          가격표 사전
+        </Link>
+      )}
+    </PageHeader>
   );
 
-  if (ready && restricted) {
+  if (!canSee) {
     return (
       <main className="mx-auto flex min-h-dvh max-w-5xl flex-col gap-6 px-4 py-8 md:px-8">
         {header}
         <Panel title="사전원가 기본 설정" labelId="company-title">
-          <EmptyState title="이 팀에는 원가 정보가 제공되지 않습니다">
-            <p className="flex items-center gap-1.5">
-              <IconLock size={14} /> 금액 열람이 허용된 팀을 고르면 볼 수 있습니다.
-            </p>
-          </EmptyState>
+          <ForbiddenState message="이 계정에는 원가 정보가 제공되지 않습니다. 금액 열람 부서의 계정만 볼 수 있습니다." />
         </Panel>
       </main>
     );
@@ -181,7 +172,7 @@ export default function CompanySettingsPage() {
     setIsSaving(true);
     setNotice(null);
     try {
-      const res = await rfqApi.saveCompany(body, { team: session.team });
+      const res = await rfqApi.saveCompany(body);
       setState({ form: toForm(res.data), rows: toRows(res.data), data: res.data });
       setNotice({ kind: "ok", text: `저장했습니다. 단가표 ${res.data.prices.length}행.` });
     } catch (e) {
@@ -200,7 +191,7 @@ export default function CompanySettingsPage() {
           <input
             value={state.form[key]}
             onChange={(e) => setForm({ [key]: e.target.value })}
-            className="min-h-9 w-full rounded-control border border-line-control bg-surface px-2 text-dense text-ink tabular"
+            className="min-h-9 w-full rounded-control border border-line-control bg-surface px-2 text-dense text-ink tabular disabled:bg-canvas"
             data-testid={`company-${key}`}
           />
           {suffix && <span className="text-label text-ink-muted">{suffix}</span>}
@@ -218,10 +209,23 @@ export default function CompanySettingsPage() {
       </p>
       {loaded.status === "error" &&
         (loaded.forbidden ? <ForbiddenState message={loaded.error} /> : <ErrorState message={loaded.error} />)}
-      {(loaded.status === "loading" || !ready) && <Skeleton lines={6} />}
+      {loaded.status === "loading" && <Skeleton lines={6} />}
 
+      {state && !canSave && (
+        <p
+          role="note"
+          data-testid="company-read-only"
+          className="flex items-center gap-2 rounded-control border border-line bg-surface px-4 py-2 text-dense text-ink-muted"
+        >
+          <IconLock size={14} className="shrink-0" />
+          보기 전용입니다. 고치고 저장하는 일은 관리자 계정만 할 수 있습니다.
+        </p>
+      )}
       {state && (
-        <>
+        // min-w-0: a fieldset otherwise grows with the price table inside it.
+        <fieldset disabled={!canSave} className="min-w-0">
+          <legend className="sr-only">사전원가 기본 설정 값</legend>
+          <div className="flex min-w-0 flex-col gap-6">
           <div className="grid gap-4 lg:grid-cols-2">
             <Panel title="기본 비율" labelId="rates-title">
               <div className="grid gap-3 p-4 sm:grid-cols-2">
@@ -230,7 +234,7 @@ export default function CompanySettingsPage() {
                   <select
                     value={state.form.home_currency}
                     onChange={(e) => setForm({ home_currency: e.target.value })}
-                    className="min-h-9 w-full rounded-control border border-line-control bg-surface px-2 text-dense text-ink"
+                    className="min-h-9 w-full rounded-control border border-line-control bg-surface px-2 text-dense text-ink disabled:bg-canvas"
                     data-testid="company-home_currency"
                   >
                     {currencyOptions(state.form.home_currency).map((c) => (
@@ -262,27 +266,29 @@ export default function CompanySettingsPage() {
             title={`단가표 ${state.rows.length}행`}
             labelId="prices-title"
             actions={
-              <Button
-                data-testid="price-add"
-                onClick={() =>
-                  setRows([
-                    ...state.rows,
-                    {
-                      key: newKey(),
-                      id: null,
-                      category: "material",
-                      name: "",
-                      unit: "kg",
-                      price: "",
-                      currency: state.form.home_currency,
-                      valid_until: defaultValidUntil(state.data.today),
-                      department: CATEGORY_DEPARTMENT.material,
-                    },
-                  ])
-                }
-              >
-                행 추가
-              </Button>
+              canSave && (
+                <Button
+                  data-testid="price-add"
+                  onClick={() =>
+                    setRows([
+                      ...state.rows,
+                      {
+                        key: newKey(),
+                        id: null,
+                        category: "material",
+                        name: "",
+                        unit: "kg",
+                        price: "",
+                        currency: state.form.home_currency,
+                        valid_until: defaultValidUntil(state.data.today),
+                        department: CATEGORY_DEPARTMENT.material,
+                      },
+                    ])
+                  }
+                >
+                  행 추가
+                </Button>
+              )
             }
           >
             {state.rows.length === 0 ? (
@@ -291,7 +297,7 @@ export default function CompanySettingsPage() {
                 화면에서 새로 넣은 단가도 여기에 저장됩니다.
               </p>
             ) : (
-              <div className="overflow-x-auto">
+              <div className="relative overflow-x-auto">
                 <table className="w-full min-w-[820px] text-left text-dense">
                   <thead className="border-b border-line text-label text-ink-muted">
                     <tr>
@@ -309,7 +315,7 @@ export default function CompanySettingsPage() {
                       const patch = (p: Partial<Row>) =>
                         setRows(state.rows.map((x) => (x.key === r.key ? { ...x, ...p } : x)));
                       const expired = r.valid_until !== "" && r.valid_until < state.data.today;
-                      const cell = "min-h-8 w-full rounded-control border border-line-control bg-surface px-2 text-dense text-ink";
+                      const cell = "min-h-8 w-full rounded-control border border-line-control bg-surface px-2 text-dense text-ink disabled:bg-canvas";
                       return (
                         <tr key={r.key} className="border-b border-line last:border-0" data-testid="price-row">
                           <td className="px-3 py-1.5">
@@ -363,9 +369,11 @@ export default function CompanySettingsPage() {
                               className={cx(cell, expired && "border-warn text-warn")} />
                           </td>
                           <td className="px-2 py-1.5">
-                            <Button variant="ghost" onClick={() => setRows(state.rows.filter((x) => x.key !== r.key))}>
-                              삭제
-                            </Button>
+                            {canSave && (
+                              <Button variant="ghost" onClick={() => setRows(state.rows.filter((x) => x.key !== r.key))}>
+                                삭제
+                              </Button>
+                            )}
                           </td>
                         </tr>
                       );
@@ -392,22 +400,25 @@ export default function CompanySettingsPage() {
             </Panel>
           )}
 
-          <div className="flex flex-wrap items-center gap-3">
-            <Button variant="primary" data-testid="company-save" disabled={isSaving || issues.length > 0} onClick={save}>
-              {isSaving ? "저장 중…" : "저장"}
-            </Button>
-            {issues.length > 0 && <span className="text-label text-warn">{issues[0]}</span>}
-            {notice && (
-              <p
-                role={notice.kind === "error" ? "alert" : "status"}
-                data-testid={`company-${notice.kind}`}
-                className={cx("text-dense", notice.kind === "error" ? "text-danger" : "text-ok")}
-              >
-                {notice.text}
-              </p>
-            )}
+          {canSave && (
+            <div className="flex flex-wrap items-center gap-3">
+              <Button variant="primary" data-testid="company-save" disabled={isSaving || issues.length > 0} onClick={save}>
+                {isSaving ? "저장 중…" : "저장"}
+              </Button>
+              {issues.length > 0 && <span className="text-label text-warn">{issues[0]}</span>}
+              {notice && (
+                <p
+                  role={notice.kind === "error" ? "alert" : "status"}
+                  data-testid={`company-${notice.kind}`}
+                  className={cx("text-dense", notice.kind === "error" ? "text-danger" : "text-ok")}
+                >
+                  {notice.text}
+                </p>
+              )}
+            </div>
+          )}
           </div>
-        </>
+        </fieldset>
       )}
     </main>
   );

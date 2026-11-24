@@ -1,0 +1,47 @@
+{
+  "$id": "https://autorfx.local/contract/admin-user-create-request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "username": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]{2,31}$"
+    },
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60
+    },
+    "password": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 128
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "admin",
+        "member"
+      ]
+    },
+    "department": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "required": [
+    "username",
+    "display_name",
+    "password",
+    "role",
+    "department"
+  ],
+  "additionalProperties": false
+}

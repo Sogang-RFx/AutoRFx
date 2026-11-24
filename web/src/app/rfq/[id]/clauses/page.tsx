@@ -7,21 +7,20 @@
  */
 import { useParams, useSearchParams } from "next/navigation";
 import { useMemo, useState } from "react";
-import { useTeamGroup } from "@/components/shell/app-shell";
 import { SourceViewer } from "@/components/source-viewer/source-viewer";
 import { cx } from "@/components/ui/primitives";
 import { ClauseDetail, ClauseList, type DeptRole } from "@/components/workspace/clause-panels";
 import type { ClauseItem, Locus } from "@/lib/rfq/contract";
 import { rfqApi } from "@/lib/rfq/provider";
-import { useSession } from "@/lib/rfq/session";
+import { useViewer } from "@/lib/rfq/session";
+import { useMeta } from "@/lib/rfq/use-meta";
 import { useResource } from "@/lib/rfq/use-resource";
 
 export default function ClausesPage() {
   const { id } = useParams<{ id: string }>();
-  const session = useSession();
-  // A team change remounts the workspace: selection, filter and the loaded
-  // PDF all reset, so nothing from the previous team stays on screen.
-  return <Workspace key={session.team ?? "none"} rfqId={decodeURIComponent(id)} />;
+  const viewer = useViewer();
+  // Another account starts afresh: selection, filter and the loaded PDF all reset.
+  return <Workspace key={viewer.user_id} rfqId={decodeURIComponent(id)} />;
 }
 
 function firstLocus(c: ClauseItem | undefined): Locus | null {
@@ -30,20 +29,17 @@ function firstLocus(c: ClauseItem | undefined): Locus | null {
 }
 
 function Workspace({ rfqId }: { rfqId: string }) {
-  const session = useSession();
   const search = useSearchParams();
-  const { restricted, ready: teamReady, departments, filters } = useTeamGroup();
-  const ctx = useMemo(() => ({ team: session.team }), [session.team]);
+  const { departments } = useMeta();
 
-  // The team is who is looking; the department filter is what they look at. They are separate.
+  // The account is who is looking; the department is only a view of what they may see.
   const [department, setDepartment] = useState<string | null>(null);
   const [role, setRole] = useState<DeptRole>("all");
   const [selected, setSelected] = useState<string | null>(null);
   const [target, setTarget] = useState<Locus | null>(null);
   const [isDetailOpen, setIsDetailOpen] = useState(false);
 
-  const key = session.ready ? `clauses:${rfqId}:${ctx.team ?? "none"}:${department ?? "all"}` : null;
-  const clauses = useResource(key, (s) => rfqApi.clauses(rfqId, ctx, department, s));
+  const clauses = useResource(`clauses:${rfqId}`, (s) => rfqApi.clauses(rfqId, s));
   const items = useMemo(() => (clauses.status === "ok" ? clauses.data.data.clauses : []), [clauses]);
   const provenance = clauses.status === "ok" ? clauses.data.provenance : undefined;
   const current = items.find((c) => c.clause_id === selected) ?? null;
@@ -76,7 +72,6 @@ function Workspace({ rfqId }: { rfqId: string }) {
         clauses={items}
         provenance={provenance}
         departments={departments}
-        filters={filters}
         department={department}
         onDepartment={(d) => {
           setDepartment(d);
@@ -98,7 +93,7 @@ function Workspace({ rfqId }: { rfqId: string }) {
         onCite={setTarget}
       />
       <div className="relative min-h-[70dvh] min-w-0 lg:order-first lg:col-start-2 lg:row-start-1 lg:min-h-0">
-        <SourceViewer rfqId={rfqId} ctx={ctx} restricted={teamReady && restricted} target={target} className="h-full" />
+        <SourceViewer rfqId={rfqId} target={target} className="h-full" />
         {/* 1024–1279px: detail floats over the source */}
         <div
           className={cx(

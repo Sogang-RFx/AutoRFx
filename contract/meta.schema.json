@@ -6,39 +6,6 @@
     "data": {
       "type": "object",
       "properties": {
-        "teams": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "label": {
-                "type": "string"
-              },
-              "group": {
-                "type": "string",
-                "enum": [
-                  "cost_visible",
-                  "cost_restricted"
-                ]
-              },
-              "areas": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              }
-            },
-            "required": [
-              "id",
-              "label",
-              "group"
-            ],
-            "additionalProperties": false
-          }
-        },
         "departments": {
           "type": "array",
           "items": {
@@ -55,32 +22,17 @@
               },
               "receives_all": {
                 "type": "boolean"
+              },
+              "cost_visible": {
+                "type": "boolean"
               }
             },
             "required": [
               "id",
               "label",
               "role",
-              "receives_all"
-            ],
-            "additionalProperties": false
-          }
-        },
-        "work_areas": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "label": {
-                "type": "string"
-              }
-            },
-            "required": [
-              "id",
-              "label"
+              "receives_all",
+              "cost_visible"
             ],
             "additionalProperties": false
           }
@@ -169,7 +121,6 @@
         }
       },
       "required": [
-        "teams",
         "departments",
         "assumption_note",
         "engines",

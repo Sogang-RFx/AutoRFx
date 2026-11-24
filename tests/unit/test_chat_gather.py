@@ -13,7 +13,7 @@ from autorfx.chat.models import ChatContext, Evidence
 from autorfx.models import Clause, ParsedSentence
 from autorfx.retrieval.dense import DenseIndex
 from autorfx.rules import Ruleset
-from chat_helpers import CLAUSES, PRICE, make_context
+from chat_helpers import CLAUSES, PRICE, context_for_scope, make_context, scope_for_group
 from factories import make_clause, make_file, make_issue, make_sentence, with_heading
 from topic_encoder import TopicEncoder
 
@@ -47,7 +47,10 @@ def get(
     overview: bool = False,
 ) -> tuple[Evidence, ...]:
     """``gather`` plus what must hold for every result: numbered from 1, in document order, no repeats."""
-    found = gather(question, queries, context=context, group=group, overview=overview)  # type: ignore[arg-type]
+    scope = scope_for_group(group)
+    found = gather(
+        question, queries, context=context_for_scope(context, scope), scope=scope, overview=overview
+    )
     order = {s.locus.key(): i for i, s in enumerate(s for c in context.clauses for s in c.sentences)}
     positions = [order[e.locus.key()] for e in found]
     assert positions == sorted(set(positions))
@@ -190,11 +193,14 @@ def test_the_similarity_gate_does_not_hide_a_paraphrase(ruleset: Ruleset):
     """RAG-03: a fixed threshold refused right sentences before the model saw them (§1)."""
     clauses = large(DEADLINE)
     context = make_context(ruleset, clauses, dense=DenseIndex(clauses, TopicEncoder(), min_score=2.0))
-    assert not context.index.search(PARAPHRASE, group="cost_visible").passed
+    assert not context.index.search(PARAPHRASE).passed
     assert DEADLINE.sentences[0].locus.key() in keys(get(context, PARAPHRASE))
 
 
 class BrokenDense:
+    def subset(self, clause_ids: object) -> BrokenDense:
+        return self
+
     def search(self, *args: object, **kwargs: object) -> tuple:
         raise RuntimeError("embedding service down")
 

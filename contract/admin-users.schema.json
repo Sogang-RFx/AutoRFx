@@ -1,0 +1,121 @@
+{
+  "$id": "https://autorfx.local/contract/admin-users.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "data": {
+      "type": "object",
+      "properties": {
+        "users": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "username": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9_-]{2,31}$"
+              },
+              "display_name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "role": {
+                "type": "string",
+                "enum": [
+                  "admin",
+                  "member"
+                ]
+              },
+              "department": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "disabled": {
+                "type": "boolean"
+              },
+              "must_change_password": {
+                "type": "boolean"
+              },
+              "created_at": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "last_login": {
+                "anyOf": [
+                  {
+                    "type": "integer",
+                    "minimum": -9007199254740991,
+                    "maximum": 9007199254740991
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "sessions": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            },
+            "required": [
+              "id",
+              "username",
+              "display_name",
+              "role",
+              "department",
+              "disabled",
+              "must_change_password",
+              "created_at",
+              "last_login",
+              "sessions"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "users"
+      ],
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "enum": [
+          "document",
+          "parsing",
+          "analysis",
+          "citation",
+          "translation",
+          "source",
+          "consistency",
+          "cost_inputs",
+          "precost",
+          "chat",
+          "evaluation"
+        ]
+      },
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "mock",
+          "real"
+        ]
+      }
+    }
+  },
+  "required": [
+    "data",
+    "provenance"
+  ],
+  "additionalProperties": false
+}

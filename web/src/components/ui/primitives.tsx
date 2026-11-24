@@ -3,9 +3,11 @@
  * Base components (TASKS S008, SPEC §15.3). State is never shown by colour
  * alone: every chip also carries a word and/or an icon.
  */
-import type { ButtonHTMLAttributes, ReactNode } from "react";
+import { useId } from "react";
+import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, Ref } from "react";
 import type { Engines, Locus, Origin, Priority, ProvenanceMap } from "@/lib/rfq/contract";
 import { fileName, fileTag, usePackageFiles } from "@/lib/rfq/package-context";
+import { LOCKED_CLAUSE } from "@/lib/rfq/scope";
 import { translationLabel } from "@/lib/rfq/translation";
 import { IconCheck, IconFlag, IconLock, IconWarn } from "./icons";
 
@@ -186,10 +188,12 @@ export function OriginLabel({ origin }: { origin: Origin }) {
   );
 }
 
+/** A lock row. It does not say why the clause is locked (docs/auth-rbac.md §2). */
 export function MaskedLabel() {
   return (
     <span className="inline-flex items-center gap-1.5 text-dense text-ink-muted">
-      <IconLock size={14} />이 팀에는 표시되지 않음
+      <IconLock size={14} className="shrink-0" />
+      {LOCKED_CLAUSE}
     </span>
   );
 }
@@ -240,13 +244,71 @@ export function Panel({
   );
 }
 
-type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "secondary" | "ghost" };
+// ── Forms ────────────────────────────────────────────────────────────────────
+export const controlClass =
+  "min-h-9 w-full rounded-control border border-line-control bg-surface px-2 text-dense text-ink disabled:bg-canvas disabled:text-ink-muted";
+
+type TextFieldProps = InputHTMLAttributes<HTMLInputElement> & {
+  label: string;
+  hint?: ReactNode;
+  ref?: Ref<HTMLInputElement>;
+};
+
+/** Label above, control, hint below; the hint is read together with the control. */
+export function TextField({ label, hint, className, ref, ...rest }: TextFieldProps) {
+  const id = useId();
+  return (
+    <div className="flex min-w-0 flex-col gap-1">
+      <label htmlFor={id} className="text-label font-semibold text-ink-muted">
+        {label}
+      </label>
+      <input
+        id={id}
+        ref={ref}
+        aria-describedby={hint ? `${id}-hint` : undefined}
+        className={cx(controlClass, className)}
+        {...rest}
+      />
+      {hint && (
+        <p id={`${id}-hint`} className="text-label text-ink-muted">
+          {hint}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** What went wrong or what happened, next to the control that caused it. Always mounted, so it is announced. */
+export function FormMessage({ tone, children }: { tone: "error" | "ok" | "info"; children: ReactNode }) {
+  const style = {
+    error: "border-danger/40 bg-danger-tint text-danger",
+    ok: "border-ok/40 bg-ok-tint text-ok",
+    info: "border-line bg-canvas text-ink-muted",
+  } as const;
+  return (
+    <div role={tone === "error" ? "alert" : "status"} data-testid={`form-${tone}`} className="empty:-my-2">
+      {children && (
+        <p className={cx("flex items-start gap-2 rounded-control border px-3 py-2 text-dense", style[tone])}>
+          {tone === "error" && <IconWarn size={14} className="mt-1 shrink-0" />}
+          {tone === "ok" && <IconCheck size={14} className="mt-1 shrink-0" />}
+          <span className={cx(tone === "error" && "text-ink")}>{children}</span>
+        </p>
+      )}
+    </div>
+  );
+}
+
+type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
+  variant?: "primary" | "secondary" | "ghost" | "danger";
+  ref?: Ref<HTMLButtonElement>;
+};
 
 export function Button({ variant = "secondary", className, type = "button", ...rest }: ButtonProps) {
   const styles = {
     primary: "bg-accent text-white border border-accent hover:bg-ink hover:border-ink",
     secondary: "bg-surface text-ink border border-line-control hover:bg-canvas",
     ghost: "text-ink-muted border border-transparent hover:text-ink hover:bg-canvas",
+    danger: "bg-surface text-danger border border-danger hover:bg-danger hover:text-white",
   } as const;
   return (
     <button
@@ -283,7 +345,7 @@ export function EmptyState({ title, children }: { title: string; children?: Reac
   );
 }
 
-/** A 403: the team may not see this. A lock, not an error. */
+/** A 403: the account may not see this. A lock, not an error. */
 export function ForbiddenState({ message }: { message: string }) {
   return (
     <div className="flex items-start gap-2 p-6 text-dense text-ink-muted" role="status" data-testid="forbidden">

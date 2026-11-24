@@ -1,4 +1,8 @@
-"""Retrieval: glossary expansion, the evidence gate, and the cost filter."""
+"""Retrieval: glossary expansion, the evidence gate, the cost filter, and the scope filter.
+
+``search(..., group=...)`` is the unscoped index, which only the command-line comparison tools use.
+A chat question is answered from ``SearchIndex.scoped(visible clause ids)`` (docs/auth-rbac.md §4).
+"""
 
 from __future__ import annotations
 
@@ -46,6 +50,8 @@ QUALITY = make_clause(
     first_sentence=7,
 )
 CLAUSES = (DELIVERY, PRICE, WARRANTY, QUALITY)
+ALL_IDS = frozenset(c.clause_id for c in CLAUSES)
+OPEN_IDS = ALL_IDS - {PRICE.clause_id}
 
 
 @pytest.fixture(scope="module")
@@ -157,8 +163,10 @@ def test_no_question_reaches_hidden_text_for_a_restricted_team(index: SearchInde
         "delivery price",
     ]
     for question in questions:
-        hits = index.search(question, group="cost_restricted").hits
+        hits = index.scoped(OPEN_IDS).search(question).hits
         assert not hidden & {hit.sentence.locus.key() for hit in hits}, question
+    assert "목표가" not in index.scoped(OPEN_IDS).suggestions()
+    assert index.scoped(ALL_IDS).search("target price").hits[0].clause_id == "d01:2.2"
     assert index.search("target price", group="cost_visible").hits[0].clause_id == "d01:2.2"
 
 
@@ -171,3 +179,27 @@ def test_a_cost_question_is_recognised_from_its_wording(index: SearchIndex):
     """RAG-04: decided before any document text is consulted."""
     assert not index.is_cost_question("인도조건은?") and index.is_cost_question("결제 조건은?")
     assert index.is_cost_question("목표가는 얼마인가요?") and index.is_cost_question("납기와 결제 조건은?")
+
+
+# ── department scope ────────────────────────────────────────────────────────
+def test_a_scoped_index_finds_only_its_clauses(index: SearchIndex):
+    """INV-4, auth-rbac §4: the scoped index holds the sentences of the given clauses and no others."""
+    scoped = index.scoped(frozenset({"d01:2.1"}))
+    assert {hit.clause_id for hit in scoped.search("납기는 어떻게 되나요?").hits} == {"d01:2.1"}
+    for question in ("보증 기간", "certification", "목표가", "IATF 16949", "Cpk"):
+        assert not scoped.search(question).hits, question
+    assert not index.scoped(frozenset()).search("delivery").hits, "no clause, no answer"
+    assert {h.clause_id for h in index.search("보증 기간", group="cost_visible").hits} == {"d01:4.5"}, (
+        "the unscoped index is unchanged"
+    )
+
+
+def test_a_scoped_index_scores_as_if_the_other_clauses_did_not_exist(index: SearchIndex, ruleset: Ruleset):
+    """INV-4: BM25 statistics, missing words and topics come from the scope's own text only, so a hidden
+    clause cannot be felt through ranking, the missing list or the suggestions."""
+    ids = frozenset({"d01:2.1", "d01:5.1"})
+    scoped, alone = index.scoped(ids), SearchIndex([DELIVERY, QUALITY], ruleset).scoped(ids)
+    for question in ("delivery and certification", "warranty for the supplier", "Gewährleistung", "납기"):
+        assert scoped.search(question) == alone.search(question), question
+    assert scoped.suggestions() == alone.suggestions() == ["납기", "인도조건", "인증", "공정능력"]
+    assert scoped.search("certification gewährleistungsfrist").missing == ("gewährleistungsfrist",)

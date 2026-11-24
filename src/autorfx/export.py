@@ -1,8 +1,9 @@
 """Server-side exports (RTM-02, ROUTE-04).
 
-Workbooks are built from rows that were already filtered for the team, so an
-export can never contain more than the screen (INV-8). The first row says how
-the content was computed, the same way the screen does (ENGINE-03).
+Workbooks are built from rows and a package that were already cut down to the account's
+scope (:mod:`autorfx.access`), so an export can never contain more than the screen (INV-8).
+The first row says how the content was computed, the same way the screen does (ENGINE-03),
+and for which scope: the file leaves the system.
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from autorfx.models import Group, PackageManifest
 from autorfx.rules import Ruleset
 
 PRIORITY_LABEL = {"must": "Must", "should": "Should", "optional": "Optional", "info": "Info"}
-MASKED_TEXT = "이 팀에는 표시되지 않음"
+MASKED_TEXT = "열람 권한이 없는 조항입니다"
 HEADERS = (
     "파일",
     "조항",
@@ -35,11 +36,12 @@ HEADERS = (
 FIXED_TIME = datetime(2000, 1, 1)
 
 
-def engine_note(engines: Mapping[str, object], group: Group) -> str:
-    """One line that says how the rows were computed and for which group."""
+def engine_note(engines: Mapping[str, object], group: Group, view: str) -> str:
+    """One line that says how the rows were computed and for which scope."""
     how = "LLM 연결" if engines.get("llm_connected") else "규칙 기반 · LLM 미연결"
     who = "금액 열람 가능" if group == "cost_visible" else "금액 조항 가림"
-    return f"AutoRFx RTM · {how} (분석: {engines.get('analysis', '?')}) · {who}"
+    note = f"AutoRFx RTM · {how} (분석: {engines.get('analysis', '?')}) · {who}"
+    return f"{note} · 범위: {view}" if view else note
 
 
 FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
@@ -63,8 +65,10 @@ def rtm_workbook(
     ruleset: Ruleset,
     engines: Mapping[str, object],
     group: Group,
+    view: str = "",
 ) -> bytes:
-    """The RTM as an .xlsx file. ``rows`` are contract ``RtmRow`` dicts, already filtered."""
+    """The RTM as an .xlsx file. ``rows`` (contract ``RtmRow`` dicts) and ``manifest`` are already cut down
+    to the scope that ``view`` names."""
     names = {f.id: f.name for f in manifest.files}
     labels = {d.id: d.label for d in ruleset.departments}
     book = Workbook()
@@ -72,7 +76,7 @@ def rtm_workbook(
     book.properties.modified = FIXED_TIME
     sheet = book.active
     sheet.title = "RTM"
-    _append(sheet, [engine_note(engines, group)])
+    _append(sheet, [engine_note(engines, group, view)])
     _append(sheet, [f"{manifest.name} · 파일 {len(manifest.files)}개 · 원본 해시 {manifest.sha256[:12]}"])
     _append(sheet, list(HEADERS))
     for cell in sheet[3]:

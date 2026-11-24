@@ -11,7 +11,6 @@ import { ErrorState, Panel, Skeleton, cx } from "@/components/ui/primitives";
 import type { JobResponse, JobStage, PackageFile } from "@/lib/rfq/contract";
 import { fileTag, usePackageFiles } from "@/lib/rfq/package-context";
 import { describeError, rfqApi } from "@/lib/rfq/provider";
-import { useSession } from "@/lib/rfq/session";
 
 /** A real analysis takes seconds to minutes. */
 const POLL_MS = 1500;
@@ -87,13 +86,11 @@ function FileList({ files }: { files: PackageFile[] }) {
 export default function ProcessingPage() {
   const { id } = useParams<{ id: string }>();
   const rfqId = decodeURIComponent(id);
-  const session = useSession();
   const files = usePackageFiles();
   const [job, setJob] = useState<JobResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!session.ready) return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     let failures = 0;
@@ -118,7 +115,7 @@ export default function ProcessingPage() {
       controller.abort();
       clearTimeout(timer);
     };
-  }, [rfqId, session.ready]);
+  }, [rfqId]);
 
   const stages = job?.data.stages ?? [];
   const doneCount = stages.filter(finished).length;
@@ -184,9 +181,12 @@ export default function ProcessingPage() {
                       {STATUS_LABEL[stage.status]}
                     </span>
                   </div>
-                  <p className={cx("text-dense", stage.status === "error" ? "text-danger" : "text-ink-muted")}>
-                    {stage.detail}
-                  </p>
+                  {/* Outside the full scope the server sends the stage and its state only. */}
+                  {stage.detail && (
+                    <p className={cx("text-dense", stage.status === "error" ? "text-danger" : "text-ink-muted")}>
+                      {stage.detail}
+                    </p>
+                  )}
                 </div>
               </li>
             ))}
@@ -207,7 +207,7 @@ export default function ProcessingPage() {
           </Link>
         </div>
       )}
-      {halted && <ErrorState message={`'${halted.label}' 단계에서 처리가 멈췄습니다. ${halted.detail}`} />}
+      {halted && <ErrorState message={`'${halted.label}' 단계에서 처리가 멈췄습니다. ${halted.detail}`.trim()} />}
     </div>
   );
 }

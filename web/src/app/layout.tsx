@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Source_Serif_4 } from "next/font/google";
 import localFont from "next/font/local";
+import { AuthGate } from "@/components/auth/auth-gate";
 import { SessionProvider } from "@/lib/rfq/session";
 import "./globals.css";
 
@@ -27,7 +28,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html lang="ko" className={`${pretendard.variable} ${sourceSerif.variable}`}>
       <body className="min-h-dvh">
-        <SessionProvider>{children}</SessionProvider>
+        <SessionProvider>
+          <AuthGate>{children}</AuthGate>
+        </SessionProvider>
       </body>
     </html>
   );

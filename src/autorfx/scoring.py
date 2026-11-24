@@ -97,12 +97,14 @@ def evaluate(
     key: AnswerKey | None,
     *,
     now_ms: int,
-    withheld: Collection[str] = (),
+    withheld: Collection[str] | None = None,
 ) -> dict:
     """The ``data`` object of ``contract/evaluation.schema.json``.
 
-    ``withheld`` are clause and issue ids the requesting team may not see. They still count in the
-    metrics, but their error rows (which name the judged department and red flag) are left out (INV-8).
+    ``withheld`` are the clause and issue ids the requesting account may not see; ``None`` is for an account
+    that sees everything. They still count in the metrics, but their error rows (which name the judged
+    department and red flag) are left out, and so is a row about something that was not found: nothing
+    says who may see it (INV-8).
     """
     if key is None:
         return {
@@ -117,10 +119,12 @@ def evaluate(
     flagged_found: set[str] = set()
     judged_flags: set[str] = set()
 
-    hidden = frozenset(withheld)
+    shown: frozenset[str] | None = None
+    if withheld is not None:
+        shown = frozenset({*by_id, *(issue.id for issue in issues)} - frozenset(withheld))
 
     def miss(dimension: str, ref: str, expected: object, actual: object, subject: str = "") -> None:
-        if subject and subject in hidden:
+        if shown is not None and subject not in shown:
             return
         errors.append({"dimension": dimension, "ref": ref, "expected": str(expected), "actual": str(actual)})
 

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from autorfx.models import Clause, ClauseAnalysis, ConsistencyIssue, FileRecord, Locus, Model
-from autorfx.retrieval.index import SearchIndex
+from autorfx.retrieval.index import ScopedSearchIndex
 
 Intent = Literal["lookup", "overview", "red_flags", "conflicts", "guide"]
 
@@ -68,9 +68,9 @@ class Topic(Model):
 
 @dataclass(frozen=True)
 class ChatContext:
-    """Everything stored about one RFQ that a question may be answered from."""
+    """Everything stored about one RFQ that a question may be answered from, already scoped to the account."""
 
-    index: SearchIndex
+    index: ScopedSearchIndex
     clauses: Sequence[Clause]
     analyses: Sequence[ClauseAnalysis]
     issues: Sequence[ConsistencyIssue]

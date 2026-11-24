@@ -1,0 +1,34 @@
+{
+  "$id": "https://autorfx.local/contract/admin-user-patch-request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "display_name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 60
+    },
+    "role": {
+      "type": "string",
+      "enum": [
+        "admin",
+        "member"
+      ]
+    },
+    "department": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "disabled": {
+      "type": "boolean"
+    }
+  },
+  "additionalProperties": false
+}

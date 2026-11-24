@@ -8,11 +8,6 @@ keywords are in ``data/rules/work_areas.yaml`` (domain-team owned).
 from autorfx.rules import WorkAreaRules
 
 
-def catalog(rules: WorkAreaRules) -> list[dict]:
-    """Area ids and labels in catalog order, as ``/meta`` lists them."""
-    return [{"id": area.id, "label": area.label} for area in rules.areas]
-
-
 def canonical_area(rules: WorkAreaRules, area: str) -> str:
     """The current id for an area id: an earlier fine-grained id (a topic) maps to its area."""
     return next((a.id for a in rules.areas if area in a.topics), area)

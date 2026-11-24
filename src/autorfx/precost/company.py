@@ -8,9 +8,8 @@ qualifications, liability limit, payment limit) and a few rates (discount rate,
 margin, scrap, SG&A). Answers to knockout questions about facts ("we hold
 IATF 16949") are kept here as well, so the same question is not asked twice.
 
-Stored in ``work/_org/company.json``, replaced as a whole like the company
-departments. Nothing here is invented: a value the company has not entered
-stays empty, and the calculation asks for it instead of guessing.
+Stored in ``work/_org/company.json``, replaced as a whole. Nothing here is invented: a
+value the company has not entered stays empty, and the calculation asks for it instead of guessing.
 """
 
 from __future__ import annotations

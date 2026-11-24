@@ -15,6 +15,7 @@ import pymupdf
 import pytest
 from openpyxl import load_workbook
 
+from auth_helpers import LIMITED, SECRET, cost_restricted_scope, scope_for, visible_of
 from autorfx import access
 from autorfx.analysis import RuleOnlyProvider
 from autorfx.config import Settings
@@ -23,6 +24,7 @@ from autorfx.ingest import list_samples
 from autorfx.pipeline import RfqData, load_rfq, run_pipeline
 from autorfx.rules import Ruleset
 from conftest import REPO
+from scoped_pdf_helpers import scoped_pdf
 
 pytestmark = pytest.mark.corpus
 
@@ -83,21 +85,25 @@ def test_positions_are_unique_and_inside_the_page(packages: dict[str, RfqData]):
                 assert all(r.x + r.w <= 1.0001 and r.y + r.h <= 1.0001 for r in sentence.rects)
 
 
-def test_nothing_hidden_reaches_a_restricted_team(packages: dict[str, RfqData], ruleset: Ruleset):
-    """INV-4, INV-8, SC-004: no hidden sentence appears in any response, export, answer or masked PDF,
-    nor in the evidence an answer would be written from."""
+@pytest.mark.parametrize("who", ["no_cost", *LIMITED])
+def test_nothing_hidden_reaches_a_limited_scope(packages: dict[str, RfqData], ruleset: Ruleset, who: str):
+    """INV-4, INV-8, SC-004: no sentence outside the scope appears in any response, export, answer,
+    gathered evidence or PDF; ``no_cost`` is every department without the cost clauses."""
     from autorfx.chat.gather import gather
     from autorfx.chat.models import ChatContext
     from autorfx.chat.service import answer_question
     from autorfx.chat.topics import load_topics
 
+    scope = cost_restricted_scope(ruleset) if who == "no_cost" else scope_for(who, ruleset)
     topics = load_topics(REPO / "data" / "chat" / "topics.yaml")
     for name, data in packages.items():
-        hidden_clauses = [c for c in data.clauses if c.is_cost_sensitive]
+        visible = visible_of(data.clauses, data.analyses, scope, ruleset)
+        shown = {c.clause_id for c in visible}
+        hidden_clauses = [c for c in data.clauses if c.clause_id not in shown]
         if not hidden_clauses:
             continue
         # A hidden sentence that also stands inside visible text (e.g. the issuer's name) proves nothing.
-        visible_text = "\n".join(s.text for c in data.clauses if not c.is_cost_sensitive for s in c.sentences)
+        visible_text = "\n".join(s.text for c in visible for s in c.sentences)
         secrets = {
             s.text
             for c in hidden_clauses
@@ -105,55 +111,47 @@ def test_nothing_hidden_reaches_a_restricted_team(packages: dict[str, RfqData], 
             if len(s.text) >= MIN_SECRET and s.text not in visible_text
         }
         assert secrets, name
-        group = "cost_restricted"
-        rows = access.rtm_rows(data.clauses, data.analyses, group=group, ruleset=ruleset)
+        rows = access.rtm_rows(data.clauses, data.analyses, scope=scope, ruleset=ruleset, secret=SECRET)
         workbook = rtm_workbook(
-            rows, manifest=data.manifest, ruleset=ruleset, engines=data.engines, group=group
+            rows, manifest=data.manifest, ruleset=ruleset, engines=data.engines, group=scope.group
         )
         sheet = load_workbook(io.BytesIO(workbook)).active
         context = ChatContext(
-            index=data.index,
-            clauses=data.clauses,
-            analyses=data.analyses,
-            issues=data.consistency.issues,
-            files=data.manifest.files,
+            index=data.index.scoped(frozenset(shown)),
+            clauses=visible,
+            analyses=tuple(a for a in data.analyses if a.clause_id in shown),
+            issues=access.visible_issues(data.consistency.issues, scope=scope, visible=visible),
+            files=access.package_view(data.manifest, visible, scope=scope).files,
             topics=topics,
         )
         payloads = [
-            access.clause_items(data.clauses, data.analyses, group=group, department=None, ruleset=ruleset),
+            access.clause_items(data.clauses, data.analyses, scope=scope, ruleset=ruleset, secret=SECRET),
             rows,
-            access.issue_items(data.consistency.issues, group=group, clauses=data.clauses),
+            access.issue_items(data.consistency.issues, scope=scope, visible=visible, secret=SECRET),
             [list(row) for row in sheet.iter_rows(values_only=True)],
             [
-                answer_question(q, context=context, group=group, model=None)
+                answer_question(q, context=context, scope=scope, model=None)
                 for q in (*QUESTIONS, *STORED_QUESTIONS)
             ],
             [
                 evidence.model_dump(mode="json")
                 for q in QUESTIONS
                 for overview in (False, True)
-                for evidence in gather(q, QUESTIONS, context=context, group=group, overview=overview)
+                for evidence in gather(q, QUESTIONS, context=context, scope=scope, overview=overview)
             ],
         ]
         for file in data.manifest.files:
-            own = [c for c in data.clauses if c.source_doc == file.id]
             parsed = data.parsed[file.id]
             for page in range(1, parsed.page_count + 1):
-                payloads.append(access.sentences_for(parsed, own, group=group, page_number=page))
+                payloads.append(access.sentences_for(parsed, visible, scope=scope, page_number=page))
         blob = json.dumps(payloads, ensure_ascii=False, default=str)
         leaked = [secret for secret in secrets if json.dumps(secret, ensure_ascii=False)[1:-1] in blob]
         assert not leaked, (name, len(leaked))
 
         for file in data.manifest.files:
-            keys = access.hidden_keys([c for c in data.clauses if c.source_doc == file.id])
-            if not keys:
-                continue
-            with pymupdf.open(str(access.source_pdf(data.workspace, file, group=group))) as doc:
-                pages = [" ".join(page.get_text().split()) for page in doc]
-            for sentence in data.parsed[file.id].sentences:
-                if sentence.locus.key() in keys and sentence.text in secrets:
-                    flat = " ".join(sentence.text.split())
-                    assert flat not in pages[sentence.locus.page_number - 1], (name, file.id)
+            path = scoped_pdf(data.workspace, file, data.parsed[file.id], visible, scope)
+            with pymupdf.open(str(path)) as doc:
+                assert "".join(page.get_text() for page in doc).strip() == "", (name, file.id)
 
 
 def test_every_issue_has_verified_evidence(packages: dict[str, RfqData]):

@@ -9,8 +9,6 @@ from fastapi.testclient import TestClient
 
 from autorfx.analysis import OpenAIProvider, RuleOnlyProvider, ScriptedProvider, SheetMap
 from autorfx.analysis.providers import TransientProviderError
-from autorfx.api import create_app
-from autorfx.config import Settings
 from autorfx.precost.lines import Grid, read_grids, signature
 from autorfx.precost.sheet_suggest import SuggestError, sheet_sample, suggest_columns
 from autorfx.rules import PriceSheetRules, Ruleset
@@ -144,48 +142,29 @@ def api(tmp_path_factory: pytest.TempPathFactory, ruleset: Ruleset) -> Iterator[
         sheet.append([c or None for c in row])
     path = root / "hardware.xlsx"
     book.save(path)
-    settings = Settings(_env_file=None, data_dir=root / "data")
-    with TestClient(create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())) as client:
-        response = client.post(
-            "/rfqs",
-            files=[
-                (
-                    "files",
-                    (
-                        "hardware.xlsx",
-                        path.read_bytes(),
-                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    ),
-                )
-            ],
-        )
-        assert response.status_code == 200, response.text
-        client.app.state.autorfx.wait()
-        yield client, response.json()["data"]["id"]
+    from auth_helpers import running_app, settings_in
+
+    with running_app(settings_in(root), ruleset) as accounts:
+        yield accounts, accounts.upload([path])
 
 
-def test_the_api_suggests_and_the_user_accepts(api: tuple[TestClient, str]) -> None:
-    client, rfq_id = api
-    state = client.app.state.autorfx
-    setup = client.get(f"/rfqs/{rfq_id}/precost-setup", params={"team": "sales"}).json()
+def test_the_api_suggests_and_the_user_accepts(api) -> None:
+    accounts, rfq_id = api
+    state = accounts.state
+    sales = accounts["sales"]
+    setup = sales.get(f"/rfqs/{rfq_id}/precost-setup").json()
     (table,) = [t for t in setup["data"]["lines"]["tables"] if t["how"] == "none"]
 
-    refused = client.post(
-        f"/rfqs/{rfq_id}/price-sheet/suggest", params={"team": "sales"}, json={"table": table["id"]}
-    )
+    refused = sales.post(f"/rfqs/{rfq_id}/price-sheet/suggest", json={"table": table["id"]})
     assert (refused.status_code, refused.json()["error"]["code"]) == (422, "no_suggestion")
     assert_valid("error", refused.json())
-    denied = client.post(
-        f"/rfqs/{rfq_id}/price-sheet/suggest", params={"team": "development"}, json={"table": table["id"]}
-    )
+    denied = accounts["development"].post(f"/rfqs/{rfq_id}/price-sheet/suggest", json={"table": table["id"]})
     assert denied.status_code == 403
 
     original = state.provider
     state.provider = ScriptedProvider(sheet_maps=[_map(no=1, description=2, quantity=3, price=4)])
     try:
-        got = client.post(
-            f"/rfqs/{rfq_id}/price-sheet/suggest", params={"team": "sales"}, json={"table": table["id"]}
-        )
+        got = sales.post(f"/rfqs/{rfq_id}/price-sheet/suggest", json={"table": table["id"]})
     finally:
         state.provider = original
     assert got.status_code == 200, got.text
@@ -193,16 +172,15 @@ def test_the_api_suggests_and_the_user_accepts(api: tuple[TestClient, str]) -> N
     data = got.json()["data"]
     assert (data["header_row"], data["lines"]) == (10, 2)
 
-    blank = client.post(
+    blank = sales.post(
         f"/rfqs/{rfq_id}/price-sheet/columns",
-        params={"team": "sales"},
         json={"table": table["id"], "header_row": 0, "columns": {"description": 2, "quantity": 3}},
     )
     assert blank.status_code == 400
     assert "열이 너무 적" in blank.json()["error"]["message"]
 
     body = {"table": table["id"], "header_row": data["header_row"], "columns": data["columns"]}
-    accepted = client.post(f"/rfqs/{rfq_id}/price-sheet/columns", params={"team": "sales"}, json=body)
+    accepted = sales.post(f"/rfqs/{rfq_id}/price-sheet/columns", json=body)
     assert accepted.status_code == 200, accepted.text
     names = [r["name"] for r in accepted.json()["data"]["lines"]["items"]]
     assert names == ["Cisco Catalyst IR8340 router", "Rugged power supply 250W"]

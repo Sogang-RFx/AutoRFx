@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 
+from autorfx.auth.policy import Scope
 from autorfx.chat.model import ScriptedChatModel
 from autorfx.chat.models import ChatContext, Draft, Statement, Topic, Turn
 from autorfx.chat.service import answer_question
@@ -83,12 +84,31 @@ def make_context(
 ) -> ChatContext:
     names = dict.fromkeys(c.source_doc for c in clauses)
     return ChatContext(
-        index=SearchIndex(clauses, ruleset, dense=dense),
+        index=SearchIndex(clauses, ruleset, dense=dense).scoped(frozenset(c.clause_id for c in clauses)),
         clauses=tuple(clauses),
         analyses=tuple(analyses),
         issues=tuple(issues),
         files=tuple(files) if files is not None else tuple(make_file(n, f"{n}.pdf") for n in names),
         topics=tuple(topics),
+    )
+
+
+def scope_for_group(group: str) -> Scope:
+    return Scope(cost_visible=group == "cost_visible", areas=None)
+
+
+def context_for_scope(context: ChatContext, scope: Scope) -> ChatContext:
+    if scope.cost_visible:
+        return context
+    visible = tuple(c for c in context.clauses if not c.is_cost_sensitive)
+    ids = frozenset(c.clause_id for c in visible)
+    return ChatContext(
+        index=context.index.scoped(ids),
+        clauses=visible,
+        analyses=tuple(a for a in context.analyses if a.clause_id in ids),
+        issues=context.issues,
+        files=context.files,
+        topics=context.topics,
     )
 
 
@@ -113,7 +133,10 @@ def ask(
     INV-9: the shape is the contract. INV-3: what is shown carries citations, and ``answer`` is exactly
     the statements joined. §2: at most one plan call and two answer calls.
     """
-    data = answer_question(question, context=context, group=group, model=model, history=history)  # type: ignore[arg-type]
+    scope = scope_for_group(group)
+    data = answer_question(
+        question, context=context_for_scope(context, scope), scope=scope, model=model, history=history
+    )
     assert_valid("chat", {"data": data, "provenance": {"chat": "real"}})
     assert (data["status"] == "answered") == (data["answer"] is not None)
     if data["answer"] is None:

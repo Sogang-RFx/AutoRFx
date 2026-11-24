@@ -8,27 +8,29 @@ from __future__ import annotations
 
 from collections.abc import Collection, Iterable
 
-from autorfx.access import Key, visible_keys, withheld_ids
+from autorfx import access
+from autorfx.access import Key, visible_keys
+from autorfx.auth.policy import Scope
 from autorfx.chat.models import ChatContext, CitedText
-from autorfx.models import ConsistencyIssue, Group, Locus
+from autorfx.models import Clause, ConsistencyIssue, Locus
 
 SEVERITIES = ("high", "medium", "low")
 
 
-def citable_keys(context: ChatContext, group: Group) -> frozenset[Key]:
-    """Positions this group may be shown: an allowlist, so an unknown group gets the reduced one."""
-    if group == "cost_visible":
-        return frozenset(s.locus.key() for c in context.clauses for s in c.sentences)
-    return visible_keys(context.clauses)
+def _visible_clauses(context: ChatContext, scope: Scope) -> tuple[Clause, ...]:
+    """Defense in depth: even if a caller passed a cost clause to a cost-restricted scope, drop it."""
+    if scope.cost_visible:
+        return tuple(context.clauses)
+    return tuple(c for c in context.clauses if not c.is_cost_sensitive)
 
 
-def _withheld(context: ChatContext, group: Group) -> frozenset[str]:
-    return withheld_ids(context.clauses, context.analyses, context.issues, group=group)
+def citable_keys(context: ChatContext, scope: Scope) -> frozenset[Key]:
+    """Positions this scope may be shown: an allowlist of the visible clauses."""
+    return visible_keys(_visible_clauses(context, scope))
 
 
-def visible_issues(context: ChatContext, group: Group) -> tuple[ConsistencyIssue, ...]:
-    withheld = _withheld(context, group)
-    return tuple(issue for issue in context.issues if issue.id not in withheld)
+def visible_issues(context: ChatContext, scope: Scope) -> tuple[ConsistencyIssue, ...]:
+    return access.visible_issues(context.issues, scope=scope, visible=_visible_clauses(context, scope))
 
 
 def _citations(loci: Iterable[Locus], known: frozenset[Key]) -> tuple[Locus, ...]:
@@ -36,14 +38,15 @@ def _citations(loci: Iterable[Locus], known: frozenset[Key]) -> tuple[Locus, ...
     return tuple({locus.key(): locus for locus in loci if locus.key() in known}.values())
 
 
-def red_flag_statements(context: ChatContext, group: Group) -> tuple[CitedText, ...]:
-    """One statement per verified red flag, in document order."""
-    withheld, known = _withheld(context, group), citable_keys(context, group)
+def red_flag_statements(context: ChatContext, scope: Scope) -> tuple[CitedText, ...]:
+    """One statement per verified red flag in visible clauses, in document order."""
+    visible = _visible_clauses(context, scope)
+    known = visible_keys(visible)
     by_id = {a.clause_id: a for a in context.analyses}
     found: list[CitedText] = []
-    for clause in context.clauses:
+    for clause in visible:
         analysis = by_id.get(clause.clause_id)
-        if analysis is None or analysis.red_flag is None or clause.clause_id in withheld:
+        if analysis is None or analysis.red_flag is None:
             continue
         if analysis.summary.citation_status != "verified":
             continue
@@ -53,19 +56,19 @@ def red_flag_statements(context: ChatContext, group: Group) -> tuple[CitedText, 
     return tuple(found)
 
 
-def conflict_statements(context: ChatContext, group: Group) -> tuple[CitedText, ...]:
-    """Every issue of every category, most severe first."""
-    known = citable_keys(context, group)
-    ordered = sorted(visible_issues(context, group), key=lambda i: SEVERITIES.index(i.severity))
+def conflict_statements(context: ChatContext, scope: Scope) -> tuple[CitedText, ...]:
+    """Every visible issue of every category, most severe first."""
+    known = citable_keys(context, scope)
+    ordered = sorted(visible_issues(context, scope), key=lambda i: SEVERITIES.index(i.severity))
     cited = ((issue, _citations((e.locus for e in issue.evidence), known)) for issue in ordered)
     return tuple(CitedText(text=issue.title, citations=loci) for issue, loci in cited if loci)
 
 
-def related_conflicts(cited_keys: Collection[Key], context: ChatContext, group: Group) -> tuple[dict, ...]:
+def related_conflicts(cited_keys: Collection[Key], context: ChatContext, scope: Scope) -> tuple[dict, ...]:
     """Contract ``conflicts``: the visible contradictions that a cited sentence is evidence of."""
-    known = citable_keys(context, group)
+    known = citable_keys(context, scope)
     found: list[dict] = []
-    for issue in visible_issues(context, group):
+    for issue in visible_issues(context, scope):
         loci = _citations((e.locus for e in issue.evidence), known)
         if issue.category != "conflict" or not any(locus.key() in cited_keys for locus in loci):
             continue

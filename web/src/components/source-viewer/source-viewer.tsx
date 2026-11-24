@@ -1,16 +1,18 @@
 "use client";
 /**
  * Source viewer (TASKS S012, SPEC §14, CITE-03). Shows one file of the RFQ
- * package at a time: its canonical PDF as the server chose it for this team
- * (restricted teams get the cost-redacted PDF), with highlight boxes from the
- * sentence coordinates of the same PDF. A citation opens its own file, page and
+ * package at a time: its PDF as the server made it for this account (what is out
+ * of scope is grey, docs/auth-rbac.md §5), with highlight boxes from the sentence
+ * coordinates of the same PDF. A citation opens its own file, page and
  * sentence. A region (a price-sheet table) opens its page with the region outlined.
  * PDF.js is loaded on demand so it stays out of the first-load bundle.
  */
 import { useEffect, useRef, useState } from "react";
 import type { Locus, SentencesResponse } from "@/lib/rfq/contract";
 import { fileTag, usePackageFiles } from "@/lib/rfq/package-context";
-import { describeError, rfqApi, type RequestCtx } from "@/lib/rfq/provider";
+import { describeError, isForbidden, rfqApi } from "@/lib/rfq/provider";
+import { seesWholeSource } from "@/lib/rfq/scope";
+import { useViewer } from "@/lib/rfq/session";
 import { useResource } from "@/lib/rfq/use-resource";
 import { IconArrowRight, IconLock } from "../ui/icons";
 import { Button, ErrorState, ForbiddenState, Panel, Skeleton, cx, useLocusLabel } from "../ui/primitives";
@@ -25,19 +27,10 @@ type PdfPage = {
   };
 };
 
-class SourceForbidden extends Error {}
-
-async function loadPdf(url: () => string, signal: AbortSignal): Promise<PdfDoc> {
+async function loadPdf(rfqId: string, fileId: string, signal: AbortSignal): Promise<PdfDoc> {
   const pdfjs = await import("pdfjs-dist");
   pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
-  // url() may throw a ConfigError; inside this async function it becomes a rejection.
-  const res = await fetch(url(), { cache: "no-store", signal });
-  if (res.status === 403) {
-    const body = (await res.json().catch(() => null)) as { error?: { message?: string } } | null;
-    throw new SourceForbidden(body?.error?.message ?? "이 팀에는 이 파일의 원문이 제공되지 않습니다.");
-  }
-  if (!res.ok) throw new Error(`원문 PDF를 받지 못했습니다 (${res.status}).`);
-  const data = new Uint8Array(await res.arrayBuffer());
+  const data = await rfqApi.source(rfqId, fileId, signal);
   const task = pdfjs.getDocument({ data });
   const proxy = await task.promise;
   return {
@@ -61,14 +54,13 @@ export type SourceRegion = {
 
 type Props = {
   rfqId: string;
-  ctx: RequestCtx;
-  restricted: boolean;
   target: Locus | null;
   region?: SourceRegion | null;
   className?: string;
 };
 
-export function SourceViewer({ rfqId, ctx, restricted, target, region = null, className }: Props) {
+export function SourceViewer({ rfqId, target, region = null, className }: Props) {
+  const viewer = useViewer();
   const files = usePackageFiles();
   const locusLabel = useLocusLabel();
   const [chosen, setChosen] = useState<string | null>(null);
@@ -100,13 +92,13 @@ export function SourceViewer({ rfqId, ctx, restricted, target, region = null, cl
   const fileId = chosen ?? files[0]?.id ?? null;
   const current = files.find((f) => f.id === fileId) ?? null;
 
-  // One PDF per file and team: the server decides which file a team receives.
-  const sourceKey = fileId ? `${rfqId}:${fileId}:${ctx.team ?? "none"}` : null;
+  // One PDF per file and account: the server decides what an account receives.
+  const sourceKey = fileId ? `${viewer.user_id}:${rfqId}:${fileId}` : null;
   useEffect(() => {
     if (!sourceKey || !fileId) return;
     const controller = new AbortController();
     let doc: PdfDoc | null = null;
-    loadPdf(() => rfqApi.sourceUrl(rfqId, fileId, ctx), controller.signal).then(
+    loadPdf(rfqId, fileId, controller.signal).then(
       (d) => {
         doc = d;
         if (controller.signal.aborted) void d.destroy();
@@ -114,8 +106,7 @@ export function SourceViewer({ rfqId, ctx, restricted, target, region = null, cl
       },
       (e: unknown) => {
         if (controller.signal.aborted) return;
-        const forbidden = e instanceof SourceForbidden;
-        setLoaded({ key: sourceKey, doc: null, error: describeError(e), forbidden });
+        setLoaded({ key: sourceKey, doc: null, error: describeError(e), forbidden: isForbidden(e) });
       },
     );
     return () => {
@@ -162,8 +153,8 @@ export function SourceViewer({ rfqId, ctx, restricted, target, region = null, cl
   }, [doc, page, width]);
 
   const sentences = useResource<SentencesResponse>(
-    fileId ? `sent:${rfqId}:${fileId}:${ctx.team ?? "none"}:${page}` : null,
-    (s) => rfqApi.sentences(rfqId, fileId ?? "", page, ctx, s),
+    fileId ? `sent:${rfqId}:${fileId}:${page}` : null,
+    (s) => rfqApi.sentences(rfqId, fileId ?? "", page, s),
   );
   const onTargetPage = Boolean(target && target.source_doc === fileId && target.page_number === page);
   const marked =
@@ -251,9 +242,9 @@ export function SourceViewer({ rfqId, ctx, restricted, target, region = null, cl
         ) : (
           <span className="text-ink-muted">인용을 누르면 해당 파일의 문장으로 이동합니다.</span>
         )}
-        {restricted && (
+        {!seesWholeSource(viewer) && (
           <span className="ml-auto inline-flex items-center gap-1 text-ink-muted" data-testid="masked-pdf-note">
-            <IconLock size={12} /> 금액 조항이 가려진 원문
+            <IconLock size={12} /> 회색 부분은 열람 범위 밖입니다
           </span>
         )}
       </div>

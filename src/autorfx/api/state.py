@@ -7,23 +7,27 @@ restart loses nothing but a job that was running (it is closed as failed).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import TypeVar
 
 from autorfx.analysis import AnalysisProvider, SqliteCache, engine_ids, make_provider
 from autorfx.analysis.usage import load_prices
+from autorfx.auth import AuditLog, AuthStore
+from autorfx.auth.passwords import MAX_CONCURRENT
 from autorfx.chat.model import ChatModel, make_chat_model
 from autorfx.chat.topics import load_topics
 from autorfx.config import Settings
+from autorfx.guard import GuardError
 from autorfx.ingest import identify_package
 from autorfx.jobs import JobStore, close_interrupted, load_job
-from autorfx.models import Group, JobState
-from autorfx.org import OrgStore
+from autorfx.models import JobState, PackageManifest
 from autorfx.pipeline import (
     PIPELINE_VERSION,
     PipelineError,
@@ -39,6 +43,8 @@ from autorfx.rules import Ruleset, load_ruleset
 from autorfx.workspace import RFQ_ID, Workspace
 
 log = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 UPLOAD_DIR = "_uploads"
 REUSED = "이미 분석한 RFQ입니다. 저장된 결과를 엽니다."
@@ -96,7 +102,13 @@ class AppState:
             settings.embedding_model, openai_api_key=key, cache_dir=settings.cache_dir
         )
         """Loaded once: a local model such as BGE-M3 takes seconds to load."""
-        self.org = OrgStore(settings.work_dir, self.ruleset)
+        # A store that cannot be read does not stop the process: it refuses every login and every route.
+        self.auth = AuthStore(
+            settings.work_dir,
+            department_ids=self.ruleset.department_ids,
+            session_hours=settings.session_hours,
+        )
+        self.audit = AuditLog(settings.work_dir)
         self.company = CompanyStore(settings.work_dir, self.ruleset)
         self.price_sheets = PriceSheetStore(settings.work_dir)
         self._jobs: dict[str, JobStore] = {}
@@ -104,6 +116,9 @@ class AppState:
         """Loaded results per RFQ, with the start time of the job that produced them."""
         self._lock = threading.Lock()
         self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="autorfx-job")
+        self._passwords = ThreadPoolExecutor(
+            max_workers=MAX_CONCURRENT, thread_name_prefix="autorfx-password"
+        )
         settings.work_dir.mkdir(parents=True, exist_ok=True)
         discard(self.upload_root)
         for folder in sorted(settings.work_dir.iterdir()):
@@ -121,6 +136,7 @@ class AppState:
 
     def close(self) -> None:
         self._worker.shutdown(wait=True, cancel_futures=True)
+        self._passwords.shutdown(wait=True, cancel_futures=True)
         # After the worker: a running job still reads and writes both.
         self.cache.close()
         if self.translation_cache is not None:
@@ -130,24 +146,16 @@ class AppState:
         """Block until every job submitted so far has ended. Jobs run in order on one worker."""
         self._worker.submit(lambda: None).result()
 
-    # ── teams ───────────────────────────────────────────────────────────────
-    def group_of(self, team: str | None) -> Group:
-        """Access group of a team: a company department first, then a rule team; unknown is restricted."""
-        found = self.org.find(team)
-        return found.group if found is not None else self.ruleset.group_of(team)
-
-    def areas_of(self, department: str | None) -> tuple[str, ...] | None:
-        """Rule departments a department filter stands for; ``None`` means no filter."""
-        if not department:
-            return None
-        found = self.org.find(department)
-        return found.areas if found is not None else (department,)
+    # ── passwords ───────────────────────────────────────────────────────────
+    async def run_password_work(self, work: Callable[..., T], *args: object) -> T:
+        """Run ``work``, which hashes a password, on the few threads kept for that (32 MB each)."""
+        return await asyncio.get_running_loop().run_in_executor(self._passwords, work, *args)
 
     # ── lookup ──────────────────────────────────────────────────────────────
     def workspace(self, rfq_id: str) -> Workspace:
         try:
             workspace = Workspace.for_rfq(self.settings.work_dir, rfq_id)
-        except ValueError as exc:
+        except GuardError as exc:
             raise ApiError(404, "not_found", "RFQ를 찾을 수 없습니다.") from exc
         if not workspace.job_path.is_file():
             raise ApiError(404, "not_found", "RFQ를 찾을 수 없습니다.")
@@ -202,6 +210,46 @@ class AppState:
             if not dense_failed and (store is None or store.state.started_at == state.started_at):
                 self._data[rfq_id] = (state.started_at, loaded)
         return loaded
+
+    def rfqs(self, *, show_names: bool) -> list[dict]:
+        """Every package on the server, the newest first."""
+        folders = (f for f in self.settings.work_dir.iterdir() if f.is_dir() and RFQ_ID.match(f.name))
+        found = [
+            self._listed(workspace, show_name=show_names)
+            for folder in folders
+            if (workspace := Workspace.for_rfq(self.settings.work_dir, folder.name)).job_path.is_file()
+        ]
+        return sorted(found, key=lambda r: (-(r["created_at"] or 0), r["id"]))
+
+    def _listed(self, workspace: Workspace, *, show_name: bool) -> dict:
+        rfq_id = workspace.rfq_id
+        job: JobState | None = None
+        manifest: PackageManifest | None = None
+        try:
+            job = self.job(rfq_id)
+            manifest = workspace.manifest() if workspace.exists() else None
+            status = self._status(workspace, job, manifest)
+        except (OSError, ValueError):
+            log.exception("the stored files of %s cannot be read", rfq_id)
+            status = "failed"
+        created_at = manifest.created_at if manifest else job.started_at if job else None
+        return {
+            "id": rfq_id,
+            "name": (manifest.name if manifest and show_name else "") or f"RFQ {rfq_id[-6:]}",
+            "status": status,
+            "created_at": created_at,
+            "file_count": len(manifest.files) if manifest else 0,
+        }
+
+    def _status(self, workspace: Workspace, job: JobState, manifest: PackageManifest | None) -> str:
+        if _failed(job):
+            return "failed"
+        if not job.done:
+            return "running"
+        if manifest is None:
+            return "failed"
+        run = workspace.read_json(workspace.run_path) if workspace.run_path.is_file() else None
+        return "done" if self._fresh(run) else "stale"
 
     # ── submission ──────────────────────────────────────────────────────────
     def _current(self, workspace: Workspace) -> JobState | None:

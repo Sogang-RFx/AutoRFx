@@ -1,16 +1,17 @@
 /**
  * Client-side exports (TASKS S013, RTM-02, ROUTE-04). Files are built from the
- * data the server already filtered for the team, so masked clauses stay
- * masked. The first line says how the data was computed (engine).
+ * data the server already filtered for the account, so locked clauses stay
+ * locked. The first line says how the data was computed (engine) and for which scope.
  */
 import type { Engines, RtmRow, VisibleClause } from "./contract";
+import { LOCKED_CLAUSE } from "./scope";
 import { translationLabel } from "./translation";
 
-/** First-line note of an export: the engine that computed the data. */
-export function exportNote(engines: Engines | null): string | null {
+/** First-line note of an export: the engine that computed the data, and the scope it was made with. */
+export function exportNote(engines: Engines | null, scope: string): string | null {
   if (!engines) return null;
   const how = engines.llm_connected ? `LLM 분석 (${engines.analysis})` : "규칙 기반 분석 (LLM 미연결)";
-  return `${how} · 번역: ${translationLabel(engines.translation)} · 원문 위치로 확인한 뒤 사용하세요.`;
+  return `${how} · 번역: ${translationLabel(engines.translation)} · 원문 위치로 확인한 뒤 사용하세요. · 만든 범위: ${scope}`;
 }
 
 function csvCell(value: string): string {
@@ -36,7 +37,7 @@ export function rtmCsv(rows: RtmRow[], labels: Labels, note: string | null): str
   ];
   const lines = rows.map((r) =>
     r.kind === "masked"
-      ? [r.clause_id, labels.file(r.source_doc), r.section_id, "(이 팀에는 표시되지 않음)", "", "", "", "", "", "", "", ""]
+      ? [r.clause_id, labels.file(r.source_doc), r.section_id, LOCKED_CLAUSE, "", "", "", "", "", "", "", ""]
       : [
           r.clause_id,
           labels.file(r.source_doc),
@@ -76,16 +77,16 @@ export function departmentBrief(
       .join(" · ");
     const summary = c.summary.finding.text || "요약 없음 (LLM 미연결). 원문 발췌를 확인하세요.";
     const roles = [`주관 ${labels.dept(c.primary_department)}`, ...c.reference_departments.map((d) => `참조 ${labels.dept(d)}`)];
-    lines.push(`## ${c.section_id} ${c.title || "(제목 없음)"}`, "", `- ${flags}`, `- ${roles.join(", ")}`);
+    lines.push(`## ${c.section_id} ${c.title || "(표시할 제목 없음)"}`, "", `- ${flags}`, `- ${roles.join(", ")}`);
     lines.push(`- 요약: ${summary}`);
     lines.push(`- 근거: ${cites || "없음"}${c.summary.citation_status === "unverified" ? " (미검증)" : ""}`, "");
   }
-  if (maskedIds.length) lines.push(`가려진 조항: ${maskedIds.join(", ")} (이 팀에는 표시되지 않음)`, "");
+  if (maskedIds.length) lines.push(`${LOCKED_CLAUSE}: ${maskedIds.join(", ")}`, "");
   return lines.join("\n");
 }
 
-export function download(fileName: string, text: string, type: string): void {
-  const url = URL.createObjectURL(new Blob([text], { type }));
+export function download(fileName: string, content: string | Blob, type: string): void {
+  const url = URL.createObjectURL(new Blob([content], { type }));
   const a = document.createElement("a");
   a.href = url;
   a.download = fileName;

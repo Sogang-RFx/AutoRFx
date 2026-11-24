@@ -7,26 +7,26 @@ RFQ 한 건(PDF, DOC, DOCX, XLSX로 된 파일 묶음, 영어·독일어)을 조
 
 ---
 
-## 지금 되는 것 (2026-11-18, `feat/real-pipeline`)
+## 지금 되는 것 (2026-11-25, `feat/auth-rbac`)
 
 백엔드는 **LLM 키 없이 규칙만으로** 접수부터 API까지 끝까지 동작합니다. 개발용 RFQ 3건(1개 파일 26쪽, 6개 파일 107쪽, 6개 파일 7쪽)이 사람 손 없이 처리됩니다.
 
 | 부분 | 상태 | 계산 방법 |
 |---|---|---|
-| 패키지 접수, 원본 보관, 기준 PDF | 작동 | 결정적. `.doc`는 LibreOffice 또는 macOS가 필요 |
+| 로그인·계정 관리·감사 기록 | 작동 | 세션 쿠키(`HttpOnly`, `SameSite=Lax`), `scrypt` 비밀번호, 관리자 화면(`/admin`), CLI(`autorfx users seed/list/reset`). 상세는 `docs/auth-rbac.md` |
+| 패키지 접수, 원본 보관, 기준 PDF | 작동 | 결정적. `.doc`는 LibreOffice 또는 macOS가 필요. 업로드는 `admin`과 전체 열람 부서(`sales`)만 가능 |
 | 문장·조항 파싱, 시트의 셀 주소 | 작동 | 결정적. PDF 안의 표는 아직 문장으로 읽음 |
 | 부서 분류(주관·참조), 요건 강도, 독소조항 | 작동 | 룰셋(`data/rules/`). LLM은 연결됐을 때 애매한 조항만 확인 |
 | 인용 검증 | 작동 | 결정적. 모든 결과가 원문 위치와 대조됨 |
-| 문서 간 정합성 (값 충돌, 첨부 누락, 참조 오류, 표기 불일치) | 작동 | 결정적 |
-| 회사 부서 설정 (부서 추가, 업무 영역 선택, 금액 열람) | 작동 | `/settings/departments`. 분류는 그대로 두고 보는 단위만 바꿈. 금액 열람 기본값은 꺼짐. 드래그앤드롭은 12/7 |
-| 팀별 금액 가림 | 작동 (한계 있음) | 응답을 만들기 전에 제거. 원문 PDF는 글자를 지운 사본이고, 지운 뒤 쪽 전체를 다시 검사해 남으면 원문을 주지 않음. **그림 안의 글자는 가리지 못함** |
-| 검색·질의응답 | 작동 | 키워드 검색(BM25)과 용어 사전에 OpenAI 임베딩(`text-embedding-3-large`, 기본값)을 합친 하이브리드(RRF). `OPENAI_API_KEY`가 없으면 키워드 검색만 씀. 답은 원문 문장 그대로 |
-| 사전원가 Go/No-Go (유형 분류, 1차 넉아웃 Q&A, 원가 항목, 수명주기 최소견적, 충격 범위, 가중 점수) | 작동 | `Decimal` 계산. 단가표·회사 설정은 `/settings/company`. 점수 가중치와 충격 크기는 `data/rules/cost_model.yaml`의 가정값이며 도메인 팀 확인 전. 유통형 RFQ의 품목별 판정은 아직 없음 |
-| RTM Excel 내보내기 | 작동 | 서버에서 생성 |
-| 정답지 채점 | 작동 | 정답지가 없으면 수치를 내지 않음. 정답지는 아직 없음 |
-| 조항 요약, 번역, 생성형 답변 | **미확인** | LLM 경로. 코드와 대역 테스트만 있고 실제 모델로 돌려 보지 못함 |
+| 문서 간 정합성 (값 충돌, 첨부 누락, 참조 오류, 표기 불일치) | 작동 | 결정적. 제한 계정에는 보이는 조항 안의 근거로만 이뤄진 이슈만 공개 |
+| 부서 기반 자료 분리 & 범위 PDF | 작동 (한계 있음) | `access.visible_clauses` 한 곳에서 계정별 열람 범위를 결정하고 조항·RTM·정합성·검색·챗봇·원문 PDF·Excel에 적용. 제한 계정의 원문 PDF는 허용 상자만 평탄화 이미지로 생성(`scoped_pdf.py`). **허용 상자 안의 그림 글자는 가리지 못함** |
+| 검색·질의응답 | 작동 | 계정별 열람 범위의 `ScopedSearchIndex`(BM25+용어 사전, `OPENAI_API_KEY`가 있으면 OpenAI `text-embedding-3-large` 하이브리드)로만 검색. 문장별 인용·숫자 검증, 대화 기록, 저장된 독소조항·정합성 질의 지원(`src/autorfx/chat/`) |
+| 사전원가 Go/No-Go (유형 분류, 1차 넉아웃 Q&A, 원가 항목, 수명주기 최소견적, 충격 범위, 가중 점수) | 작동 | `Decimal` 계산. 금액 열람 부서와 `admin`만 접근 가능, 회사 설정(`/settings/company`) 저장과 답변 기억은 `admin`만. 점수 가중치와 충격 크기는 `data/rules/cost_model.yaml`의 가정값 |
+| RTM Excel 내보내기 | 작동 | 서버에서 계정의 열람 범위로 생성 |
+| 정답지 채점 | 작동 | 정답지가 없으면 수치를 내지 않음. 제한 계정에는 보이는 조항·이슈의 오류 행만 표시 |
+| 조항 요약, OpenAI 문장별 번역, 생성형 답변 | 작동 (품질·비용은 도메인 검수 전) | LLM 경로. `OPENAI_API_KEY` 연결 시 동작, 없으면 규칙 기반 유지 |
 | 임베딩 검색 (3-large 기본) | 작동 (정답표는 검수 전) | 11/24 정답표(질문 30 × RFQ 5, 123칸)에서 하이브리드 3-large 82/123, BGE-M3 71/123. 근거 기준은 모델별 측정값(3-large 0.30, BGE-M3 0.55)을 자동 적용 |
-| 과거 제안서 DB, 전용 번역 API, 부서별 정리본, 로그인, 배포 | 없음 | — |
+| 과거 제안서 DB, 전용 번역 API(DeepL), 외부 배포 | 없음 | — |
 
 룰셋의 부서 키워드, 금액 열람 팀, 판정 규칙은 개발용 문서에서 뽑은 **가정값**입니다. 화면 스택(Next.js)과 백엔드 방식(FastAPI)은 팀 합의 전입니다.
 
@@ -44,6 +44,10 @@ uv run pytest                   # 키와 네트워크 없이 통과합니다
 uv run autorfx samples          # data/raw/dev/ 아래의 개발용 RFQ 목록 (저장소에는 없음)
 uv run autorfx analyze --sample <id>
 uv run autorfx analyze path/to/rfq.pdf path/to/annex.xlsx
+
+uv run autorfx users seed       # 관리자 + 부서별 기본 계정 생성 (비밀번호는 ACCOUNTS.local.md에 저장, git 제외)
+uv run autorfx users list       # 계정 목록 확인
+uv run autorfx users reset <id> # 비밀번호 초기화
 
 uv run autorfx serve --port 8000
 ```
@@ -75,8 +79,8 @@ uv run autorfx score-search --gates 0.2,0.3,0.4,0.5,0.6   # BM25 · 임베딩 ·
 ```bash
 cd web
 pnpm install
-# 백엔드(autorfx serve)가 떠 있어야 합니다
-NEXT_PUBLIC_RFQ_API_BASE=http://127.0.0.1:8000 pnpm dev   # http://localhost:3000
+# 백엔드(autorfx serve)가 떠 있어야 합니다. 세션 쿠키가 오가려면 같은 사이트(localhost)로 맞춥니다.
+NEXT_PUBLIC_RFQ_API_BASE=http://localhost:8000 pnpm dev   # http://localhost:3000
 
 pnpm test                       # 단위·계약 테스트
 RFQ_E2E_FILES="/path/a.pdf:/path/b.xlsx" pnpm test:e2e     # 실제 백엔드로 시연 흐름 (변수가 없으면 건너뜀)
@@ -110,13 +114,16 @@ AutoRFx/
 │   ├── ingest/          # 접수, 원본 보관, 기준 PDF 변환
 │   ├── parser/          # 문장, 좌표, 조항 계층
 │   ├── chunker/         # 조항 청크와 금액 민감도
-│   ├── analysis/        # 규칙 후보, LLM 제공자, 인용 검증
+│   ├── analysis/        # 규칙 후보, LLM 제공자, 문장별 번역, 인용 검증
+│   ├── auth/            # 계정 저장소, 비밀번호(scrypt), 세션, 정책(Scope), 감사 기록, 시드
+│   ├── chat/            # 범위 기반 챗봇(계획, 근거 수집, 문장별 인용·숫자 검증)
 │   ├── consistency/     # 문서 간 정합성
-│   ├── retrieval/       # 검색과 질의응답
-│   ├── precost/         # 사전원가와 판정
-│   ├── access.py        # 권한 필터와 가림 PDF
+│   ├── retrieval/       # BM25+임베딩 색인(ScopedSearchIndex) 및 검색 비교
+│   ├── precost/         # 사전원가와 판정, 가격표 읽기
+│   ├── access.py        # 열람 범위 판정(visible_clauses)과 응답 필터
+│   ├── scoped_pdf.py    # 제한 계정용 평탄화 원문 PDF
 │   ├── pipeline.py      # 접수부터 저장까지
-│   ├── api/             # FastAPI
+│   ├── api/             # FastAPI (보안 게이트, 인증·관리자·RFQ 라우트)
 │   └── cli.py           # autorfx 명령
 ├── tests/               # 지어낸 자료로 하는 백엔드 테스트
 ├── web/                 # Next.js 화면

@@ -1,0 +1,116 @@
+{
+  "$id": "https://autorfx.local/contract/viewer.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "data": {
+      "type": "object",
+      "properties": {
+        "viewer": {
+          "type": "object",
+          "properties": {
+            "user_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "username": {
+              "type": "string",
+              "minLength": 1
+            },
+            "display_name": {
+              "type": "string",
+              "minLength": 1
+            },
+            "role": {
+              "type": "string",
+              "enum": [
+                "admin",
+                "member"
+              ]
+            },
+            "department": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "department_label": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "group": {
+              "type": "string",
+              "enum": [
+                "cost_visible",
+                "cost_restricted"
+              ]
+            },
+            "full_scope": {
+              "type": "boolean"
+            },
+            "can_upload": {
+              "type": "boolean"
+            },
+            "can_manage": {
+              "type": "boolean"
+            },
+            "must_change_password": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "user_id",
+            "username",
+            "display_name",
+            "role",
+            "department",
+            "department_label",
+            "group",
+            "full_scope",
+            "can_upload",
+            "can_manage",
+            "must_change_password"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "viewer"
+      ],
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "enum": [
+          "document",
+          "parsing",
+          "analysis",
+          "citation",
+          "translation",
+          "source",
+          "consistency",
+          "cost_inputs",
+          "precost",
+          "chat",
+          "evaluation"
+        ]
+      },
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "mock",
+          "real"
+        ]
+      }
+    }
+  },
+  "required": [
+    "data",
+    "provenance"
+  ],
+  "additionalProperties": false
+}

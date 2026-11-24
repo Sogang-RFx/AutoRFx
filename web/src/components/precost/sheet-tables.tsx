@@ -10,10 +10,10 @@ import Link from "next/link";
 import { useState } from "react";
 import type { SourceRegion } from "@/components/source-viewer/source-viewer";
 import { Button, cx } from "@/components/ui/primitives";
-import { useTeamGroup } from "@/components/shell/app-shell";
 import { ColumnRole, MAX_HEADER_ROW, type RfqLines, type SheetList, type SheetSuggestResponse, type SheetTable } from "@/lib/rfq/contract";
 import { fileTag, usePackageFiles } from "@/lib/rfq/package-context";
 import { describeError, rfqApi } from "@/lib/rfq/provider";
+import { useMeta } from "@/lib/rfq/use-meta";
 import {
   gridWidth,
   headerRows,
@@ -49,17 +49,15 @@ const select = "min-h-8 w-full rounded-control border border-line-control bg-sur
 function ColumnAssigner({
   table,
   rfqId,
-  team,
   onRead,
   onCancel,
 }: {
   table: SheetTable;
   rfqId: string;
-  team: string | null;
   onRead: (lines: RfqLines) => void;
   onCancel: () => void;
 }) {
-  const { engines } = useTeamGroup();
+  const { engines } = useMeta();
   // The AI suggestion brings more rows when the header sits low (a sheet that starts with notes).
   const [allRows, setAllRows] = useState(table.rows);
   const width = gridWidth(allRows);
@@ -97,7 +95,7 @@ function ColumnAssigner({
     setAsking(true);
     setError(null);
     try {
-      const res = await rfqApi.suggestSheetColumns(rfqId, { table: table.id }, { team });
+      const res = await rfqApi.suggestSheetColumns(rfqId, { table: table.id });
       const found = res.data;
       setAllRows(found.rows);
       setHeader(found.header_row);
@@ -120,7 +118,7 @@ function ColumnAssigner({
     setBusy(true);
     setError(null);
     try {
-      const res = await rfqApi.assignSheetColumns(rfqId, { table: table.id, header_row: header, columns }, { team });
+      const res = await rfqApi.assignSheetColumns(rfqId, { table: table.id, header_row: header, columns });
       onRead(res.data.lines);
     } catch (e) {
       setError(describeError(e));
@@ -226,12 +224,10 @@ function ColumnAssigner({
 export function SheetTables({
   tables,
   rfqId,
-  team,
   onRead,
 }: {
   tables: SheetTable[];
   rfqId: string;
-  team: string | null;
   /** New lines after a table was assigned; the caller refills the line items. */
   onRead: (lines: RfqLines) => void;
 }) {
@@ -258,7 +254,7 @@ export function SheetTables({
         )}
       </div>
       {open === t.id && t.how !== "continued" && (
-        <ColumnAssigner table={t} rfqId={rfqId} team={team} onCancel={() => setOpen(null)}
+        <ColumnAssigner table={t} rfqId={rfqId} onCancel={() => setOpen(null)}
           onRead={(lines) => {
             setOpen(null);
             onRead(lines);

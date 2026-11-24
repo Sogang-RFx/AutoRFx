@@ -30,6 +30,7 @@ import math
 import re
 from collections import defaultdict
 from collections.abc import Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 
 from autorfx.chunker import mentions_cost
@@ -195,12 +196,19 @@ class SearchIndex:
     def __init__(
         self, clauses: Sequence[Clause], ruleset: Ruleset, *, dense: DenseIndex | None = None
     ) -> None:
+        self._clauses = tuple(clauses)
         self._ruleset = ruleset
         self.dense = dense
         self._corpora: dict[Group, _Corpus] = {
             "cost_visible": _Corpus(clauses),
             "cost_restricted": _Corpus([c for c in clauses if not c.is_cost_sensitive]),
         }
+
+    def scoped(self, clause_ids: AbstractSet[str]) -> ScopedSearchIndex:
+        """An index of ``clause_ids`` alone: BM25 statistics, missing terms, suggestions and dense rows."""
+        allowed = [c for c in self._clauses if c.clause_id in clause_ids]
+        dense = self.dense.subset(clause_ids) if self.dense is not None else None
+        return ScopedSearchIndex(allowed, self._ruleset, dense=dense)
 
     def _corpus(self, group: Group) -> _Corpus:
         # Anything that is not the cost-visible group reads the reduced index.
@@ -212,105 +220,22 @@ class SearchIndex:
         The longest wording wins and uses up its words: "단가 인하" is the price reduction, not the
         price as well. A Korean term may carry a particle ("납기는"); a word may be inflected.
         """
-        glossary = self._ruleset.glossary
-        text, tokens = question.casefold(), words(question)
-        candidates = sorted(
-            ((wording, number) for number, entry in enumerate(glossary) for wording in _wordings(entry)),
-            key=lambda candidate: (-len(candidate[0]), candidate[1]),
-        )
-        labels: dict[int, str] = {}
-        for wording, number in candidates:
-            if HANGUL.search(wording):
-                typed, text = (wording if wording in text else None), text.replace(wording, " ")
-            else:
-                tokens, typed = _without(tokens, words(wording))
-            if typed:
-                labels.setdefault(number, typed)
-
-        found: list[Concept] = []
-        claimed: set[str] = set()
-        korean: list[str] = []
-        for number in sorted(labels):
-            alternatives = _alternatives(glossary[number])
-            found.append(Concept(labels[number], alternatives, is_domain_term=True))
-            claimed.update(token for alternative in alternatives for token in alternative.split())
-            korean.extend(w for w in _wordings(glossary[number]) if HANGUL.search(w))
-        for token in dict.fromkeys(token for token in tokens if token):
-            if token in STOPWORDS or any(_same_stem(token, word) for word in claimed):
-                continue
-            part_of_term = any(term in token or token in term for term in korean)
-            if HANGUL.search(token) and (not keep_hangul or part_of_term):
-                continue
-            found.append(Concept(token, (token,)))
-        return tuple(found)
+        return _concepts_for(self._ruleset, question, keep_hangul=keep_hangul)
 
     def search(self, question: str, *, group: Group, limit: int = 8, mode: str | None = None) -> SearchResult:
         """``mode``: "bm25", "dense" or "hybrid"; by default hybrid when a dense index is attached."""
-        explicit = mode is not None
-        mode = mode or ("hybrid" if self.dense is not None else "bm25")
-        if mode == "bm25":
-            return self.search_bm25(question, group=group, limit=limit)
-        if self.dense is None:
-            raise ValueError("임베딩 모델이 설정되지 않았습니다 (EMBEDDING_MODEL).")
-        try:
-            dense = self.dense.search(question, group=group, limit=limit)
-        except Exception:
-            if explicit:
-                raise
-            # The question could not be embedded (network, key, rate limit): keyword search answers.
-            log.exception("embedding search failed, answering with keyword search only")
-            return self.search_bm25(question, group=group, limit=limit)
-        if mode == "dense":
-            hits = tuple(Hit(h.sentence, h.clause_id, rank) for rank, h in enumerate(dense, start=1))
-            return SearchResult(hits, (), (), bool(hits))
-        if mode != "hybrid":
-            raise ValueError(f"알 수 없는 검색 방식입니다: {mode}")
-        lexical = self.search_bm25(question, group=group, limit=limit)
-        fused: dict[tuple, float] = defaultdict(float)
-        first: dict[tuple, tuple[ParsedSentence, str]] = {}
-        for ranked in (
-            [(h.sentence, h.clause_id) for h in lexical.hits],
-            [(h.sentence, h.clause_id) for h in dense],
-        ):
-            for rank, (sentence, clause_id) in enumerate(ranked, start=1):
-                key = sentence.locus.key()
-                fused[key] += 1 / (RRF_K + rank)
-                first.setdefault(key, (sentence, clause_id))
-        order = sorted(fused, key=lambda key: -fused[key])[:limit]
-        hits = tuple(Hit(*first[key], rank) for rank, key in enumerate(order, start=1))
-        return SearchResult(hits, lexical.concepts, lexical.missing, bool(hits))
+        return _search_with(
+            question,
+            corpus=self._corpus(group),
+            ruleset=self._ruleset,
+            dense=self.dense,
+            dense_group=group,
+            limit=limit,
+            mode=mode,
+        )
 
     def search_bm25(self, question: str, *, group: Group, limit: int = 8) -> SearchResult:
-        corpus = self._corpus(group)
-        concepts = self.concepts(question, keep_hangul=corpus.has_hangul)
-        labels = tuple(concept.label for concept in concepts)
-        found = [corpus.occurrences(concept) for concept in concepts]
-        missing = tuple(c.label for c, stated in zip(concepts, found, strict=True) if not stated)
-
-        by_clause: dict[str, set[int]] = defaultdict(set)
-        for number, stated in enumerate(found):
-            for index in stated:
-                by_clause[corpus.entries[index].clause_id].add(number)
-        domain = {n for n, concept in enumerate(concepts) if concept.is_domain_term and found[n]}
-        # (c) is for a question that names no domain term and asks about nothing the text lacks.
-        enough = 1 if not domain and not missing else 2
-        evidence = {
-            clause_id
-            for clause_id, numbers in by_clause.items()
-            if numbers & domain or len(numbers) >= enough
-        }
-
-        scores: dict[int, float] = defaultdict(float)
-        for stated in found:
-            for index, (own, titled) in stated.items():
-                if corpus.entries[index].clause_id in evidence:
-                    scores[index] += corpus.score(index, own, titled, len(stated))
-        order = sorted(scores, key=lambda index: (-scores[index], index))
-        hits = tuple(
-            Hit(corpus.entries[index].sentence, corpus.entries[index].clause_id, rank)
-            for rank, index in enumerate(order[:limit], start=1)
-        )
-        return SearchResult(hits, labels, missing, bool(hits))
+        return _search_bm25(question, corpus=self._corpus(group), ruleset=self._ruleset, limit=limit)
 
     def is_cost_question(self, question: str) -> bool:
         """Decided from the question and the rule files alone; no document text is consulted."""
@@ -319,14 +244,174 @@ class SearchIndex:
 
     def suggestions(self, group: Group) -> list[str]:
         """Topics this group can ask about: glossary entries the visible text actually covers."""
-        corpus = self._corpus(group)
-        out: list[str] = []
-        for entry in self._ruleset.glossary:
-            if corpus.occurrences(Concept(entry.terms[0], _alternatives(entry))):
-                out.append(entry.terms[0])
-            if len(out) == MAX_SUGGESTIONS:
-                break
-        return out
+        return _suggestions_for(self._corpus(group), self._ruleset)
+
+
+class ScopedSearchIndex:
+    """Retrieval over the clauses visible to one account (INV-4, docs/auth-rbac.md §4).
+
+    Built by :meth:`SearchIndex.scoped`: every BM25 statistic, missing-term list, topic suggestion
+    and embedding row comes exclusively from those clauses.
+    """
+
+    def __init__(
+        self, clauses: Sequence[Clause], ruleset: Ruleset, *, dense: DenseIndex | None = None
+    ) -> None:
+        self._clauses = tuple(clauses)
+        self._ruleset = ruleset
+        self.dense = dense
+        self._corpus = _Corpus(clauses)
+
+    def scoped(self, clause_ids: AbstractSet[str]) -> ScopedSearchIndex:
+        """Further narrow this index; never widens past the clauses already in it."""
+        allowed = [c for c in self._clauses if c.clause_id in clause_ids]
+        dense = self.dense.subset(clause_ids) if self.dense is not None else None
+        return ScopedSearchIndex(allowed, self._ruleset, dense=dense)
+
+    def concepts(self, question: str, *, keep_hangul: bool = True) -> tuple[Concept, ...]:
+        return _concepts_for(self._ruleset, question, keep_hangul=keep_hangul)
+
+    def search(self, question: str, *, limit: int = 8, mode: str | None = None) -> SearchResult:
+        # ``self.dense`` is already subsetted to the account's visible clauses (which already excludes
+        # cost-sensitive clauses when the account cannot see costs, and keeps them for cost-visible scopes).
+        return _search_with(
+            question,
+            corpus=self._corpus,
+            ruleset=self._ruleset,
+            dense=self.dense,
+            dense_group="cost_visible",
+            limit=limit,
+            mode=mode,
+        )
+
+    def search_bm25(self, question: str, *, limit: int = 8) -> SearchResult:
+        return _search_bm25(question, corpus=self._corpus, ruleset=self._ruleset, limit=limit)
+
+    def is_cost_question(self, question: str) -> bool:
+        wordings = [a for concept in self.concepts(question) for a in concept.alternatives]
+        return mentions_cost(" ".join([question, *wordings]), self._ruleset)
+
+    def suggestions(self) -> list[str]:
+        return _suggestions_for(self._corpus, self._ruleset)
+
+
+def _concepts_for(ruleset: Ruleset, question: str, *, keep_hangul: bool = True) -> tuple[Concept, ...]:
+    glossary = ruleset.glossary
+    text, tokens = question.casefold(), words(question)
+    candidates = sorted(
+        ((wording, number) for number, entry in enumerate(glossary) for wording in _wordings(entry)),
+        key=lambda candidate: (-len(candidate[0]), candidate[1]),
+    )
+    labels: dict[int, str] = {}
+    for wording, number in candidates:
+        if HANGUL.search(wording):
+            typed, text = (wording if wording in text else None), text.replace(wording, " ")
+        else:
+            tokens, typed = _without(tokens, words(wording))
+        if typed:
+            labels.setdefault(number, typed)
+
+    found: list[Concept] = []
+    claimed: set[str] = set()
+    korean: list[str] = []
+    for number in sorted(labels):
+        alternatives = _alternatives(glossary[number])
+        found.append(Concept(labels[number], alternatives, is_domain_term=True))
+        claimed.update(token for alternative in alternatives for token in alternative.split())
+        korean.extend(w for w in _wordings(glossary[number]) if HANGUL.search(w))
+    for token in dict.fromkeys(token for token in tokens if token):
+        if token in STOPWORDS or any(_same_stem(token, word) for word in claimed):
+            continue
+        part_of_term = any(term in token or token in term for term in korean)
+        if HANGUL.search(token) and (not keep_hangul or part_of_term):
+            continue
+        found.append(Concept(token, (token,)))
+    return tuple(found)
+
+
+def _search_with(
+    question: str,
+    *,
+    corpus: _Corpus,
+    ruleset: Ruleset,
+    dense: DenseIndex | None,
+    dense_group: Group,
+    limit: int,
+    mode: str | None,
+) -> SearchResult:
+    explicit = mode is not None
+    mode = mode or ("hybrid" if dense is not None else "bm25")
+    if mode == "bm25":
+        return _search_bm25(question, corpus=corpus, ruleset=ruleset, limit=limit)
+    if dense is None:
+        raise ValueError("임베딩 모델이 설정되지 않았습니다 (EMBEDDING_MODEL).")
+    try:
+        dense_hits = dense.search(question, group=dense_group, limit=limit)
+    except Exception:
+        if explicit:
+            raise
+        # The question could not be embedded (network, key, rate limit): keyword search answers.
+        log.exception("embedding search failed, answering with keyword search only")
+        return _search_bm25(question, corpus=corpus, ruleset=ruleset, limit=limit)
+    if mode == "dense":
+        hits = tuple(Hit(h.sentence, h.clause_id, rank) for rank, h in enumerate(dense_hits, start=1))
+        return SearchResult(hits, (), (), bool(hits))
+    if mode != "hybrid":
+        raise ValueError(f"알 수 없는 검색 방식입니다: {mode}")
+    lexical = _search_bm25(question, corpus=corpus, ruleset=ruleset, limit=limit)
+    fused: dict[tuple, float] = defaultdict(float)
+    first: dict[tuple, tuple[ParsedSentence, str]] = {}
+    for ranked in (
+        [(h.sentence, h.clause_id) for h in lexical.hits],
+        [(h.sentence, h.clause_id) for h in dense_hits],
+    ):
+        for rank, (sentence, clause_id) in enumerate(ranked, start=1):
+            key = sentence.locus.key()
+            fused[key] += 1 / (RRF_K + rank)
+            first.setdefault(key, (sentence, clause_id))
+    order = sorted(fused, key=lambda key: -fused[key])[:limit]
+    hits = tuple(Hit(*first[key], rank) for rank, key in enumerate(order, start=1))
+    return SearchResult(hits, lexical.concepts, lexical.missing, bool(hits))
+
+
+def _search_bm25(question: str, *, corpus: _Corpus, ruleset: Ruleset, limit: int = 8) -> SearchResult:
+    concepts = _concepts_for(ruleset, question, keep_hangul=corpus.has_hangul)
+    labels = tuple(concept.label for concept in concepts)
+    found = [corpus.occurrences(concept) for concept in concepts]
+    missing = tuple(c.label for c, stated in zip(concepts, found, strict=True) if not stated)
+
+    by_clause: dict[str, set[int]] = defaultdict(set)
+    for number, stated in enumerate(found):
+        for index in stated:
+            by_clause[corpus.entries[index].clause_id].add(number)
+    domain = {n for n, concept in enumerate(concepts) if concept.is_domain_term and found[n]}
+    # (c) is for a question that names no domain term and asks about nothing the text lacks.
+    enough = 1 if not domain and not missing else 2
+    evidence = {
+        clause_id for clause_id, numbers in by_clause.items() if numbers & domain or len(numbers) >= enough
+    }
+
+    scores: dict[int, float] = defaultdict(float)
+    for stated in found:
+        for index, (own, titled) in stated.items():
+            if corpus.entries[index].clause_id in evidence:
+                scores[index] += corpus.score(index, own, titled, len(stated))
+    order = sorted(scores, key=lambda index: (-scores[index], index))
+    hits = tuple(
+        Hit(corpus.entries[index].sentence, corpus.entries[index].clause_id, rank)
+        for rank, index in enumerate(order[:limit], start=1)
+    )
+    return SearchResult(hits, labels, missing, bool(hits))
+
+
+def _suggestions_for(corpus: _Corpus, ruleset: Ruleset) -> list[str]:
+    out: list[str] = []
+    for entry in ruleset.glossary:
+        if corpus.occurrences(Concept(entry.terms[0], _alternatives(entry))):
+            out.append(entry.terms[0])
+        if len(out) == MAX_SUGGESTIONS:
+            break
+    return out
 
 
 def _wordings(entry: GlossaryEntry) -> list[str]:

@@ -13,13 +13,14 @@ from dataclasses import dataclass
 
 from autorfx.analysis.citation import verify
 from autorfx.analysis.providers import TransientProviderError
+from autorfx.auth.policy import Scope
 from autorfx.chat.checks import Outcome, checked
 from autorfx.chat.gather import MAX_QUERIES, gather
 from autorfx.chat.model import MAX_TURNS, ChatModel
 from autorfx.chat.models import ChatContext, CitedText, Draft, Evidence, Plan, Turn
 from autorfx.chat.stored import citable_keys, conflict_statements, red_flag_statements, related_conflicts
 from autorfx.chat.topics import plan_by_rules
-from autorfx.models import Finding, Group, VerifiedFinding
+from autorfx.models import Finding, VerifiedFinding
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ MESSAGES = {
 @dataclass(frozen=True)
 class _Request:
     context: ChatContext
-    group: Group
+    scope: Scope
     plan: Plan
 
 
@@ -60,7 +61,7 @@ def answer_question(
     question: str,
     *,
     context: ChatContext,
-    group: Group,
+    scope: Scope,
     model: ChatModel | None,
     history: Sequence[Turn] = (),
 ) -> dict:
@@ -70,13 +71,13 @@ def answer_question(
         raise ValueError("질문을 입력해 주세요.")
     if len(question) > MAX_QUESTION:
         raise ValueError(f"질문은 {MAX_QUESTION}자 이내로 입력해 주세요.")
-    if _is_refused(question, context, group):
-        return _restricted(context, group)
+    if _is_refused(question, context, scope):
+        return _restricted(context)
     plan = _plan(question, history, context, model)
     # "그럼 그건 얼마야?" names no price; the question it stands for does (RAG-04).
-    if _is_refused(plan.question, context, group):
-        return _restricted(context, group)
-    request = _Request(context, group, plan)
+    if _is_refused(plan.question, context, scope):
+        return _restricted(context)
+    request = _Request(context, scope, plan)
     if plan.intent == "guide":
         return _guide(request)
     if plan.intent in ("red_flags", "conflicts"):
@@ -92,9 +93,9 @@ def _failure(exc: Exception) -> str:
 
 
 # ── planning ────────────────────────────────────────────────────────────────
-def _is_refused(question: str, context: ChatContext, group: Group) -> bool:
+def _is_refused(question: str, context: ChatContext, scope: Scope) -> bool:
     """Decided before anything is retrieved, from the question and the rules alone (INV-4)."""
-    return group != "cost_visible" and context.index.is_cost_question(question)
+    return not scope.cost_visible and context.index.is_cost_question(question)
 
 
 def _plan(question: str, history: Sequence[Turn], context: ChatContext, model: ChatModel | None) -> Plan:
@@ -138,19 +139,19 @@ def _reply(
     }
 
 
-def _restricted(context: ChatContext, group: Group) -> dict:
-    suggestions = context.index.suggestions(group)
+def _restricted(context: ChatContext) -> dict:
+    suggestions = context.index.suggestions()
     return _reply("restricted", "extractive", MESSAGES["restricted"], suggestions=suggestions)
 
 
 def _no_evidence(request: _Request, mode: str, message: str = MESSAGES["no_evidence"]) -> dict:
-    suggestions = request.context.index.suggestions(request.group)
+    suggestions = request.context.index.suggestions()
     return _reply("no_evidence", mode, message, suggestions=suggestions)
 
 
 def _guide(request: _Request) -> dict:
     topics = [t.label for t in request.context.topics if t.intent != "guide"]
-    suggestions = list(dict.fromkeys([*topics, *request.context.index.suggestions(request.group)]))
+    suggestions = list(dict.fromkeys([*topics, *request.context.index.suggestions()]))
     return _reply("guide", "stored", MESSAGES["guide"], suggestions=suggestions)
 
 
@@ -162,31 +163,31 @@ def _answered(
     *,
     with_conflicts: bool = True,
 ) -> dict:
-    """An answer whose every position is one this group may be shown (INV-3, INV-8)."""
-    context, group = request.context, request.group
+    """An answer whose every position is one this scope may be shown (INV-3, INV-8)."""
+    context, scope = request.context, request.scope
     loci = tuple({c.key(): c for s in statements for c in s.citations}.values())
     finding = Finding(kind="answer", text="\n".join(s.text for s in statements), citations=loci)
-    answer = verify(finding, context.clauses, allowed=citable_keys(context, group))
+    answer = verify(finding, context.clauses, allowed=citable_keys(context, scope))
     if answer.citation_status != "verified":
         return _reply("no_evidence", mode, MESSAGES["no_evidence"])
     keys = {locus.key() for locus in loci}
-    conflicts = related_conflicts(keys, context, group) if with_conflicts else ()
+    conflicts = related_conflicts(keys, context, scope) if with_conflicts else ()
     return _reply("answered", mode, message, statements=statements, answer=answer, conflicts=conflicts)
 
 
 def _stored(request: _Request) -> dict:
     intent = request.plan.intent
     read = red_flag_statements if intent == "red_flags" else conflict_statements
-    statements = read(request.context, request.group)
+    statements = read(request.context, request.scope)
     if not statements:
-        suffix = "" if request.group == "cost_visible" else "_restricted"
+        suffix = "" if request.scope.is_full else "_restricted"
         return _no_evidence(request, "stored", MESSAGES[f"no_{intent}{suffix}"])
     return _answered(request, "stored", statements, MESSAGES[intent], with_conflicts=False)
 
 
 def _extract(request: _Request, message: str) -> dict:
     """Original sentences, word for word, behind the strict gate (RAG-03)."""
-    result = request.context.index.search(request.plan.question, group=request.group)
+    result = request.context.index.search(request.plan.question)
     if not result.passed:
         return _no_evidence(request, "extractive")
     found = [h.sentence for h in result.hits[:MAX_EXTRACT]]
@@ -202,12 +203,12 @@ def _extract(request: _Request, message: str) -> dict:
 
 # ── generated answers ───────────────────────────────────────────────────────
 def _generate(request: _Request, model: ChatModel) -> dict:
-    plan, context, group = request.plan, request.context, request.group
+    plan, context, scope = request.plan, request.context, request.scope
     evidence = gather(
-        plan.question, plan.queries, context=context, group=group, overview=plan.intent == "overview"
+        plan.question, plan.queries, context=context, scope=scope, overview=plan.intent == "overview"
     )
     # Fail closed: gathering reads visible clauses only, so this can only trip on a defect (INV-8).
-    if not {e.locus.key() for e in evidence} <= citable_keys(context, group):
+    if not {e.locus.key() for e in evidence} <= citable_keys(context, scope):
         log.error("chat evidence outside the visible clauses; not answered")
         return _reply("no_evidence", "extractive", MESSAGES["no_evidence"])
     if not evidence:

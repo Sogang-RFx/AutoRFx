@@ -1,49 +1,63 @@
 {
-  "$id": "https://autorfx.local/contract/org-departments.schema.json",
+  "$id": "https://autorfx.local/contract/audit.schema.json",
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
   "properties": {
     "data": {
       "type": "object",
       "properties": {
-        "departments": {
-          "maxItems": 30,
+        "entries": {
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
-              "id": {
+              "at": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "actor": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "event": {
                 "type": "string",
-                "pattern": "^org-[0-9a-f]{12}$"
+                "minLength": 1
               },
-              "label": {
+              "target": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "outcome": {
                 "type": "string",
-                "minLength": 1,
-                "maxLength": 40
+                "enum": [
+                  "ok",
+                  "denied",
+                  "failed"
+                ]
               },
-              "areas": {
-                "minItems": 1,
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "cost_visible": {
-                "type": "boolean"
+              "detail": {
+                "type": "string"
               }
             },
             "required": [
-              "id",
-              "label",
-              "areas",
-              "cost_visible"
+              "at",
+              "actor",
+              "event",
+              "target",
+              "outcome",
+              "detail"
             ],
             "additionalProperties": false
           }
         }
       },
       "required": [
-        "departments"
+        "entries"
       ],
       "additionalProperties": false
     },

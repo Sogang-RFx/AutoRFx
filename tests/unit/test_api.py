@@ -1,4 +1,8 @@
-"""The HTTP API on a hand-made package: contract shapes, access control, errors."""
+"""The HTTP API on a hand-made package: contract shapes, access control, errors.
+
+Every request is made by a logged-in account (docs/auth-rbac.md): ``sales`` has the full scope,
+``costing`` and ``logistics`` see their own department, with and without cost clauses.
+"""
 
 from __future__ import annotations
 
@@ -15,6 +19,18 @@ import pytest
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
+from auth_helpers import (
+    COOKIE,
+    COST_VISIBLE,
+    FULL,
+    LIMITED,
+    ORIGIN,
+    PDF,
+    Accounts,
+    running_app,
+    settings_in,
+)
+from auth_helpers import error_of as error
 from autorfx.analysis import RuleOnlyProvider, ScriptedProvider
 from autorfx.analysis.usage import Usage, usd_text
 from autorfx.api import create_app
@@ -23,33 +39,29 @@ from autorfx.rules import RulesError, Ruleset
 from contract_schema import assert_valid
 from factories import PACKAGE_SECRET, make_package, precost_inputs
 
+FULL_VIEW, VISIBLE, RESTRICTED = "sales", "costing", "logistics"
+"""Everything; its own department with cost clauses; its own department without them."""
+NO_COST = ("development", "quality", "production_engineering", "logistics", "legal")
 TOPICS = """\
 topics:
   - {intent: conflicts, label: 문서 간 불일치, patterns: [문서끼리]}
   - {intent: red_flags, label: 불리한 조항, patterns: [독소]}
   - {intent: overview, label: RFQ 요약, patterns: [RFQ 요약]}
 """
-VISIBLE, RESTRICTED = "costing", "quality"
 SECRETS = (PACKAGE_SECRET, "1.2345", "target price", "rejected")
-PDF = "application/pdf"
-Api = tuple[TestClient, str, list[Path]]
+Api = tuple[Accounts, str, list[Path]]
 
 
 @pytest.fixture(scope="module")
 def api(tmp_path_factory: pytest.TempPathFactory, ruleset: Ruleset) -> Iterator[Api]:
     root = tmp_path_factory.mktemp("api")
-    settings = Settings(_env_file=None, data_dir=root / "data", embedding_model=None)
+    settings = settings_in(root)
     make_package(settings.samples_dir / "synthetic-sample")
     (settings.data_dir / "chat").mkdir(parents=True)
     (settings.data_dir / "chat" / "topics.yaml").write_text(TOPICS, encoding="utf-8")
     sources = make_package(root / "upload")
-    app = create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())
-    with TestClient(app) as client:
-        files = [("files", (p.name, p.read_bytes(), PDF)) for p in sources]
-        response = client.post("/rfqs", files=files)
-        assert response.status_code == 200, response.text
-        app.state.autorfx.wait()
-        yield client, response.json()["data"]["id"], sources
+    with running_app(settings, ruleset) as accounts:
+        yield accounts, accounts.upload(sources), sources
 
 
 def get(client: TestClient, path: str, schema: str | None = None, **params: str) -> dict:
@@ -61,20 +73,17 @@ def get(client: TestClient, path: str, schema: str | None = None, **params: str)
     return body
 
 
-def error(response) -> tuple[int, str]:
-    body = response.json()
-    assert_valid("error", body)
-    return response.status_code, body["error"]["code"]
-
-
 # ── intake ──────────────────────────────────────────────────────────────────
-def test_meta_describes_teams_engines_samples_and_limits(api: Api):
-    """META-01, ENGINE-03: the client learns who may see cost, and how analysis is computed."""
-    client, _, _ = api
-    data = get(client, "/meta", "meta")["data"]
-    groups = {team["id"]: team["group"] for team in data["teams"]}
-    assert groups["costing"] == groups["sales"] == groups["purchasing"] == "cost_visible"
-    assert groups["quality"] == groups["legal"] == "cost_restricted" and len(groups) == 8
+def test_meta_describes_departments_engines_samples_and_limits(api: Api, ruleset: Ruleset):
+    """META-01, ENGINE-03: the client learns the departments and how analysis is computed.
+
+    Who may see cost is not listed per team any more: ``/auth/me`` says it for the account itself.
+    """
+    data = get(api[0][RESTRICTED], "/meta", "meta")["data"]
+    assert [d["id"] for d in data["departments"]] == list(ruleset.department_ids)
+    assert len(data["departments"]) == 8
+    assert [d["id"] for d in data["departments"] if d["receives_all"]] == ["sales"]
+    assert "teams" not in data and "work_areas" not in data
     assert data["engines"] == {
         "analysis": "rule-only",
         "translation": "none",
@@ -86,9 +95,19 @@ def test_meta_describes_teams_engines_samples_and_limits(api: Api):
     assert data["upload"]["accept"] == [".pdf", ".doc", ".docx", ".xlsx"]
 
 
+def test_the_account_says_who_may_see_cost(api: Api):
+    """RBAC-01: the group the web shows is the one of the account, from the rule files."""
+    groups = {
+        name: get(api[0][name], "/auth/me", "viewer")["data"]["viewer"]["group"] for name in (*FULL, *LIMITED)
+    }
+    assert {name for name, group in groups.items() if group == "cost_visible"} == set(COST_VISIBLE)
+    assert len(groups) == 9
+
+
 def test_upload_runs_the_job_and_the_document_is_served(api: Api):
     """PKG-01, JOB-01: files in, a finished job and a document with per-file facts out."""
-    client, rfq_id, _ = api
+    accounts, rfq_id, _ = api
+    client = accounts[FULL_VIEW]
     job = get(client, f"/rfqs/{rfq_id}/job", "job")["data"]
     assert job["done"] and {s["status"] for s in job["stages"]} == {"done", "skipped"}
     document = get(client, f"/rfqs/{rfq_id}", "document")["data"]
@@ -101,7 +120,8 @@ def test_upload_runs_the_job_and_the_document_is_served(api: Api):
 
 def test_the_same_package_is_not_analysed_twice(api: Api):
     """PKG-05: the id comes from the content; a second upload opens the stored results."""
-    client, rfq_id, sources = api
+    accounts, rfq_id, sources = api
+    client = accounts[FULL_VIEW]
     files = [("files", (p.name, p.read_bytes(), PDF)) for p in reversed(sources)]
     body = client.post("/rfqs", files=files).json()
     assert_valid("upload", body)
@@ -110,7 +130,8 @@ def test_the_same_package_is_not_analysed_twice(api: Api):
 
 def test_packages_on_the_server_cannot_be_opened_through_the_api(api: Api):
     """SPEC §13.2: only uploaded files are analysed; a development-folder package is not reachable by id."""
-    client, _, _ = api
+    accounts, _, _ = api
+    client = accounts[FULL_VIEW]
     for sample_id in ("synthetic-sample", "nope"):
         response = client.post("/rfqs", json={"file_names": [], "sample_id": sample_id})
         assert error(response) == (400, "invalid_request")
@@ -128,17 +149,19 @@ def test_packages_on_the_server_cannot_be_opened_through_the_api(api: Api):
 )
 def test_files_that_are_not_rfqs_are_refused(api: Api, name: str, content: bytes, expected: str):
     """PKG-03: wrong type, wrong content, empty files and guide files are refused with the reason."""
-    client, _, _ = api
+    accounts, _, _ = api
+    client = accounts[FULL_VIEW]
     response = client.post("/rfqs", files=[("files", (name, content, "application/octet-stream"))])
     assert error(response) == (400, "invalid_request") and expected in response.json()["error"]["message"]
 
 
 def test_upload_name_cannot_leave_the_upload_folder(api: Api):
     """Security: a client path is reduced to its file name before anything is written."""
-    client, _, _ = api
+    accounts, _, _ = api
+    client = accounts[FULL_VIEW]
     response = client.post("/rfqs", files=[("files", ("../../evil.txt", b"x", "text/plain"))])
     assert error(response) == (400, "invalid_request")
-    state = client.app.state.autorfx
+    state = accounts.state
     assert not list(state.settings.data_dir.parent.rglob("evil.txt"))
     assert not state.upload_root.exists() or not any(state.upload_root.iterdir()), "uploads are cleaned up"
 
@@ -195,35 +218,55 @@ def test_an_oversized_upload_is_refused_while_it_arrives(
 ):
     """PKG-03, security: the size limit stops reading the body; the server never buffers an oversized
     upload (40 MB sent against a 1 file x 1 MB limit) before refusing it."""
-    settings = Settings(
-        _env_file=None, data_dir=tmp_path / "data", max_files=1, max_file_mb=1, embedding_model=None
-    )
+    settings = settings_in(tmp_path, max_files=1, max_file_mb=1)
     chunks = [PART_HEAD, *([b"x" * MB] * 40), b"\r\n--B--\r\n"]
     headers = [(b"content-length", str(sum(map(len, chunks))).encode())] if declare_length else []
-    with TestClient(create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())) as client:
-        status, code, pulled = _post_raw(client.app, chunks, headers)
-        upload_root = client.app.state.autorfx.upload_root
+    with running_app(settings, ruleset, names=("sales",)) as accounts:
+        session = accounts["sales"].cookies[COOKIE]
+        who = [(b"cookie", f"{COOKIE}={session}".encode()), (b"origin", ORIGIN.encode())]
+        status, code, pulled = _post_raw(accounts.app, chunks, [*headers, *who])
+        upload_root = accounts.state.upload_root
     assert (status, code) == (413, "too_large")
     assert pulled <= (0 if declare_length else 4), f"read {pulled} of {len(chunks)} chunks before refusing"
     assert not upload_root.exists() or not any(upload_root.iterdir()), "nothing is left on disk"
 
 
+@pytest.mark.parametrize(
+    ("username", "expected"), [(None, (401, "unauthenticated")), ("logistics", (403, "forbidden"))]
+)
+def test_an_upload_that_is_not_allowed_is_refused_before_its_body_is_read(
+    tmp_path: Path, ruleset: Ruleset, username: str | None, expected: tuple[int, str]
+):
+    """Security (auth-rbac §3): without a session, or the right to upload, no upload byte is taken."""
+    settings = settings_in(tmp_path, max_files=1, max_file_mb=1)
+    chunks = [PART_HEAD, *([b"x" * MB] * 4), b"\r\n--B--\r\n"]
+    headers = [(b"origin", ORIGIN.encode())]
+    with running_app(settings, ruleset, names=("logistics",)) as accounts:
+        if username:
+            headers.append((b"cookie", f"{COOKIE}={accounts[username].cookies[COOKIE]}".encode()))
+        status, code, pulled = _post_raw(accounts.app, chunks, headers)
+        upload_root = accounts.state.upload_root
+    assert (status, code) == expected
+    assert pulled == 0, "nothing of the body was read"
+    assert not upload_root.exists() or not any(upload_root.iterdir())
+
+
 def test_results_of_older_rules_are_not_served(tmp_path: Path, ruleset: Ruleset):
     """INV-8 (review open question): cost sensitivity follows the rules, so results computed under
     other rule files are refused until the package is analysed again; analysing again fixes it."""
-    settings = Settings(_env_file=None, data_dir=tmp_path / "data", embedding_model=None)
+    settings = settings_in(tmp_path)
     sources = make_package(tmp_path / "upload")
-    files = [("files", (p.name, p.read_bytes(), PDF)) for p in sources]
-    with TestClient(create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())) as client:
-        rfq_id = client.post("/rfqs", files=files).json()["data"]["id"]
-        client.app.state.autorfx.wait()
-        assert client.get(f"/rfqs/{rfq_id}/clauses").status_code == 200
+    with running_app(settings, ruleset, names=("sales",)) as accounts:
+        rfq_id = accounts.upload(sources)
+        assert accounts["sales"].get(f"/rfqs/{rfq_id}/clauses").status_code == 200
     changed = ruleset.model_copy(update={"digest": "0" * 64})
-    with TestClient(create_app(settings, ruleset=changed, provider=RuleOnlyProvider())) as client:
+    with running_app(settings, changed, create=False) as accounts:
+        client = accounts["sales"]
         assert error(client.get(f"/rfqs/{rfq_id}/clauses")) == (409, "stale_results")
+        files = [("files", (p.name, p.read_bytes(), PDF)) for p in sources]
         again = client.post("/rfqs", files=files).json()["data"]
         assert again["id"] == rfq_id and again["notice"] == "", "a real new analysis, not the stored one"
-        client.app.state.autorfx.wait()
+        accounts.state.wait()
         assert client.get(f"/rfqs/{rfq_id}/clauses").status_code == 200
 
 
@@ -260,7 +303,7 @@ def test_a_spreadsheet_formula_in_a_name_is_written_as_text(tmp_path: Path, rule
 
 def test_a_request_for_another_host_is_refused(api: Api):
     """Security (review M3): DNS rebinding; the server answers only for its own host names."""
-    client, _, _ = api
+    client = api[0].anonymous()
     assert client.get("/health", headers={"Host": "evil.example"}).status_code == 400
     assert client.get("/health", headers={"Host": "127.0.0.1:8000"}).status_code == 200
 
@@ -289,11 +332,8 @@ def test_a_job_records_its_estimated_cost(tmp_path: Path, ruleset: Ruleset):
     provider = ScriptedProvider(
         translation="번역문", provider_id="openai:gpt-x", usage=Usage(calls=1, output_tokens=1000)
     )
-    app = create_app(settings, ruleset=ruleset, provider=provider)
-    with TestClient(app) as client:
-        files = [("files", (p.name, p.read_bytes(), PDF)) for p in make_package(tmp_path / "upload")]
-        rfq_id = client.post("/rfqs", files=files).json()["data"]["id"]
-        app.state.autorfx.wait()
+    with running_app(settings, ruleset, provider=provider) as accounts:
+        rfq_id = accounts.upload(make_package(tmp_path / "upload"))
     run = json.loads((settings.work_dir / rfq_id / "run.json").read_text(encoding="utf-8"))
     calls = run["translation"]["usage"]["calls"]
     assert calls > 0 and run["translation"]["cost_usd"] == usd_text(Decimal(calls) / 1000)
@@ -301,92 +341,170 @@ def test_a_job_records_its_estimated_cost(tmp_path: Path, ruleset: Ruleset):
 
 def test_a_failed_job_is_reported_and_has_no_results(api: Api):
     """JOB-02: the job shows where it stopped; result endpoints say so instead of serving partial data."""
-    client, _, _ = api
+    accounts, _, _ = api
+    client = accounts[FULL_VIEW]
     body = client.post("/rfqs", files=[("files", ("broken.pdf", b"%PDF-1.7 not a document", PDF))]).json()
-    client.app.state.autorfx.wait()
+    accounts.state.wait()
     rfq_id = body["data"]["id"]
     stages = {s["id"]: s for s in get(client, f"/rfqs/{rfq_id}/job", "job")["data"]["stages"]}
     assert stages["canonical"]["status"] == "error" and "broken.pdf" in stages["canonical"]["detail"]
-    assert error(client.get(f"/rfqs/{rfq_id}/clauses")) == (409, "job_failed")
+    failed = client.get(f"/rfqs/{rfq_id}/clauses")
+    assert error(failed) == (409, "job_failed")
 
 
-# ── analysis, per team ──────────────────────────────────────────────────────
-@pytest.mark.parametrize("team", [VISIBLE, RESTRICTED, None, "nobody"])
-def test_every_response_conforms_to_the_contract(api: Api, team: str | None):
+def test_a_limited_account_gets_the_stage_of_a_failed_job_but_no_detail(api: Api):
+    """auth-rbac §4: the stage detail and the 409 message may name a file, so a limited account gets
+    the stage names and states only."""
+    accounts, _, _ = api
+    sources = [("files", ("secretname.pdf", b"%PDF-1.7 still not a document", PDF))]
+    rfq_id = accounts[FULL_VIEW].post("/rfqs", files=sources).json()["data"]["id"]
+    accounts.state.wait()
+    for name in LIMITED:
+        job = accounts[name].get(f"/rfqs/{rfq_id}/job")
+        assert_valid("job", job.json())
+        stages = {s["id"]: s for s in job.json()["data"]["stages"]}
+        assert stages["canonical"]["status"] == "error" and stages["canonical"]["label"]
+        assert all(stage["detail"] == "" for stage in stages.values()), name
+        failed = accounts[name].get(f"/rfqs/{rfq_id}/clauses")
+        assert error(failed) == (409, "job_failed")
+        assert stages["canonical"]["label"] in failed.json()["error"]["message"]
+        assert "secretname" not in job.text + failed.text, name
+
+
+# ── analysis, per account ───────────────────────────────────────────────────
+@pytest.mark.parametrize("name", [*FULL, *LIMITED])
+def test_every_response_conforms_to_the_contract(api: Api, name: str):
     """CONTRACT-01, INV-9: the shapes the web validates are the shapes the backend returns."""
-    client, rfq_id, _ = api
-    params = {"team": team} if team else {}
-    group = "cost_visible" if team == VISIBLE else "cost_restricted"
-    assert get(client, f"/rfqs/{rfq_id}/clauses", "clauses", **params)["data"]["group"] == group
-    assert get(client, f"/rfqs/{rfq_id}/rtm", "rtm", **params)["data"]["group"] == group
-    assert get(client, f"/rfqs/{rfq_id}/consistency", "consistency", **params)["data"]["group"] == group
-    get(client, f"/rfqs/{rfq_id}/files/d01/pages/1/sentences", "sentences", **params)
+    accounts, rfq_id, _ = api
+    client = accounts[name]
+    group = "cost_visible" if name in COST_VISIBLE else "cost_restricted"
+    assert get(client, f"/rfqs/{rfq_id}/clauses", "clauses")["data"]["group"] == group
+    assert get(client, f"/rfqs/{rfq_id}/rtm", "rtm")["data"]["group"] == group
+    assert get(client, f"/rfqs/{rfq_id}/consistency", "consistency")["data"]["group"] == group
+    get(client, f"/rfqs/{rfq_id}/files/d01/pages/1/sentences", "sentences")
     get(client, f"/rfqs/{rfq_id}/evaluation", "evaluation")
-    chat = client.post(f"/rfqs/{rfq_id}/chat", json={"team": team, "question": "인도조건은?"})
+    get(client, f"/rfqs/{rfq_id}", "document")
+    get(client, f"/rfqs/{rfq_id}/job", "job")
+    get(client, "/rfqs", "rfq-list")
+    chat = client.post(f"/rfqs/{rfq_id}/chat", json={"question": "인도조건은?"})
     assert chat.status_code == 200
     assert_valid("chat", chat.json())
-    assert chat.json()["data"]["status"] == "answered"
+    # The delivery clauses are routed to logistics: an account that cannot see them has no evidence.
+    answered = name in (*FULL, "logistics")
+    assert chat.json()["data"]["status"] == ("answered" if answered else "no_evidence")
 
 
-def test_cost_visible_team_sees_the_price_clause(api: Api):
-    client, rfq_id, _ = api
-    clauses = get(client, f"/rfqs/{rfq_id}/clauses", team=VISIBLE)["data"]["clauses"]
-    price = next(c for c in clauses if c["clause_id"] == "d01:2.2")
-    assert price["kind"] == "clause" and PACKAGE_SECRET in price["excerpt"][0]["text"]
-    assert price["primary_department"] == "costing" and price["origin"] == "rule"
-    source = client.get(f"/rfqs/{rfq_id}/files/d01/source", params={"team": VISIBLE})
+def test_cost_visible_account_sees_the_price_clause(api: Api):
+    """RBAC-01: the cost department gets its price clause in full."""
+    accounts, rfq_id, _ = api
+    for name in (FULL_VIEW, VISIBLE):
+        clauses = get(accounts[name], f"/rfqs/{rfq_id}/clauses")["data"]["clauses"]
+        price = next(c for c in clauses if c["clause_id"] == "d01:2.2")
+        assert price["kind"] == "clause" and PACKAGE_SECRET in price["excerpt"][0]["text"]
+        assert price["primary_department"] == "costing" and price["origin"] == "rule"
+    source = accounts[FULL_VIEW].get(f"/rfqs/{rfq_id}/files/d01/source")
     assert source.headers["content-type"] == PDF and source.headers["cache-control"] == "no-store"
     with pymupdf.open(stream=source.content, filetype="pdf") as doc:
         assert "1.2345" in doc[0].get_text()
 
 
-def test_nothing_about_the_price_reaches_a_restricted_team(api: Api):
-    """INV-8, SC-004: every endpoint is called as a restricted team and searched for the hidden text."""
-    client, rfq_id, _ = api
-    page = ""
-    for team in (RESTRICTED, None, "nobody"):
-        params = {"team": team} if team else {}
-        texts = [
-            json.dumps(get(client, f"/rfqs/{rfq_id}{path}", **params), ensure_ascii=False)
-            for path in ("/clauses", "/rtm", "/consistency", "/files/d01/pages/1/sentences", "", "/job")
-        ]
-        for department in ("costing", "sales", "quality"):
-            filtered = get(client, f"/rfqs/{rfq_id}/clauses", department=department, **params)
-            texts.append(json.dumps(filtered, ensure_ascii=False))
-        asked = ("목표가는 얼마인가요?", "target price", "price", "rejected quotes", "1.2345")
-        for question in (*asked, "독소조항이 있나요?", "문서끼리 다른 값은?", "RFQ 요약"):
-            reply = client.post(f"/rfqs/{rfq_id}/chat", json={"team": team, "question": question})
-            texts.append(reply.text)
-        source = client.get(f"/rfqs/{rfq_id}/files/d01/source", params=params)
-        with pymupdf.open(stream=source.content, filetype="pdf") as doc:
-            page = doc[0].get_text()
-        workbook = client.get(f"/rfqs/{rfq_id}/rtm.xlsx", params=params)
-        sheet = load_workbook(io.BytesIO(workbook.content)).active
-        texts.append(json.dumps([list(row) for row in sheet.iter_rows(values_only=True)], default=str))
-        for text in (*texts, page):
-            for secret in SECRETS:
-                assert secret not in text, (team, secret)
-    masked = get(client, f"/rfqs/{rfq_id}/clauses", team=RESTRICTED)["data"]["clauses"][3]
+def test_a_department_sees_its_clauses_and_a_lock_for_every_other(api: Api):
+    """auth-rbac §2: own clauses (lead or reference) in full, the rest only as locked rows."""
+    accounts, rfq_id, _ = api
+    expected = {
+        "sales": ["d01:0", "d01:1.1", "d01:2.1", "d01:2.2", "d01:2.3", "d02:1.1", "d02:1.2"],
+        "development": ["d01:1.1"],
+        "logistics": ["d01:2.1", "d01:2.3", "d02:1.1", "d02:1.2"],
+        "legal": ["d01:2.3"],
+        "costing": ["d01:2.2"],
+        "quality": [],
+        "purchasing": [],
+        "production_engineering": [],
+    }
+    for name, own in expected.items():
+        items = get(accounts[name], f"/rfqs/{rfq_id}/clauses")["data"]["clauses"]
+        assert len(items) == 7, "every clause is a row, visible or locked"
+        assert [c["clause_id"] for c in items if c["kind"] == "clause"] == own, name
+    everything = get(accounts["sales"], f"/rfqs/{rfq_id}/clauses")
+    assert get(accounts["admin"], f"/rfqs/{rfq_id}/clauses") == everything
+
+
+@pytest.mark.parametrize("name", NO_COST)
+def test_nothing_about_the_price_reaches_a_restricted_account(api: Api, name: str):
+    """INV-8, SC-004: every endpoint is called as a restricted account and searched for the hidden text."""
+    accounts, rfq_id, _ = api
+    client = accounts[name]
+    texts = [
+        json.dumps(get(client, f"/rfqs/{rfq_id}{path}"), ensure_ascii=False)
+        for path in ("/clauses", "/rtm", "/consistency", "/files/d01/pages/1/sentences", "", "/job")
+    ]
+    for department in ("costing", "sales", "quality"):
+        filtered = get(client, f"/rfqs/{rfq_id}/clauses", department=department)
+        texts.append(json.dumps(filtered, ensure_ascii=False))
+    for question in (
+        "목표가는 얼마인가요?",
+        "price",
+        "독소조항이 있나요?",
+        "문서끼리 다른 값은?",
+        "RFQ 요약",
+    ):
+        reply = client.post(f"/rfqs/{rfq_id}/chat", json={"question": question})
+        assert reply.status_code == 200
+        texts.append(reply.text)
+    for question in ("target price", "rejected quotes", "1.2345"):
+        # The words of the question itself may be named as absent; nothing else may come back.
+        data = client.post(f"/rfqs/{rfq_id}/chat", json={"question": question}).json()["data"]
+        assert data["status"] in ("restricted", "no_evidence") and data["answer"] is None
+    source = client.get(f"/rfqs/{rfq_id}/files/d01/source")
+    assert source.status_code == 200, source.text
+    with pymupdf.open(stream=source.content, filetype="pdf") as doc:
+        texts.append("".join(page.get_text() for page in doc))
+    workbook = client.get(f"/rfqs/{rfq_id}/rtm.xlsx")
+    sheet = load_workbook(io.BytesIO(workbook.content)).active
+    texts.append(json.dumps([list(row) for row in sheet.iter_rows(values_only=True)], default=str))
+    for text in texts:
+        for secret in SECRETS:
+            assert secret not in text, (name, secret)
+    masked = get(client, f"/rfqs/{rfq_id}/clauses")["data"]["clauses"][3]
     assert masked == {"kind": "masked", "clause_id": "d01:2.2", "source_doc": "d01", "section_id": "2.2"}
-    assert "2.1 Delivery is FCA" in page and "2.3 The warranty period" in page, "neighbours intact"
 
 
-def test_cost_screens_are_closed_to_restricted_teams(api: Api):
+def test_the_neighbours_of_a_hidden_sentence_stay_on_the_page(api: Api):
+    """RBAC-02: the scoped page shows the visible sentences around the hidden one (as an image)."""
+    accounts, rfq_id, _ = api
+    client = accounts[RESTRICTED]
+    found = get(client, f"/rfqs/{rfq_id}/files/d01/pages/1/sentences")["data"]["sentences"]
+    assert [s["text"][:20] for s in found] == ["2.1 Delivery is FCA ", "2.3 The warranty per"]
+    source = client.get(f"/rfqs/{rfq_id}/files/d01/source")
+    assert source.headers["content-type"] == PDF and source.headers["cache-control"] == "no-store"
+    with pymupdf.open(stream=source.content, filetype="pdf") as doc:
+        page = doc[0]
+        for rect in (r for sentence in found for r in sentence["rects"]):
+            x, y = rect["x"] * page.rect.width, rect["y"] * page.rect.height
+            clip = pymupdf.Rect(x, y, x + rect["w"] * page.rect.width, y + rect["h"] * page.rect.height)
+            samples = page.get_pixmap(clip=clip, dpi=144).samples
+            assert min(samples) < 90 and max(samples) > 240, "black text on a white ground"
+
+
+def test_cost_screens_are_closed_to_restricted_accounts(api: Api):
     """RBAC-01, COST-04: company figures, the setup and the calculation are refused, not emptied."""
-    client, rfq_id, _ = api
+    accounts, rfq_id, _ = api
     body = {"rfq_id": rfq_id, "inputs": precost_inputs(), "resolved": {}}
-    for team in (RESTRICTED, None, "nobody"):
-        params = {"team": team} if team else {}
-        assert error(client.get(f"/rfqs/{rfq_id}/precost-setup", params=params)) == (403, "forbidden")
-        assert error(client.get("/company", params=params)) == (403, "forbidden")
-        assert error(client.post("/precost", json={**body, "team": team})) == (403, "forbidden")
+    for name in NO_COST:
+        client = accounts[name]
+        assert error(client.get(f"/rfqs/{rfq_id}/precost-setup")) == (403, "forbidden")
+        assert error(client.get("/company")) == (403, "forbidden")
+        assert error(client.post("/precost", json=body)) == (403, "forbidden")
+    for name in COST_VISIBLE:
+        assert accounts[name].get(f"/rfqs/{rfq_id}/precost-setup").status_code == 200, name
 
 
 # ── pre-cost ────────────────────────────────────────────────────────────────
 def test_company_settings_round_trip_and_bad_rows_are_refused(api: Api):
     """Initial setup: the price table and profile are saved whole; a bad row names itself."""
-    client, _, _ = api
-    company = get(client, "/company", "company", team=VISIBLE)["data"]
+    accounts, _, _ = api
+    client = accounts["admin"]
+    company = get(accounts[VISIBLE], "/company", "company")["data"]
     assert company["settings"]["discount_rate"] == "0.08"
     row = {
         "id": None,
@@ -404,7 +522,7 @@ def test_company_settings_round_trip_and_bad_rows_are_refused(api: Api):
         "prices": [row],
     }
     assert_valid("company-request", body)
-    saved = client.put("/company", params={"team": VISIBLE}, json=body)
+    saved = client.put("/company", json=body)
     assert saved.status_code == 200, saved.text
     assert_valid("company", saved.json())
     stored = saved.json()["data"]
@@ -412,22 +530,23 @@ def test_company_settings_round_trip_and_bad_rows_are_refused(api: Api):
         "IATF 16949"
     ]
     bad = {**body, "prices": [{**row, "department": "nobody"}]}
-    assert error(client.put("/company", params={"team": VISIBLE}, json=bad)) == (400, "invalid_request")
+    assert error(client.put("/company", json=bad)) == (400, "invalid_request")
     twice = {**body, "prices": [row, row]}
-    assert error(client.put("/company", params={"team": VISIBLE}, json=twice)) == (400, "invalid_request")
+    assert error(client.put("/company", json=twice)) == (400, "invalid_request")
 
 
-def test_setup_and_calculation_for_a_cost_visible_team(api: Api):
+def test_setup_and_calculation_for_a_cost_visible_account(api: Api):
     """COST-01, COST-05: cited inputs from the RFQ, a computed minimum quote, a decision with its rule."""
-    client, rfq_id, _ = api
-    setup = get(client, f"/rfqs/{rfq_id}/precost-setup", "precost-setup", team=VISIBLE)["data"]
+    accounts, rfq_id, _ = api
+    client = accounts[VISIBLE]
+    setup = get(client, f"/rfqs/{rfq_id}/precost-setup", "precost-setup")["data"]
     by_field = {c["field"]: c for c in setup["cost_inputs"]["candidates"]}
     assert by_field["target_price"]["value"] == "1.2345"
     assert by_field["target_price"]["evidence"]["citation_status"] == "verified"
     assert [a["value"] for a in by_field["incoterm"]["alternatives"]] == ["FCA", "DDP"]
     assert setup["classification"]["type"] == "other", "one drawing is not enough to call it manufacturing"
 
-    plain = {"team": VISIBLE, "rfq_id": None, "inputs": precost_inputs(target_price="2"), "resolved": {}}
+    plain = {"rfq_id": None, "inputs": precost_inputs(target_price="2"), "resolved": {}}
     response = client.post("/precost", json=plain)
     assert response.status_code == 200, response.text
     assert_valid("precost", response.json())
@@ -465,14 +584,15 @@ def test_setup_and_calculation_for_a_cost_visible_team(api: Api):
 )
 def test_invalid_cost_input_is_refused(api: Api, change: dict):
     """COST-01: no number is computed from an invalid input."""
-    client, _, _ = api
-    body = {"team": VISIBLE, "rfq_id": None, "inputs": precost_inputs(**change), "resolved": {}}
+    client = api[0][VISIBLE]
+    body = {"rfq_id": None, "inputs": precost_inputs(**change), "resolved": {}}
     assert error(client.post("/precost", json=body)) == (422, "invalid_request")
 
 
 # ── errors and headers ──────────────────────────────────────────────────────
 def test_unknown_things_are_not_found(api: Api):
-    client, rfq_id, _ = api
+    accounts, rfq_id, _ = api
+    client = accounts[RESTRICTED]
     assert error(client.get("/rfqs/rfq-doesnotexist/clauses")) == (404, "not_found")
     assert error(client.get("/rfqs/..%2F..%2Fetc/job")) == (404, "not_found")
     assert error(client.get(f"/rfqs/{rfq_id}/files/d99/source")) == (404, "not_found")
@@ -482,10 +602,11 @@ def test_unknown_things_are_not_found(api: Api):
 
 
 def test_chat_refuses_an_empty_question(api: Api):
-    client, rfq_id, _ = api
-    empty = client.post(f"/rfqs/{rfq_id}/chat", json={"team": VISIBLE, "question": "  "})
+    accounts, rfq_id, _ = api
+    client = accounts[VISIBLE]
+    empty = client.post(f"/rfqs/{rfq_id}/chat", json={"question": "  "})
     assert error(empty) == (422, "invalid_request")
-    assert error(client.post(f"/rfqs/{rfq_id}/chat", json={"team": VISIBLE})) == (422, "invalid_request")
+    assert error(client.post(f"/rfqs/{rfq_id}/chat", json={})) == (422, "invalid_request")
 
 
 # ── chat ────────────────────────────────────────────────────────────────────
@@ -495,30 +616,19 @@ TURN = {"question": "보증 기간은?", "answer": "36개월입니다."}
 @pytest.fixture(scope="module")
 def chat_api(tmp_path_factory: pytest.TempPathFactory, ruleset: Ruleset) -> Iterator[Api]:
     """The same package, with a chat model that each test replaces."""
-    from autorfx.chat.model import ScriptedChatModel
-
     root = tmp_path_factory.mktemp("chat-api")
-    settings = Settings(_env_file=None, data_dir=root / "data")
+    settings = settings_in(root)
     sources = make_package(root / "upload")
-    app = create_app(
-        settings,
-        ruleset=ruleset,
-        provider=RuleOnlyProvider(),
-        chat_model=ScriptedChatModel(plans=[], drafts=[]),
-    )
-    with TestClient(app) as client:
-        files = [("files", (p.name, p.read_bytes(), PDF)) for p in sources]
-        rfq_id = client.post("/rfqs", files=files).json()["data"]["id"]
-        app.state.autorfx.wait()
-        yield client, rfq_id, sources
+    with running_app(settings, ruleset) as accounts:
+        yield accounts, accounts.upload(sources), sources
 
 
-def script(client: TestClient, *drafts: object):
+def script(accounts: Accounts, *drafts: object):
     """Queue drafts for the next question and return the model to inspect its calls."""
     from autorfx.chat.model import ScriptedChatModel
 
     model = ScriptedChatModel(plans=[], drafts=list(drafts))
-    client.app.state.autorfx.chat_model = model
+    accounts.state.chat_model = model
     return model
 
 
@@ -526,19 +636,20 @@ def test_history_is_accepted_and_reaches_the_planner(chat_api: Api):
     """RAG-03, CONTRACT-01: a follow-up arrives with the conversation; a missing history is an empty one."""
     from autorfx.chat.models import Draft, Turn
 
-    client, rfq_id, _ = chat_api
+    accounts, rfq_id, _ = chat_api
+    client = accounts[FULL_VIEW]
     nothing = Draft(answered=False, complete=True, statements=())
-    body = {"team": VISIBLE, "question": "그럼 그건 언제부터야?", "history": [TURN]}
+    body = {"question": "그럼 그건 언제부터야?", "history": [TURN]}
     assert_valid("chat-request", body)
-    model = script(client, nothing)
+    model = script(accounts, nothing)
     response = client.post(f"/rfqs/{rfq_id}/chat", json=body)
     assert response.status_code == 200, response.text
     assert_valid("chat", response.json())
     ((question, history, _),) = model.plan_calls
     assert question == body["question"] and tuple(history) == (Turn(**TURN),)
 
-    model = script(client, nothing)
-    plain = client.post(f"/rfqs/{rfq_id}/chat", json={"team": VISIBLE, "question": "보증 기간은?"})
+    model = script(accounts, nothing)
+    plain = client.post(f"/rfqs/{rfq_id}/chat", json={"question": "보증 기간은?"})
     assert plain.status_code == 200 and tuple(model.plan_calls[0][1]) == ()
 
 
@@ -546,15 +657,14 @@ def test_the_longest_allowed_history_is_accepted(chat_api: Api):
     """CONTRACT-01: six turns, 500 characters asked, 4000 answered."""
     from autorfx.chat.models import Draft
 
-    client, rfq_id, _ = chat_api
-    script(client, Draft(answered=False, complete=True, statements=()))
+    accounts, rfq_id, _ = chat_api
+    script(accounts, Draft(answered=False, complete=True, statements=()))
     body = {
-        "team": VISIBLE,
         "question": "보증 기간은?",
         "history": [{"question": "q" * 500, "answer": "a" * 4000}] * 6,
     }
     assert_valid("chat-request", body)
-    assert client.post(f"/rfqs/{rfq_id}/chat", json=body).status_code == 200
+    assert accounts[FULL_VIEW].post(f"/rfqs/{rfq_id}/chat", json=body).status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -574,16 +684,16 @@ def test_the_longest_allowed_history_is_accepted(chat_api: Api):
 )
 def test_a_malformed_history_is_refused(api: Api, history: object):
     """§5, INV-9: checked at the boundary; more than six turns is malformed too."""
-    client, rfq_id, _ = api
-    body = {"team": VISIBLE, "question": "보증 기간은?", "history": history}
-    assert error(client.post(f"/rfqs/{rfq_id}/chat", json=body)) == (422, "invalid_request")
+    accounts, rfq_id, _ = api
+    body = {"question": "보증 기간은?", "history": history}
+    assert error(accounts[FULL_VIEW].post(f"/rfqs/{rfq_id}/chat", json=body)) == (422, "invalid_request")
 
 
 def test_a_generated_answer_is_served_with_its_citations(chat_api: Api):
     """CITE-01, INV-12: the API passes the model's answer through the same checks."""
     from autorfx.chat.models import Draft, Statement
 
-    client, rfq_id, _ = chat_api
+    accounts, rfq_id, _ = chat_api
 
     class Reader:
         """Cites the warranty sentence by the number it was given, whatever that is."""
@@ -600,8 +710,8 @@ def test_a_generated_answer_is_served_with_its_citations(chat_api: Api):
             statement = Statement(text="보증 기간은 36개월입니다.", citations=(number,))
             return Draft(answered=True, complete=True, statements=(statement,))
 
-    client.app.state.autorfx.chat_model = Reader()
-    reply = client.post(f"/rfqs/{rfq_id}/chat", json={"team": RESTRICTED, "question": "보증 기간은?"})
+    accounts.state.chat_model = Reader()
+    reply = accounts[RESTRICTED].post(f"/rfqs/{rfq_id}/chat", json={"question": "보증 기간은?"})
     assert_valid("chat", reply.json())
     data = reply.json()["data"]
     assert (data["status"], data["mode"]) == ("answered", "generative")
@@ -610,10 +720,11 @@ def test_a_generated_answer_is_served_with_its_citations(chat_api: Api):
 
 def test_stored_results_answer_without_a_model(api: Api):
     """INV-12: the delivery terms contradict each other; the consistency check found it, no LLM did."""
-    client, rfq_id, _ = api
-    issues = get(client, f"/rfqs/{rfq_id}/consistency", team=VISIBLE)["data"]["issues"]
+    accounts, rfq_id, _ = api
+    client = accounts[FULL_VIEW]
+    issues = get(client, f"/rfqs/{rfq_id}/consistency")["data"]["issues"]
     assert issues, "the delivery terms contradict each other"
-    reply = client.post(f"/rfqs/{rfq_id}/chat", json={"team": VISIBLE, "question": "문서끼리 다른 값은?"})
+    reply = client.post(f"/rfqs/{rfq_id}/chat", json={"question": "문서끼리 다른 값은?"})
     assert_valid("chat", reply.json())
     data = reply.json()["data"]
     assert (data["status"], data["mode"]) == ("answered", "stored")
@@ -647,7 +758,7 @@ def test_the_chat_model_follows_settings_and_injection(tmp_path: Path, ruleset: 
 
 
 def test_security_headers_and_cors(api: Api):
-    client, _, _ = api
+    client = api[0].anonymous(origin=None)
     response = client.get("/health", headers={"Origin": "http://localhost:3000"})
     assert response.json() == {"status": "ok"}
     assert response.headers["x-content-type-options"] == "nosniff"
@@ -683,7 +794,6 @@ def test_the_evidence_gate_follows_the_loaded_encoder(
     from topic_encoder import TopicEncoder
 
     settings = Settings(_env_file=None, data_dir=tmp_path / "data", embedding_model=None)
-    files = [("files", (p.name, p.read_bytes(), PDF)) for p in make_package(tmp_path / "upload")]
     seen: list[float | None] = []
     real = state_module.load_rfq
 
@@ -692,15 +802,14 @@ def test_the_evidence_gate_follows_the_loaded_encoder(
         return real(*args, **kwargs)
 
     monkeypatch.setattr(state_module, "load_rfq", spy)
-    with TestClient(create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())) as client:
-        rfq_id = client.post("/rfqs", files=files).json()["data"]["id"]
-        app_state = client.app.state.autorfx
-        app_state.wait()
+    with running_app(settings, ruleset) as accounts:
+        rfq_id = accounts.upload(make_package(tmp_path / "upload"))
+        app_state = accounts.state
         encoder = TopicEncoder()
         encoder.name = "openai:text-embedding-3-large"
         app_state.encoder = encoder
         app_state._data.clear()
-        assert client.get(f"/rfqs/{rfq_id}/clauses").status_code == 200
+        assert accounts["admin"].get(f"/rfqs/{rfq_id}/clauses").status_code == 200
     assert seen[-1] == 0.30
 
 
@@ -712,11 +821,9 @@ def test_a_failed_embedding_is_not_cached_so_the_next_request_tries_again(
     from topic_encoder import TopicEncoder
 
     settings = Settings(_env_file=None, data_dir=tmp_path / "data", embedding_model=None)
-    files = [("files", (p.name, p.read_bytes(), PDF)) for p in make_package(tmp_path / "upload")]
-    with TestClient(create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())) as client:
-        rfq_id = client.post("/rfqs", files=files).json()["data"]["id"]
-        app_state = client.app.state.autorfx
-        app_state.wait()
+    with running_app(settings, ruleset) as accounts:
+        rfq_id = accounts.upload(make_package(tmp_path / "upload"))
+        app_state = accounts.state
         app_state.encoder = TopicEncoder()
         app_state._data.clear()
         real = pipeline.DenseIndex
@@ -729,9 +836,41 @@ def test_a_failed_embedding_is_not_cached_so_the_next_request_tries_again(
             return real(*args, **kwargs)
 
         monkeypatch.setattr(pipeline, "DenseIndex", flaky)
+        client = accounts["admin"]
         first = client.get("/meta")  # warm-up, keeps the client alive
         assert first.status_code == 200
         assert client.get(f"/rfqs/{rfq_id}/clauses").status_code == 200
         assert rfq_id not in app_state._data, "the keyword-only result is not kept"
         assert client.get(f"/rfqs/{rfq_id}/clauses").status_code == 200
         assert rfq_id in app_state._data, "once the embedding works, the result is kept"
+
+
+def test_the_browser_may_send_every_method_the_web_uses(api: Api):
+    """auth-rbac §3: the web app saves with PUT, PATCH and DELETE and sends its cookie from another origin,
+    so the preflight allows them without a session (ported from the removed department settings tests)."""
+    client = api[0].anonymous(origin=None)
+    for path, method in (
+        ("/company", "PUT"),
+        ("/admin/users/u1", "PATCH"),
+        ("/admin/users/u1", "DELETE"),
+        ("/auth/login", "POST"),
+    ):
+        response = client.options(
+            path,
+            headers={
+                "Origin": ORIGIN,
+                "Access-Control-Request-Method": method,
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        assert response.status_code == 200, (path, method, response.text)
+        assert method in response.headers["access-control-allow-methods"]
+        assert response.headers["access-control-allow-origin"] == ORIGIN
+        assert response.headers["access-control-allow-credentials"] == "true"
+
+
+def test_the_department_settings_are_gone(api: Api):
+    """auth-rbac §3: company departments are removed; their addresses no longer exist."""
+    admin = api[0]["admin"]
+    assert error(admin.get("/org/departments")) == (404, "not_found")
+    assert error(admin.put("/org/departments", json={"departments": []})) == (404, "not_found")

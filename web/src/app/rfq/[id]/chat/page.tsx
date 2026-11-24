@@ -2,36 +2,33 @@
 /**
  * RFQ chatbot (TASKS S016, docs/design/chat.md, US6). Answers come from the backend and
  * quote the source; with no evidence it does not answer. Citations open the
- * source viewer. The conversation resets on team change, so the history sent
- * with a question never crosses teams (INV-8).
+ * source viewer. The conversation resets when the account changes, so the
+ * history sent with a question never crosses accounts (INV-8).
  */
 import { useParams } from "next/navigation";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Composer } from "@/components/chat/composer";
 import { Conversation } from "@/components/chat/conversation";
-import { useTeamGroup } from "@/components/shell/app-shell";
 import { SourceViewer } from "@/components/source-viewer/source-viewer";
 import { IconLock } from "@/components/ui/icons";
 import { ProvenanceBadge } from "@/components/ui/primitives";
 import { buildHistory, firstCitation, type Turn } from "@/lib/rfq/chat-history";
 import type { Locus } from "@/lib/rfq/contract";
 import { describeError, rfqApi } from "@/lib/rfq/provider";
-import { useSession } from "@/lib/rfq/session";
+import { scopeName, seesWholeSource } from "@/lib/rfq/scope";
+import { useViewer } from "@/lib/rfq/session";
 
 /** First suggestions before any answer: general RFQ questions. */
 const STARTERS = ["RFQ 요약해줘", "우리한테 불리한 조항은?", "문서끼리 값이 다른 곳은?", "납기 조건은?"];
 
 export default function ChatPage() {
   const { id } = useParams<{ id: string }>();
-  const session = useSession();
-  return <Chat key={`${id}:${session.team ?? "none"}`} rfqId={decodeURIComponent(id)} />;
+  const viewer = useViewer();
+  return <Chat key={`${id}:${viewer.user_id}`} rfqId={decodeURIComponent(id)} />;
 }
 
 function Chat({ rfqId }: { rfqId: string }) {
-  const session = useSession();
-  const { restricted: isRestricted, ready: teamReady } = useTeamGroup();
-  const restricted = teamReady && isRestricted;
-  const ctx = useMemo(() => ({ team: session.team }), [session.team]);
+  const viewer = useViewer();
   const [turns, setTurns] = useState<Turn[]>([]);
   const [target, setTarget] = useState<Locus | null>(null);
   const [isBusy, setIsBusy] = useState(false);
@@ -54,7 +51,7 @@ function Chat({ rfqId }: { rfqId: string }) {
     setIsBusy(true);
     setTurns((ts) => [...ts, { question, response: null, error: null, startedAt: Date.now() }]);
     try {
-      const response = await rfqApi.chat(rfqId, question, history, ctx, controller.signal);
+      const response = await rfqApi.chat(rfqId, question, history, controller.signal);
       if (controller.signal.aborted) return;
       finishTurn({ response });
       const first = firstCitation(response.data);
@@ -79,23 +76,16 @@ function Chat({ rfqId }: { rfqId: string }) {
           </h1>
           {/* The badge follows the server's provenance (INV-10: never decided by the screen). */}
           <ProvenanceBadge provenance={lastResponse?.provenance} />
-          {restricted && (
+          {!seesWholeSource(viewer) && (
             <span className="ml-auto inline-flex items-center gap-1 text-label text-ink-muted">
-              <IconLock size={12} /> 금액 조항 제외
+              <IconLock size={12} /> {scopeName(viewer)} 안에서만 답합니다
             </span>
           )}
         </header>
         <Conversation turns={turns} target={target} onCite={setTarget} />
         <Composer suggestions={suggestions} isBusy={isBusy} onAsk={(q) => void ask(q)} />
       </section>
-      <SourceViewer
-        key={ctx.team ?? "none"}
-        rfqId={rfqId}
-        ctx={ctx}
-        restricted={restricted}
-        target={target}
-        className="min-h-[70dvh] lg:min-h-0"
-      />
+      <SourceViewer rfqId={rfqId} target={target} className="min-h-[70dvh] lg:min-h-0" />
     </div>
   );
 }

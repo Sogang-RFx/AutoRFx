@@ -64,11 +64,11 @@ describe("noTranslationMessage with a recorded status", () => {
 
 describe("export note", () => {
   it("shows the translation label, not the raw id", () => {
-    expect(exportNote({ ...ENGINES, translation: "openai:gpt-x" })).toContain("번역: gpt-x");
-    expect(exportNote(ENGINES)).toContain("번역: 번역 없음");
+    expect(exportNote({ ...ENGINES, translation: "openai:gpt-x" }, "전체 범위")).toContain("번역: gpt-x");
+    expect(exportNote(ENGINES, "전체 범위")).toContain("번역: 번역 없음");
   });
   it("keeps the raw none out of the CSV first line", () => {
-    const first = rtmCsv([], { dept: (i) => i, file: (i) => i }, exportNote(ENGINES)).split("\n")[0];
+    const first = rtmCsv([], { dept: (i) => i, file: (i) => i }, exportNote(ENGINES, "전체 범위")).split("\n")[0];
     expect(first).not.toContain("none");
     expect(first).toContain("번역 없음");
   });

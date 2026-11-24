@@ -1,4 +1,4 @@
-"""Command line: run the API, list the sample packages, analyse a package, or compare search modes."""
+"""Command line: run the API, manage accounts, list samples, analyse a package, compare search modes."""
 
 from __future__ import annotations
 
@@ -13,13 +13,15 @@ import yaml
 
 from autorfx.analysis import RuleOnlyProvider, SqliteCache, make_provider
 from autorfx.analysis.usage import load_prices
-from autorfx.config import get_settings
+from autorfx.auth import AuditLog, AuthError, AuthStore
+from autorfx.auth.seed import WEB_URL, SeedError, memo_path, reset_password, seed_accounts
+from autorfx.config import Settings, get_settings
 from autorfx.guard import GuardError, assert_not_held_out
 from autorfx.ingest import list_samples
 from autorfx.pipeline import PipelineError, load_rfq, retrieval_engine, run_pipeline
 from autorfx.retrieval import compare, score
 from autorfx.retrieval.dense import load_encoder
-from autorfx.rules import RulesError, load_ruleset
+from autorfx.rules import RulesError, Ruleset, load_ruleset
 
 
 def _serve(args: argparse.Namespace) -> int:
@@ -253,6 +255,70 @@ def _score_search(args: argparse.Namespace) -> int:
     return 0
 
 
+def _accounts() -> tuple[Settings, Ruleset, AuthStore, AuditLog]:
+    settings = get_settings()
+    ruleset = load_ruleset(settings.rules_dir)
+    store = AuthStore(
+        settings.work_dir, department_ids=ruleset.department_ids, session_hours=settings.session_hours
+    )
+    return settings, ruleset, store, AuditLog(settings.work_dir)
+
+
+def _memo(args: argparse.Namespace) -> Path:
+    return Path(args.memo) if args.memo else memo_path(Path.cwd())
+
+
+def _web_url(settings: Settings) -> str:
+    return next(iter(settings.cors_origin_list), WEB_URL)
+
+
+def _users_seed(args: argparse.Namespace) -> int:
+    """Create the missing accounts. The passwords go to the memo and never to the terminal."""
+    settings, ruleset, store, audit = _accounts()
+    memo = _memo(args)
+    created = seed_accounts(store, ruleset, memo, web_url=_web_url(settings))
+    for user in created:
+        audit.record("user_create", actor=None, target=user.username, detail="cli seed")
+    if not created:
+        sys.stdout.write("모든 계정이 이미 있습니다. 바꾼 것이 없습니다.\n")
+        return 0
+    names = ", ".join(user.username for user in created)
+    sys.stdout.write(f"계정 {len(created)}개를 만들었습니다: {names}\n비밀번호: {memo}\n")
+    return 0
+
+
+def _users_list(_: argparse.Namespace) -> int:
+    _, _, store, _ = _accounts()
+    for user in store.list_users():
+        state = "사용 중지" if user.disabled else "사용"
+        sys.stdout.write(f"{user.username}\t{user.role}\t{user.department or '-'}\t{state}\n")
+    return 0
+
+
+def _users_reset(args: argparse.Namespace) -> int:
+    settings, ruleset, store, audit = _accounts()
+    memo = _memo(args)
+    user = reset_password(store, ruleset, memo, args.username, web_url=_web_url(settings))
+    audit.record("user_password_reset", actor=None, target=user.username, detail="cli")
+    sys.stdout.write(f"'{user.username}'의 새 비밀번호를 적었습니다: {memo}\n")
+    return 0
+
+
+def _add_users(commands: argparse._SubParsersAction) -> None:
+    users = commands.add_parser("users", help="로그인 계정을 만들고 관리한다").add_subparsers(
+        dest="users_command", required=True
+    )
+    memo_help = "비밀번호를 적을 파일 (기본: 저장소 루트의 ACCOUNTS.local.md, git 제외)"
+    seed = users.add_parser("seed", help="없는 계정만 만든다 (admin과 부서마다 하나)")
+    seed.add_argument("--memo", help=memo_help)
+    seed.set_defaults(run=_users_seed)
+    users.add_parser("list", help="계정을 나열한다").set_defaults(run=_users_list)
+    reset = users.add_parser("reset", help="비밀번호를 새로 정하고 로그인을 모두 끊는다")
+    reset.add_argument("username", help="아이디")
+    reset.add_argument("--memo", help=memo_help)
+    reset.set_defaults(run=_users_reset)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="autorfx", description="AutoRFx: RFQ 분석 파이프라인")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -261,6 +327,7 @@ def main(argv: list[str] | None = None) -> int:
     serve.add_argument("--port", type=int, default=8000)
     serve.add_argument("--reload", action="store_true")
     serve.set_defaults(run=_serve)
+    _add_users(commands)
     commands.add_parser("samples", help="서버에 있는 샘플 RFQ를 나열한다").set_defaults(run=_samples)
     analyze = commands.add_parser("analyze", help="RFQ 패키지를 분석한다")
     analyze.add_argument("files", nargs="*", help="RFQ 파일 경로 (PDF, DOC, DOCX, XLSX)")
@@ -295,7 +362,7 @@ def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     try:
         return args.run(args)
-    except (PipelineError, RulesError) as exc:
+    except (PipelineError, RulesError, AuthError, SeedError, GuardError) as exc:
         sys.stderr.write(f"오류: {exc}\n")
         return 1
 
