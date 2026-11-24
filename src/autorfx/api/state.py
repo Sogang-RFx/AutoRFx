@@ -179,7 +179,10 @@ class AppState:
         with self._lock:
             store = self._jobs.get(rfq_id)
             # Not cached when another job started while the results were being read.
-            if store is None or store.state.started_at == state.started_at:
+            # Nor when the embeddings failed just now (network, rate limit): the next request tries again
+            # instead of keeping keyword search for this RFQ until a restart.
+            dense_failed = self.encoder is not None and loaded.index.dense is None
+            if not dense_failed and (store is None or store.state.started_at == state.started_at):
                 self._data[rfq_id] = (state.started_at, loaded)
         return loaded
 

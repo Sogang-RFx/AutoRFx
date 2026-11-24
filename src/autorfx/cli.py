@@ -83,6 +83,9 @@ def _analyze(args: argparse.Namespace) -> int:
 
 def _compare_search(args: argparse.Namespace) -> int:
     """BM25 vs embedding vs hybrid on one RFQ, for a list of questions (report under data/work)."""
+    if args.min_score is not None and not -1.0 <= args.min_score <= 1.0:  # before any pipeline work
+        sys.stderr.write(f"--min-score 값은 -1에서 1 사이여야 합니다: {args.min_score}\n")
+        return 2
     settings = get_settings()
     ruleset = load_ruleset(settings.rules_dir)
     # The questions are checked first, like in score-search: a missing or malformed file, or one from
@@ -106,9 +109,6 @@ def _compare_search(args: argparse.Namespace) -> int:
     if found is None:
         return 2
     sources, name, is_sample = found
-    if args.min_score is not None and not -1.0 <= args.min_score <= 1.0:
-        sys.stderr.write(f"--min-score 값은 -1에서 1 사이여야 합니다: {args.min_score}\n")
-        return 2
     gate = args.min_score if args.min_score is not None else settings.min_score_for(model)
     # Retrieval only needs parsing and chunking. The analysis runs on rules in its own temporary
     # workspace, so it neither spends API calls nor replaces the served analysis (possibly GPT) of the

@@ -254,3 +254,12 @@ def test_compare_search_uses_the_gate_measured_for_the_model(
         report.unlink()
     assert main([*base, "--min-score", "1.5"]) != 0
     assert "-1에서 1 사이" in capsys.readouterr().err
+
+
+def test_a_bad_min_score_is_refused_before_any_work(data_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys):
+    import autorfx.cli as cli
+
+    monkeypatch.setattr(cli, "run_pipeline", lambda *a, **k: pytest.fail("the pipeline ran"))
+    monkeypatch.setattr(cli, "load_encoder", lambda *a, **k: pytest.fail("the model was loaded"))
+    assert main(["compare-search", "--sample", "synthetic-sample", "--model", "x", "--min-score", "7"]) == 2
+    assert "-1에서 1 사이" in capsys.readouterr().err

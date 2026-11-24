@@ -267,6 +267,13 @@ def test_derived_folders_follow_the_data_dir(tmp_path: Path):
     assert not guard.is_held_out(settings.samples_dir.relative_to(tmp_path))
 
 
+@pytest.fixture(autouse=True)
+def _no_embedding_env(monkeypatch: pytest.MonkeyPatch):
+    """These tests read the defaults, so a shell that exports EMBEDDING_* must not change them."""
+    monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("EMBEDDING_MIN_SCORE", raising=False)
+
+
 def test_embedding_defaults_to_openai_3_large_with_its_own_gate():
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
     assert settings.embedding_model == "openai:text-embedding-3-large"

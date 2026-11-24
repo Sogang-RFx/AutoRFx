@@ -480,3 +480,36 @@ def test_the_evidence_gate_follows_the_loaded_encoder(
         app_state._data.clear()
         assert client.get(f"/rfqs/{rfq_id}/clauses").status_code == 200
     assert seen[-1] == 0.30
+
+
+def test_a_failed_embedding_is_not_cached_so_the_next_request_tries_again(
+    tmp_path: Path, ruleset: Ruleset, monkeypatch: pytest.MonkeyPatch
+):
+    """A 429 or a dropped network on the first open must not keep the RFQ on keyword search."""
+    from autorfx import pipeline
+    from topic_encoder import TopicEncoder
+
+    settings = Settings(_env_file=None, data_dir=tmp_path / "data", embedding_model=None)
+    files = [("files", (p.name, p.read_bytes(), PDF)) for p in make_package(tmp_path / "upload")]
+    with TestClient(create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())) as client:
+        rfq_id = client.post("/rfqs", files=files).json()["data"]["id"]
+        app_state = client.app.state.autorfx
+        app_state.wait()
+        app_state.encoder = TopicEncoder()
+        app_state._data.clear()
+        real = pipeline.DenseIndex
+        calls = {"n": 0}
+
+        def flaky(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise ConnectionError("offline")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(pipeline, "DenseIndex", flaky)
+        first = client.get("/meta")  # warm-up, keeps the client alive
+        assert first.status_code == 200
+        assert client.get(f"/rfqs/{rfq_id}/clauses").status_code == 200
+        assert rfq_id not in app_state._data, "the keyword-only result is not kept"
+        assert client.get(f"/rfqs/{rfq_id}/clauses").status_code == 200
+        assert rfq_id in app_state._data, "once the embedding works, the result is kept"
