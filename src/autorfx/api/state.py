@@ -115,6 +115,10 @@ class AppState:
 
     def close(self) -> None:
         self._worker.shutdown(wait=True, cancel_futures=True)
+        # After the worker: a running job still reads and writes both.
+        self.cache.close()
+        if self.translation_cache is not None:
+            self.translation_cache.close()
 
     def wait(self) -> None:
         """Block until every job submitted so far has ended. Jobs run in order on one worker."""

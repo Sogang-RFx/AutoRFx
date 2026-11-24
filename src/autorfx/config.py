@@ -113,12 +113,14 @@ class Settings(BaseSettings):
         settings dict (which holds the API key). The model field is declared first, so it is validated first;
         when it failed it is absent from ``info.data`` and its own error is the one shown.
         """
-        if (
-            value is not None
-            and "openai_translation_model" in info.data
-            and not info.data["openai_translation_model"]
-        ):
+        if value is None or "openai_translation_model" not in info.data:
+            return value
+        model = info.data["openai_translation_model"]
+        if not model:
             raise ValueError("OPENAI_TRANSLATION_EFFORT needs OPENAI_TRANSLATION_MODEL: set both or neither")
+        if model.lower().startswith("gpt-4"):
+            # Every translation call would be rejected while the server looks healthy.
+            raise ValueError("OPENAI_TRANSLATION_EFFORT is not accepted by gpt-4* models: leave it empty")
         return value
 
     @property

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import sqlite3
 from collections.abc import Iterator
 from decimal import Decimal
 from pathlib import Path
@@ -498,7 +499,12 @@ def test_a_keyless_server_creates_no_translation_cache(tmp_path: Path, ruleset: 
     assert not (settings.cache_dir / "translation.sqlite").exists()
     translating = create_app(settings, ruleset=ruleset, provider=ScriptedProvider(translation="번역문"))
     with TestClient(translating):
-        assert translating.state.autorfx.translation_cache is not None
+        state = translating.state.autorfx
+        assert state.translation_cache is not None
+    # Shutdown closes both caches: a server started many times must not pile up connections.
+    for cache in (state.cache, state.translation_cache):
+        with pytest.raises(sqlite3.ProgrammingError):
+            cache.get("k")
     assert (settings.cache_dir / "translation.sqlite").exists()
 
 

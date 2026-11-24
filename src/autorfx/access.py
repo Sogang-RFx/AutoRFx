@@ -170,6 +170,7 @@ def clause_items(
                 "excerpt": _excerpt(clause, analysis),
                 "summary": analysis.summary.model_dump(mode="json"),
                 "translation_ko": analysis.translation_ko,
+                "translation_status": analysis.translation_status,
                 "origin": analysis.origin,
             }
         )

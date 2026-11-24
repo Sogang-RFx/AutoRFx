@@ -261,7 +261,8 @@ def test_an_exception_in_the_retry_keeps_the_rest():
     """TRANS-03: the answered sentences stay; the unanswered ones fail."""
     clause = make_clause("5.7", ["Ship by train.", "Ship by road."])
     got, _ = run(clause, [{1: "열차."}, TransientProviderError("RateLimitError")])
-    assert got.sentences == ("열차.", None) and got.status == "partial" and got.note == "RateLimitError"
+    assert got.sentences == ("열차.", None) and got.status == "partial"
+    assert got.note == "missing=1; RateLimitError"
 
 
 def test_note_orders_counts_before_exception_names():
@@ -1075,11 +1076,34 @@ def test_a_failed_retry_does_not_count_towards_the_outage():
     """TRANS-03: only a failed first call counts; a retry that fails does not."""
     clause = many(60)
     err = TransientProviderError("RateLimitError")
-    # Batch 1: first call answers nothing, its retry fails. Batch 2: first call fails. Counting the retry
-    # would make that two in a row and skip batch 3.
-    got, provider = run(clause, [{}, err, err, {n: "문장." for n in range(41, 61)}])
+    # Batch 1: the first call answers a part, its retry fails. Batch 2: the first call fails. Counting the
+    # retry would make that two in a row and skip batch 3.
+    part = {n: "문장." for n in range(1, 20)}
+    got, provider = run(clause, [part, err, err, {n: "문장." for n in range(41, 61)}])
     assert 41 in [numbers[0] for _, numbers in provider.translate_calls]
     assert "skipped" not in got.note
+
+
+def test_batches_that_yield_nothing_count_towards_the_outage():
+    """TRANS-03: replies without a usable sentence are paid for too, so they stop a clause like errors do."""
+    got, provider = run(many(100), [{}])
+    assert [numbers[0] for _, numbers in provider.translate_calls] == [1, 1, 21, 21]
+    assert got.status == "failed" and got.note == "missing=40; skipped=60"
+
+
+def test_an_empty_first_reply_that_the_retry_answers_is_no_failure():
+    """TRANS-03: the provider works, so the outage count starts again."""
+    ok = {n: "문장." for n in range(1, 61)}
+    got, provider = run(many(60), [{}, ok, {}, ok, {}, ok])
+    assert got.status == "translated" and len(provider.translate_calls) == 6
+
+
+def test_a_failed_retry_after_an_empty_reply_counts_once():
+    """TRANS-03: one batch is at most one failure."""
+    err = TransientProviderError("RateLimitError")
+    got, provider = run(many(60), [{}, err, {n: "문장." for n in range(21, 61)}])
+    assert got.note == "missing=20; RateLimitError"
+    assert [numbers[0] for _, numbers in provider.translate_calls] == [1, 1, 21, 41]
 
 
 def test_an_error_without_a_message_is_named_by_its_type():
@@ -1123,6 +1147,14 @@ def test_effort_without_a_model_is_refused():
     with pytest.raises(ValidationError, match="OPENAI_TRANSLATION_EFFORT needs OPENAI_TRANSLATION_MODEL"):
         Settings(_env_file=None, OPENAI_TRANSLATION_EFFORT="none")  # type: ignore[call-arg]
     Settings(_env_file=None, OPENAI_TRANSLATION_MODEL="gpt-x", OPENAI_TRANSLATION_EFFORT="none")  # type: ignore[call-arg]
+
+
+@pytest.mark.parametrize("model", ["gpt-4o", "gpt-4.1-mini", "GPT-4o"])
+def test_effort_with_a_gpt_4_model_is_refused_at_the_start(model: str):
+    """TRANS-03: those models reject the parameter, so every translation call would fail."""
+    with pytest.raises(ValidationError, match="not accepted by gpt-4"):
+        Settings(_env_file=None, OPENAI_TRANSLATION_MODEL=model, OPENAI_TRANSLATION_EFFORT="none")  # type: ignore[call-arg]
+    Settings(_env_file=None, OPENAI_TRANSLATION_MODEL=model)  # type: ignore[call-arg]
 
 
 def test_a_mostly_english_clause_labelled_korean_is_translated(ruleset: Ruleset):

@@ -444,10 +444,19 @@ export function ClauseDetail({
             )}
           </div>
           {clause.translation_ko ? (
-            showTranslation && <p className="text-dense text-ink">{clause.translation_ko}</p>
+            showTranslation && (
+              <>
+                <p className="text-dense text-ink">{clause.translation_ko}</p>
+                {clause.translation_status === "partial" && (
+                  <p className="text-label text-ink-muted" data-testid="partial-translation">
+                    일부 문장은 번역하지 못했거나 보류했습니다. 원문을 확인하세요.
+                  </p>
+                )}
+              </>
+            )
           ) : (
             <p className="text-label text-ink-muted" data-testid="no-translation">
-              {noTranslationMessage(clause.lang, engines?.translation ?? "")}
+              {noTranslationMessage(clause.lang, engines?.translation ?? "", clause.translation_status)}
             </p>
           )}
         </section>

@@ -2,8 +2,8 @@
 
 A clause is sent in batches of sentences. Every sentence is judged on its own: a
 number that the same source sentence lacks withholds that sentence only, and a
-sentence the model did not return is asked for once more. After two failed
-first calls in a row the rest of the clause is not asked. Notes carry counts
+sentence the model did not return is asked for once more. After two batches in
+a row that yield nothing the rest of the clause is not asked. Notes carry counts
 and exception names, never clause or translation text.
 """
 
@@ -48,7 +48,7 @@ log = logging.getLogger(__name__)
 WITHHELD = "〔번역 보류: 원문 확인〕"
 MAX_BATCH_SENTENCES = 20
 MAX_BATCH_CHARS = 4000
-MAX_CONSECUTIVE_FAILURES = 2  # failed first calls in a row before the rest of a clause is not asked
+MAX_CONSECUTIVE_FAILURES = 2  # batches in a row that yield nothing before the rest is not asked
 HANGUL = re.compile("[\uac00-\ud7a3]")
 LATIN = re.compile("[A-Za-z\u00c0-\u00d6\u00d8-\u00f6\u00f8-\u024f]")
 CACHE_SCHEMA = 1  # shape of a cached value: a JSON list of texts in batch order
@@ -216,8 +216,9 @@ def _fetch(
 
     A batch with a stored translation is not asked for. A batch is stored only when every one of its
     numbers has a text that passes the number check (verified results only, like the judgement cache).
-    After MAX_CONSECUTIVE_FAILURES failed first calls in a row the remaining batches are not asked (stored
-    ones are still read); their sentences count as skipped. A retry that fails does not count.
+    After MAX_CONSECUTIVE_FAILURES batches in a row that yield no usable sentence (an error, or paid replies
+    with nothing in them) the remaining batches are not asked; stored ones are still read. Their sentences
+    count as skipped.
     """
     texts: dict[int, str] = {}
     errors: list[str] = []
@@ -246,7 +247,6 @@ def _fetch(
             usage = usage.plus(exc.usage or Usage())
             failures += 1
             continue
-        failures = 0
         usage = usage.plus(used)
         got = _accept(reply, set(numbers), source.sentences)
         again = tuple(n for n in numbers if n not in got)
@@ -259,7 +259,8 @@ def _fetch(
             else:
                 usage = usage.plus(used)
                 got |= _accept(reply, set(again), source.sentences)
-                missing += sum(1 for n in again if n not in got)
+            missing += sum(1 for n in again if n not in got)
+        failures = 0 if got else failures + 1
         if cache is not None and key is not None and all(_verified(got.get(n), source, n) for n in numbers):
             _store(cache, key, [got[n] for n in numbers], source.clause_id)
         texts |= got
