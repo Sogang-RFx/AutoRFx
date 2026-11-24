@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+
 from autorfx.models import Model
 
 
@@ -20,3 +22,19 @@ class Usage(Model):
             output_tokens=self.output_tokens + other.output_tokens,
             reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
         )
+
+
+class UsageMeter:
+    """Adds up usages from several threads."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._total = Usage()
+
+    def add(self, usage: Usage) -> None:
+        with self._lock:
+            self._total = self._total.plus(usage)
+
+    def total(self) -> Usage:
+        with self._lock:
+            return self._total

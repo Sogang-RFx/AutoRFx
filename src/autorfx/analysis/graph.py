@@ -38,6 +38,7 @@ from autorfx.analysis.providers import (
     rule_judgement,
 )
 from autorfx.analysis.translation import translate_clause
+from autorfx.analysis.usage import UsageMeter
 from autorfx.jobs import JobReporter, NullReporter
 from autorfx.models import Clause, ClauseAnalysis, Finding, Origin, RedFlag
 from autorfx.rules import Ruleset
@@ -122,7 +123,11 @@ def assemble(
 
 
 def build_clause_graph(
-    provider: AnalysisProvider, ruleset: Ruleset, policy: Policy, cache: CacheStore | None
+    provider: AnalysisProvider,
+    ruleset: Ruleset,
+    policy: Policy,
+    cache: CacheStore | None,
+    meter: UsageMeter | None = None,
 ):
     """Compile the per-clause graph for one provider and one set of rules."""
 
@@ -182,6 +187,8 @@ def build_clause_graph(
         if clause.lang == "ko":
             return {"analysis": analysis.model_copy(update={"translation_status": "source_ko"})}
         result = translate_clause(clause, provider)
+        if meter is not None:
+            meter.add(result.usage)  # also for clauses that failed or were withheld: the tokens were billed
         update = {
             "translation_ko": result.text,
             "translation_sentences": result.sentences,
@@ -216,11 +223,12 @@ def analyze(
     reporter: JobReporter | None = None,
     max_concurrency: int = 4,
     policy: Policy = "ambiguous_only",
+    meter: UsageMeter | None = None,
 ) -> tuple[ClauseAnalysis, ...]:
     """One analysis per clause, in input order. Reports the translate, route, assess and verify stages."""
     report = reporter or NullReporter()
     total = len(clauses)
-    graph = build_clause_graph(provider, ruleset, policy, cache)
+    graph = build_clause_graph(provider, ruleset, policy, cache, meter)
     lock = threading.Lock()
     done = 0
 

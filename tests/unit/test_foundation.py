@@ -253,6 +253,18 @@ def test_keys_are_optional_and_placeholders_do_not_count():
     assert placeholder.llm_connected is False and placeholder.deepl_api_key is None
 
 
+def test_translation_model_and_effort_settings():
+    """TRANS-03: the translation model and effort are optional; blank means unset, a bad effort is refused."""
+    plain = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert plain.openai_translation_model is None and plain.openai_translation_effort is None
+    blank = Settings(_env_file=None, OPENAI_TRANSLATION_MODEL="  ", OPENAI_TRANSLATION_EFFORT=" ")  # type: ignore[call-arg]
+    assert blank.openai_translation_model is None and blank.openai_translation_effort is None
+    chosen = Settings(_env_file=None, OPENAI_TRANSLATION_MODEL="gpt-x", OPENAI_TRANSLATION_EFFORT="none")  # type: ignore[call-arg]
+    assert (chosen.openai_translation_model, chosen.openai_translation_effort) == ("gpt-x", "none")
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, OPENAI_TRANSLATION_EFFORT="max")  # type: ignore[call-arg]
+
+
 def test_secret_is_not_printed():
     settings = Settings(_env_file=None, OPENAI_API_KEY="sk-test-not-a-real-key")  # type: ignore[call-arg]
     assert settings.llm_connected is True

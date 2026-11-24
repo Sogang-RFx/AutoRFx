@@ -28,6 +28,7 @@ from autorfx.analysis import (
 )
 from autorfx.analysis.llm import SYSTEM
 from autorfx.analysis.translation import WITHHELD, SentenceTranslation, TranslationBatch
+from autorfx.analysis.usage import Usage
 from autorfx.config import Settings
 from autorfx.jobs import JobStore, load_job
 from autorfx.models import Finding
@@ -401,7 +402,7 @@ def test_openai_provider_builds_prompts_from_the_rule_files(ruleset: Ruleset):
     assert "[S1] 4.1 Delivery is FCA" in user and "[S2] Packaging" in user
     assert "unlimited_liquidated_damages" in user and "fix it" in user
     batch, usage = provider.translate(clause, (1,))
-    assert [(i.n, i.text) for i in batch.items] == [(1, " 번역 ")] and usage.calls == 0
+    assert [(i.n, i.text) for i in batch.items] == [(1, " 번역 ")] and usage == Usage(calls=1)
     evidence = [EvidenceSentence(number=1, text="Delivery is FCA.", locus=make_locus(1))]
     assert provider.answer("인도조건은?", evidence, None).citations == (1,)
     assert "[S1] Delivery is FCA." in seen[-1][1]

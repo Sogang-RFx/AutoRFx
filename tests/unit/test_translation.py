@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import logging
+import threading
 
 import pytest
 from pydantic import ValidationError
 
 from autorfx.analysis import (
+    Answer,
+    ClauseInput,
+    OpenAIProvider,
     RuleOnlyProvider,
     ScriptedProvider,
     TransientProviderError,
     analyze,
+    engine_ids,
+    make_provider,
 )
+from autorfx.analysis.llm import openai_translation_call, translation_options, usage_from_metadata
 from autorfx.analysis.translation import (
     WITHHELD,
     ClauseTranslation,
@@ -22,7 +29,8 @@ from autorfx.analysis.translation import (
     clean,
     translate_clause,
 )
-from autorfx.analysis.usage import Usage
+from autorfx.analysis.usage import Usage, UsageMeter
+from autorfx.config import Settings
 from autorfx.jobs import JobStore, load_job
 from autorfx.models import Clause, ClauseAnalysis
 from autorfx.rules import Ruleset
@@ -340,3 +348,202 @@ def test_a_withheld_translation_is_not_logged(caplog: pytest.LogCaptureFixture):
     with caplog.at_level(logging.DEBUG):
         run(clause, [{1: "비밀번역 777"}])
     assert caplog.records and all("비밀번역" not in r.getMessage() for r in caplog.records)
+
+
+# ── separate translation model and token usage (TRANS-03, INV-12) ───────────
+USED = Usage(calls=1, input_tokens=100, cached_input_tokens=10, output_tokens=40, reasoning_tokens=5)
+
+
+def test_engines_follow_the_translation_model(ruleset: Ruleset):
+    """ENGINE-03: without the variable translation is the judgement model; with it only translation moves."""
+    plain = make_provider(Settings(_env_file=None, OPENAI_API_KEY="sk-test-not-real"), ruleset)  # type: ignore[call-arg]
+    assert engine_ids(plain) == {
+        "analysis": "openai:gpt-4o",
+        "translation": "openai:gpt-4o",
+        "llm_connected": True,
+    }
+    split = make_provider(
+        Settings(_env_file=None, OPENAI_API_KEY="sk-test-not-real", OPENAI_TRANSLATION_MODEL="gpt-x"),  # type: ignore[call-arg]
+        ruleset,
+    )
+    assert engine_ids(split) == {
+        "analysis": "openai:gpt-4o",
+        "translation": "openai:gpt-x",
+        "llm_connected": True,
+    }
+    assert RuleOnlyProvider().translation_id is None
+    assert engine_ids(RuleOnlyProvider())["translation"] == "none"
+
+
+def test_judgement_calls_never_use_the_translation_model(ruleset: Ruleset):
+    """TRANS-03: confirm and answer use the judgement call; translate uses the translation call only."""
+    judged: list[type] = []
+    translated: list[type] = []
+
+    def judge(system: str, user: str, schema: type):
+        judged.append(schema)
+        return Answer(text="답", citations=(1,), answered=True)
+
+    def translate(system: str, user: str, schema: type):
+        translated.append(schema)
+        return TranslationBatch(items=(SentenceTranslation(n=1, text="번역"),)), USED
+
+    provider = OpenAIProvider(ruleset, "gpt-4o", judge, translation_model="gpt-x", translation_call=translate)
+    assert provider.id == "openai:gpt-4o" and provider.translation_id == "openai:gpt-x"
+    batch, usage = provider.translate(ClauseInput.of(PLAIN), (1,))
+    provider.answer("q", [], None)
+    assert translated == [TranslationBatch] and judged == [Answer]
+    assert batch.items[0].text == "번역" and usage == USED
+
+
+def test_a_reply_without_usage_counts_one_call(ruleset: Ruleset):
+    """INV-12: without a translation call the judgement call is wrapped; the call is counted, tokens are 0."""
+
+    def judge(system: str, user: str, schema: type):
+        return TranslationBatch(items=(SentenceTranslation(n=1, text="번역"),))
+
+    provider = OpenAIProvider(ruleset, "gpt-4o", judge)
+    assert provider.translation_id == "openai:gpt-4o"
+    _, usage = provider.translate(ClauseInput.of(PLAIN), (1,))
+    assert usage == Usage(calls=1)
+    assert usage_from_metadata(None) == Usage(calls=1)
+    assert usage_from_metadata({}) == Usage(calls=1)
+
+
+def test_usage_is_read_from_langchain_metadata():
+    """INV-12: input, output, cached input and reasoning tokens; missing parts are 0."""
+    meta = {
+        "input_tokens": 120,
+        "output_tokens": 30,
+        "total_tokens": 150,
+        "input_token_details": {"cache_read": 64},
+        "output_token_details": {"reasoning": 7},
+    }
+    assert usage_from_metadata(meta) == Usage(
+        calls=1, input_tokens=120, cached_input_tokens=64, output_tokens=30, reasoning_tokens=7
+    )
+    assert usage_from_metadata({"input_tokens": 3, "output_tokens": 4}) == Usage(
+        calls=1, input_tokens=3, output_tokens=4
+    )
+
+
+def test_translation_client_options():
+    """TRANS-03: temperature 0 only for gpt-4*, effort only when set, retries stay 2."""
+    gpt4 = translation_options("gpt-4o", "k", None, 60.0)
+    assert gpt4 == {"model": "gpt-4o", "api_key": "k", "timeout": 60.0, "max_retries": 2, "temperature": 0}
+    luna = translation_options("gpt-6-luna", "k", "none", 30.0)
+    assert luna == {
+        "model": "gpt-6-luna",
+        "api_key": "k",
+        "timeout": 30.0,
+        "max_retries": 2,
+        "reasoning_effort": "none",
+    }
+    assert "reasoning_effort" not in translation_options("gpt-5.1", "k", None, 60.0)
+
+
+class FakeChat:
+    """Stands in for ChatOpenAI: returns the queued include_raw reply."""
+
+    reply: dict = {}
+    seen: dict = {}
+
+    def __init__(self, **kwargs):
+        FakeChat.seen = kwargs
+
+    def with_structured_output(self, schema, include_raw=False):
+        assert include_raw is True
+        return self
+
+    def invoke(self, messages):
+        return FakeChat.reply
+
+
+class RawMessage:
+    usage_metadata = {"input_tokens": 50, "output_tokens": 9, "output_token_details": {"reasoning": 2}}
+
+
+def test_translation_call_reads_usage_and_raises_on_a_parsing_error(monkeypatch: pytest.MonkeyPatch):
+    """INV-12: a good reply carries usage; a parsing error is transient but its tokens were billed."""
+    import langchain_openai
+
+    monkeypatch.setattr(langchain_openai, "ChatOpenAI", FakeChat)
+    call = openai_translation_call("gpt-x", "k", "none")
+    batch = TranslationBatch(items=(SentenceTranslation(n=1, text="번역"),))
+    billed = Usage(calls=1, input_tokens=50, output_tokens=9, reasoning_tokens=2)
+    FakeChat.reply = {"raw": RawMessage(), "parsed": batch, "parsing_error": None}
+    parsed, usage = call("sys", "user", TranslationBatch)
+    assert parsed == batch and usage == billed
+    assert FakeChat.seen["reasoning_effort"] == "none" and "temperature" not in FakeChat.seen
+
+    for bad in (
+        {"raw": RawMessage(), "parsed": None, "parsing_error": ValueError("secret text")},
+        {"raw": RawMessage(), "parsed": None, "parsing_error": None},
+    ):
+        FakeChat.reply = bad
+        with pytest.raises(TransientProviderError) as caught:
+            call("sys", "user", TranslationBatch)
+        assert str(caught.value) == "ParsingError" and caught.value.usage == billed
+
+
+def test_provider_keeps_a_transient_error_as_it_is(ruleset: Ruleset):
+    """INV-12: wrapping must not rename ParsingError or drop the billed usage."""
+
+    def translate(system: str, user: str, schema: type):
+        raise TransientProviderError("ParsingError", usage=USED)
+
+    provider = OpenAIProvider(ruleset, "gpt-4o", lambda *a: None, translation_call=translate)
+    with pytest.raises(TransientProviderError) as caught:
+        provider.translate(ClauseInput.of(PLAIN), (1,))
+    assert str(caught.value) == "ParsingError" and caught.value.usage == USED
+
+
+def test_billed_usage_of_a_failed_call_is_kept():
+    """INV-12: a failed first call and a failed retry both add their usage to the clause."""
+    first = ScriptedProvider(translations={"d01:1.1": [TransientProviderError("ParsingError", usage=USED)]})
+    result = translate_clause(PLAIN, first)
+    assert result.status == "failed" and result.usage == USED
+
+    retry = ScriptedProvider(
+        translations={"d01:1.1": [{9: "x"}, TransientProviderError("ParsingError", usage=USED)]},
+        usage=USED,
+    )
+    result = translate_clause(PLAIN, retry)
+    assert result.usage == USED.plus(USED)
+
+
+def test_meter_adds_up_across_threads():
+    """INV-12: four threads add 1,000 usages each and nothing is lost."""
+    meter = UsageMeter()
+    one = Usage(calls=1, input_tokens=3, cached_input_tokens=1, output_tokens=2, reasoning_tokens=1)
+
+    def work() -> None:
+        for _ in range(1000):
+            meter.add(one)
+
+    threads = [threading.Thread(target=work) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert meter.total() == Usage(
+        calls=4000, input_tokens=12000, cached_input_tokens=4000, output_tokens=8000, reasoning_tokens=4000
+    )
+
+
+def test_analyze_meters_every_clause_including_failed_ones(ruleset: Ruleset):
+    """INV-12: tokens of withheld and failed clauses are counted; skipped clauses cost nothing."""
+    provider = ScriptedProvider(
+        translations={
+            "d01:1.1": ["인도조건은 FCA이다."],
+            "d01:1.4": [TransientProviderError("ParsingError", usage=USED)],
+            "d01:1.5": ["샘플은 999개이다."],
+        },
+        usage=USED,
+    )
+    meter = UsageMeter()
+    results = by_id(analyze(CLAUSES, ruleset, provider, meter=meter))
+    assert results["d01:1.4"].translation_status == "failed"
+    assert meter.total() == USED.plus(USED).plus(USED)  # 1.1 ok, 1.4 failed (error usage), 1.5 withheld
+    analyze([PLAIN], ruleset, RuleOnlyProvider(), meter=meter)
+    assert meter.total().calls == 3

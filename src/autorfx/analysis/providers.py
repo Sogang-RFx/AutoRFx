@@ -27,7 +27,12 @@ class TransientProviderError(RuntimeError):
     """The provider could not answer right now (timeout, rate limit). The caller falls back to rules.
 
     The message is an exception name only, never text of a clause or an answer: it is stored and logged.
+    ``usage`` is what a failed call still cost (a reply that did not parse was billed).
     """
+
+    def __init__(self, message: str = "", *, usage: Usage | None = None) -> None:
+        super().__init__(message)
+        self.usage = usage
 
 
 class ClauseInput(Model):
@@ -91,6 +96,8 @@ class AnalysisProvider(Protocol):
     id: str
     uses_llm: bool
     translates: bool
+    translation_id: str | None
+    """Engine that translates, None when nothing is translated."""
 
     def translate(self, clause: ClauseInput, numbers: Sequence[int]) -> tuple[TranslationBatch, Usage]: ...
 
@@ -120,6 +127,7 @@ class RuleOnlyProvider:
     id = "rule-only"
     uses_llm = False
     translates = False
+    translation_id = None
 
     def translate(self, clause: ClauseInput, numbers: Sequence[int]) -> tuple[TranslationBatch, Usage]:
         return TranslationBatch(items=()), Usage()
@@ -147,9 +155,12 @@ class ScriptedProvider:
         translation: str | None = None,
         translations: dict[str, list[dict[int, str] | str | TranslationBatch | Exception]] | None = None,
         provider_id: str = "scripted",
+        usage: Usage | None = None,
     ) -> None:
         self.id = provider_id
         self.translates = translation is not None or translations is not None
+        self.translation_id = provider_id if self.translates else None
+        self._usage = usage or Usage()
         self._translations = {key: list(value) for key, value in (translations or {}).items()}
         self.translate_calls: list[tuple[str, tuple[int, ...]]] = []
         self._script = {key: list(value) for key, value in (script or {}).items()}
@@ -168,14 +179,15 @@ class ScriptedProvider:
         if isinstance(item, Exception):
             raise item
         if isinstance(item, TranslationBatch):
-            return item, Usage()
+            return item, self._usage
         if isinstance(item, dict):
             return TranslationBatch(
                 items=tuple(SentenceTranslation(n=n, text=t) for n, t in item.items())
-            ), Usage()
+            ), self._usage
         if item is None:
-            return TranslationBatch(items=()), Usage()
-        return TranslationBatch(items=tuple(SentenceTranslation(n=n, text=item) for n in numbers)), Usage()
+            return TranslationBatch(items=()), self._usage
+        batch = TranslationBatch(items=tuple(SentenceTranslation(n=n, text=item) for n in numbers))
+        return batch, self._usage
 
     def confirm(self, clause: ClauseInput, candidates: Candidates, feedback: str | None) -> Judgement:
         with self._lock:

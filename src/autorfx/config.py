@@ -27,6 +27,12 @@ class Settings(BaseSettings):
 
     openai_api_key: SecretStr | None = Field(default=None, validation_alias="OPENAI_API_KEY")
     openai_model: str = Field(default="gpt-4o", validation_alias="OPENAI_MODEL")
+    openai_translation_model: str | None = Field(default=None, validation_alias="OPENAI_TRANSLATION_MODEL")
+    """Model for translation only. Unset means the judgement model (OPENAI_MODEL)."""
+    openai_translation_effort: Literal["none", "low", "medium", "high"] | None = Field(
+        default=None, validation_alias="OPENAI_TRANSLATION_EFFORT"
+    )
+    """Reasoning effort sent with translation calls. Unset sends nothing (gpt-4o does not accept it)."""
     deepl_api_key: SecretStr | None = Field(default=None, validation_alias="DEEPL_API_KEY")
     embedding_model: str | None = Field(default=None, validation_alias="EMBEDDING_MODEL")
     """Dense retrieval is added to BM25 when this is set: a sentence-transformers id (``BAAI/bge-m3``,
@@ -55,7 +61,9 @@ class Settings(BaseSettings):
             return None
         return value
 
-    @field_validator("embedding_model", mode="before")
+    @field_validator(
+        "embedding_model", "openai_translation_model", "openai_translation_effort", mode="before"
+    )
     @classmethod
     def _blank_model_is_none(cls, value: object) -> object:
         return None if isinstance(value, str) and not value.strip() else value
