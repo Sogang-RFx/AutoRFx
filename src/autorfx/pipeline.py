@@ -17,6 +17,7 @@ from pathlib import Path
 
 from autorfx import access
 from autorfx.analysis import AnalysisProvider, CacheStore, analyze, engine_ids
+from autorfx.analysis.usage import Price, UsageMeter, translation_record
 from autorfx.chunker import apply_cost_entities, build_clauses
 from autorfx.config import Settings
 from autorfx.consistency import ConsistencyReport, check_package, extract_mentions
@@ -146,9 +147,14 @@ def run_pipeline(
     reporter: JobReporter | None = None,
     cache: CacheStore | None = None,
     translation_cache: CacheStore | None = None,
+    prices: Mapping[str, Price] | None = None,
     retrieval: str = RETRIEVAL_ENGINE,
 ) -> Workspace:
-    """Process a package end to end and store the results in its workspace."""
+    """Process a package end to end and store the results in its workspace.
+
+    ``prices`` (USD per 1M tokens per model) turn the translation usage into the estimated cost in run.json;
+    without them the cost is null.
+    """
     report = reporter or NullReporter()
     try:
         workspace, manifest = ingest_package(
@@ -158,6 +164,7 @@ def run_pipeline(
         raise PipelineError(str(exc)) from exc
     manifest, parsed, clauses, mentions = _parse(workspace, manifest, ruleset, report)
 
+    meter = UsageMeter()
     analyses = analyze(
         clauses,
         ruleset,
@@ -167,6 +174,7 @@ def run_pipeline(
         reporter=report,
         max_concurrency=settings.llm_concurrency,
         policy=settings.confirm_policy,
+        meter=meter,
     )
     workspace.save_analysis(analyses)
 
@@ -181,6 +189,7 @@ def run_pipeline(
         workspace.run_path,
         {
             "engines": {**engine_ids(provider), "retrieval": retrieval},
+            "translation": translation_record(provider.translation_id, meter.total(), prices, analyses),
             "ruleset_digest": ruleset.digest,
             "pipeline_version": PIPELINE_VERSION,
             "finished_at": now_ms,

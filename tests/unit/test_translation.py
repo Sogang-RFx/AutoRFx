@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -35,11 +37,19 @@ from autorfx.analysis.translation import (
     translate_clause,
     translation_key,
 )
-from autorfx.analysis.usage import Usage, UsageMeter
+from autorfx.analysis.usage import (
+    Price,
+    Usage,
+    UsageMeter,
+    cost_usd,
+    load_prices,
+    translation_record,
+    usd_text,
+)
 from autorfx.config import Settings
 from autorfx.jobs import JobStore, load_job
 from autorfx.models import Clause, ClauseAnalysis
-from autorfx.rules import Ruleset
+from autorfx.rules import RulesError, Ruleset
 from autorfx.workspace import Workspace
 from factories import make_clause
 
@@ -827,3 +837,126 @@ def test_sqlite_cache_round_trips_translations(tmp_path):  # type: ignore[no-unt
     cache.close()
     assert provider.translate_calls == []
     assert result.sentences == tuple(CACHED_KO)
+
+
+# ── estimated cost (INV-12) ─────────────────────────────────────────────────
+PRICE = Price(input=Decimal("0.10"), cached_input=Decimal("0.01"), output=Decimal("0.50"))
+PRICES = {"gpt-x": PRICE}
+REPO_PRICES = Path(__file__).resolve().parents[2] / "data" / "translation" / "prices.yaml"
+
+
+def write_prices(tmp_path: Path, text: str) -> Path:
+    path = tmp_path / "prices.yaml"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def models_yaml(**fields: str) -> str:
+    body = "".join(f"    {k}: {v}\n" for k, v in fields.items())
+    head = 'source: "https://example.test/pricing"\nchecked: "2026-11-24"\nunit: per 1M\n'
+    return f"{head}models:\n  gpt-x:\n{body}"
+
+
+GOOD = models_yaml(input='"0.10"', cached_input='"0.01"', output='"0.50"')
+
+
+def test_cost_bills_cached_input_at_its_own_price():
+    """INV-12: 800k fresh input, 200k cached, 100k output at 0.10/0.01/0.50 per million is 0.132 USD."""
+    usage = Usage(calls=3, input_tokens=1_000_000, cached_input_tokens=200_000, output_tokens=100_000)
+    assert cost_usd(usage, "gpt-x", PRICES) == Decimal("0.132")
+
+
+def test_reasoning_tokens_are_not_billed_twice():
+    """INV-12: reasoning tokens are part of the output tokens."""
+    plain = Usage(calls=1, input_tokens=1000, output_tokens=500)
+    with_reasoning = plain.model_copy(update={"reasoning_tokens": 300})
+    assert cost_usd(with_reasoning, "gpt-x", PRICES) == cost_usd(plain, "gpt-x", PRICES)
+
+
+def test_cached_tokens_above_the_input_never_make_a_negative_bill():
+    """INV-12: input billed at the full price never goes below zero."""
+    usage = Usage(calls=1, input_tokens=100, cached_input_tokens=300, output_tokens=0)
+    assert cost_usd(usage, "gpt-x", PRICES) == Decimal("0.000003")  # 300 cached tokens at 0.01 per million
+
+
+def test_unknown_model_has_no_cost_and_zero_usage_costs_zero():
+    """INV-12: an unknown price is null, never a guess; no usage with a known price is exactly 0."""
+    used = Usage(calls=1, input_tokens=10, output_tokens=10)
+    assert cost_usd(used, "other", PRICES) is None
+    assert cost_usd(Usage(), "gpt-x", PRICES) == Decimal(0)
+    assert cost_usd(Usage(), "other", PRICES) is None
+
+
+@pytest.mark.parametrize(
+    ("value", "text"),
+    [(Decimal("0.132"), "0.132"), (Decimal("0.1320"), "0.132"), (Decimal(0), "0"), (Decimal("1E+2"), "100")],
+)
+def test_money_is_written_without_exponent_or_trailing_zeros(value: Decimal, text: str):
+    """INV-12: costs are stored as plain decimal strings."""
+    assert usd_text(value) == text
+
+
+def test_prices_are_read_as_decimals(tmp_path: Path):
+    """INV-12: prices are quoted strings read as Decimal."""
+    assert load_prices(write_prices(tmp_path, GOOD)) == PRICES
+
+
+BROKEN = {
+    "not_a_mapping": "- a\n- b\n",
+    "no_models": 'source: x\nchecked: "2026-11-24"\n',
+    "no_checked": GOOD.replace('checked: "2026-11-24"\n', ""),
+    "unknown_key": GOOD + '    batch: "0.05"\n',
+    "float_value": models_yaml(input="0.10", cached_input='"0.01"', output='"0.50"'),
+    "negative": models_yaml(input='"-0.10"', cached_input='"0.01"', output='"0.50"'),
+    "not_finite": models_yaml(input='"NaN"', cached_input='"0.01"', output='"0.50"'),
+    "missing_value": models_yaml(input='"0.10"', output='"0.50"'),
+    "model_not_a_mapping": GOOD.split("models:")[0] + "models:\n  gpt-x: 3\n",
+    "bad_text": models_yaml(input='"cheap"', cached_input='"0.01"', output='"0.50"'),
+}
+
+
+@pytest.mark.parametrize("case", ["missing_file", *BROKEN])
+def test_a_broken_price_file_is_a_rules_error_naming_the_file(tmp_path: Path, case: str):
+    """INV-12: no silent default for a price file that is missing or malformed."""
+    path = tmp_path / "missing.yaml" if case == "missing_file" else write_prices(tmp_path, BROKEN[case])
+    with pytest.raises(RulesError) as raised:
+        load_prices(path)
+    assert path.name in str(raised.value)
+    if case in ("unknown_key", "float_value", "negative", "not_finite", "missing_value", "bad_text"):
+        assert "gpt-x" in str(raised.value)
+
+
+def test_the_committed_price_file_loads():
+    """INV-12: the repository's own prices.yaml is valid, names its source and the day it was checked."""
+    prices = load_prices(REPO_PRICES)
+    assert prices["gpt-4o"] == Price(
+        input=Decimal("2.50"), cached_input=Decimal("1.25"), output=Decimal("10.00")
+    )
+    assert "gpt-4o-mini" in prices and len(prices) == 9
+    text = REPO_PRICES.read_text(encoding="utf-8")
+    assert "developers.openai.com/api/docs/pricing" in text and "2026-11-24" in text
+
+
+def test_the_record_names_model_usage_cost_and_counts(ruleset: Ruleset):
+    """INV-12: run.json says what was translated, with what, and the estimated cost (null if unpriced)."""
+    provider = ScriptedProvider(translations={"d01:1.1": ["인도조건은 FCA이다."]}, usage=USED)
+    meter = UsageMeter()
+    results = analyze([PLAIN, BOILER], ruleset, provider, meter=meter)
+    record = translation_record(provider.translation_id, meter.total(), PRICES, results)
+    assert record["model"] == "scripted" and record["cost_usd"] is None
+    assert record["usage"] == USED.model_dump()
+    assert record["counts"] == {"boilerplate": 1, "translated": 1}
+    priced = translation_record("openai:gpt-x", meter.total(), PRICES, results)
+    assert priced["cost_usd"] == "0.0000291"  # 90 fresh at 0.10 + 10 cached at 0.01 + 40 out at 0.50 per 1M
+    assert translation_record("openai:gpt-x", meter.total(), None, results)["cost_usd"] is None
+
+
+def test_a_rule_only_run_records_zero_usage_and_no_cost(ruleset: Ruleset):
+    """TRANS-03, INV-12: nothing translated, nothing billed, and no price is looked up."""
+    results = analyze([PLAIN], ruleset, RuleOnlyProvider())
+    assert translation_record(None, Usage(), PRICES, results) == {
+        "model": "none",
+        "usage": Usage().model_dump(),
+        "cost_usd": None,
+        "counts": {"no_provider": 1},
+    }

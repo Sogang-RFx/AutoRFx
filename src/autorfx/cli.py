@@ -12,6 +12,7 @@ from pathlib import Path
 import yaml
 
 from autorfx.analysis import RuleOnlyProvider, SqliteCache, make_provider
+from autorfx.analysis.usage import load_prices
 from autorfx.config import get_settings
 from autorfx.guard import GuardError, assert_not_held_out
 from autorfx.ingest import list_samples
@@ -58,7 +59,8 @@ def _analyze(args: argparse.Namespace) -> int:
     if found is None:
         return 2
     sources, name, is_sample = found
-    # Without a key nothing is translated, so no cache file is created.
+    # Without a key nothing is translated: no price file is read and no cache file is created.
+    prices = load_prices(settings.translation_prices_path) if settings.llm_connected else None
     translations = SqliteCache(settings.cache_dir / "translation.sqlite") if settings.llm_connected else None
     try:
         workspace = run_pipeline(
@@ -70,6 +72,7 @@ def _analyze(args: argparse.Namespace) -> int:
             is_sample=is_sample,
             now_ms=int(time.time() * 1000),
             translation_cache=translations,
+            prices=prices,
         )
     finally:
         if translations is not None:
@@ -84,6 +87,10 @@ def _analyze(args: argparse.Namespace) -> int:
         f"조항 {len(data.clauses)}개, 독소조항 후보 {flagged}개, 정합성 이슈 {issues}건",
         f"결과 위치: {workspace.root}",
     ]
+    record = workspace.read_json(workspace.run_path)["translation"]  # type: ignore[index]
+    if record["model"] != "none":
+        cost = "단가 없음" if record["cost_usd"] is None else f"${record['cost_usd']}"
+        lines.append(f"번역 추정 비용: {cost} ({record['usage']['calls']}회 호출)")
     sys.stdout.write("\n".join(lines) + "\n")
     return 0
 

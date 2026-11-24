@@ -265,6 +265,12 @@ def test_translation_model_and_effort_settings():
         Settings(_env_file=None, OPENAI_TRANSLATION_EFFORT="max")  # type: ignore[call-arg]
 
 
+def test_translation_prices_live_next_to_the_rules(tmp_path: Path):
+    """INV-12: the price file is data/translation/prices.yaml under the data folder."""
+    settings = Settings(_env_file=None, AUTORFX_DATA_DIR=str(tmp_path))  # type: ignore[call-arg]
+    assert settings.translation_prices_path == tmp_path / "translation" / "prices.yaml"
+
+
 def test_secret_is_not_printed():
     settings = Settings(_env_file=None, OPENAI_API_KEY="sk-test-not-a-real-key")  # type: ignore[call-arg]
     assert settings.llm_connected is True

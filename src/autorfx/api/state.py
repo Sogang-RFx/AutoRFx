@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from autorfx.analysis import AnalysisProvider, SqliteCache, engine_ids, make_provider
+from autorfx.analysis.usage import load_prices
 from autorfx.config import Settings
 from autorfx.ingest import identify_package
 from autorfx.jobs import JobStore, close_interrupted, load_job
@@ -76,6 +77,8 @@ class AppState:
         self.settings = settings
         self.ruleset = ruleset or load_ruleset(settings.rules_dir)
         self.provider = provider or make_provider(settings, self.ruleset)
+        # Read now, so a missing price file stops the start and not a job half way.
+        self.prices = load_prices(settings.translation_prices_path) if settings.llm_connected else None
         self.cache = SqliteCache(settings.cache_dir / "analysis.sqlite")
         self.translation_cache = SqliteCache(settings.cache_dir / "translation.sqlite")
         key = settings.openai_api_key.get_secret_value() if settings.openai_api_key else None
@@ -245,6 +248,7 @@ class AppState:
                 reporter=store,
                 cache=self.cache,
                 translation_cache=self.translation_cache,
+                prices=self.prices,
                 retrieval=retrieval_engine(self.encoder),
             )
         except PipelineError as exc:

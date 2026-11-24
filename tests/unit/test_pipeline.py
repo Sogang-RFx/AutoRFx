@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from autorfx import scoring
-from autorfx.analysis import RuleOnlyProvider
+from autorfx.analysis import RuleOnlyProvider, ScriptedProvider
+from autorfx.analysis.usage import Price, Usage, usd_text
 from autorfx.config import Settings
 from autorfx.jobs import JobStore, load_job
 from autorfx.pipeline import PipelineError, load_rfq, run_pipeline
@@ -278,3 +280,73 @@ def test_served_engines_name_the_search_actually_used(processed, ruleset: Rulese
     assert hybrid.index.dense is not None
     assert hybrid.engines["retrieval"] == "bm25-glossary+dense:test-encoder"
     assert load_rfq(workspace, ruleset).engines["retrieval"] == "bm25-glossary"
+
+
+# ── estimated translation cost (INV-12) ─────────────────────────────────────
+PRICES = {"gpt-x": Price(input=Decimal("0.10"), cached_input=Decimal("0.01"), output=Decimal("0.50"))}
+ZERO_USAGE = {
+    "calls": 0,
+    "input_tokens": 0,
+    "cached_input_tokens": 0,
+    "output_tokens": 0,
+    "reasoning_tokens": 0,
+}
+
+
+def translated_run(folder: Path, ruleset: Ruleset, prices: dict[str, Price] | None) -> Workspace:
+    provider = ScriptedProvider(
+        translation="번역문",
+        provider_id="openai:gpt-x",
+        usage=Usage(calls=1, input_tokens=1000, cached_input_tokens=200, output_tokens=1000),
+    )
+    return run_pipeline(
+        make_package(folder / "in"),
+        name="Synthetic package",
+        settings=settings_in(folder),
+        ruleset=ruleset,
+        provider=provider,
+        is_sample=False,
+        now_ms=1_700_000_000_000,
+        prices=prices,
+    )
+
+
+def test_a_rule_only_run_records_no_usage_and_no_cost(processed):
+    """TRANS-03, INV-12: nothing translated, nothing billed; every clause says no provider."""
+    workspace, data = processed
+    run = json.loads(workspace.run_path.read_text())
+    assert run["translation"] == {
+        "model": "none",
+        "usage": ZERO_USAGE,
+        "cost_usd": None,
+        "counts": {"no_provider": len(data.clauses)},
+    }
+
+
+def test_a_translating_run_records_usage_and_the_estimated_cost(tmp_path: Path, ruleset: Ruleset):
+    """INV-12: usage is summed over the run and priced with the model's own prices, as a plain string."""
+    workspace = translated_run(tmp_path, ruleset, PRICES)
+    record = json.loads(workspace.run_path.read_text())["translation"]
+    calls = record["usage"]["calls"]
+    assert calls > 0 and record["model"] == "openai:gpt-x"
+    assert record["usage"]["output_tokens"] == 1000 * calls
+    one_call = Decimal("800") * Decimal("0.10") + Decimal("200") * Decimal("0.01") + 1000 * Decimal("0.50")
+    assert record["cost_usd"] == usd_text(one_call * calls / 1_000_000)
+    assert sum(record["counts"].values()) == len(load_rfq(workspace, ruleset).clauses)
+
+
+def test_without_prices_the_cost_is_null_but_usage_is_kept(tmp_path: Path, ruleset: Ruleset):
+    """INV-12: an unknown price is null, never a guess."""
+    record = json.loads(translated_run(tmp_path, ruleset, None).run_path.read_text())["translation"]
+    assert record["cost_usd"] is None and record["usage"]["calls"] > 0
+
+
+def test_an_old_run_without_the_cost_record_still_loads(tmp_path: Path, ruleset: Ruleset):
+    """INV-10: results stored before the cost was recorded load, and the record is not served as an engine."""
+    workspace = translated_run(tmp_path, ruleset, PRICES)
+    run = json.loads(workspace.run_path.read_text())
+    del run["translation"]
+    workspace.run_path.write_text(json.dumps(run), encoding="utf-8")
+    data = load_rfq(workspace, ruleset)
+    assert set(data.engines) == {"analysis", "translation", "llm_connected", "retrieval"}
+    assert data.engines["translation"] == "openai:gpt-x"

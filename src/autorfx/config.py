@@ -87,6 +87,11 @@ class Settings(BaseSettings):
         return self.data_dir / "cache"
 
     @property
+    def translation_prices_path(self) -> Path:
+        """USD per 1M tokens per translation model, for the estimated cost. Not a rule file."""
+        return self.data_dir / "translation" / "prices.yaml"
+
+    @property
     def answer_keys_dir(self) -> Path:
         return self.data_dir / "answer_keys"
 
