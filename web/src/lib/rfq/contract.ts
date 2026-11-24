@@ -429,8 +429,40 @@ export const RfqLine = z.object({
   group: z.string().nullable(),
   source_doc: z.string(),
   page: z.number().int().positive(),
+  /** The table (SheetTable.id) the row was read from. */
+  table: z.string(),
 });
 export type RfqLine = z.infer<typeof RfqLine>;
+
+/** What a column of a price sheet holds. Same list as COLUMN_ROLES in rules.py. */
+export const ColumnRole = z.enum(["no", "part", "description", "quantity", "unit", "months", "price", "total"]);
+export type ColumnRole = z.infer<typeof ColumnRole>;
+
+/**
+ * A table found in the RFQ, read or not. ``how``: "rules" (price_sheet.yaml), "layout" (a header a
+ * user assigned before), "continued" (the previous table over a page break), "none" (not read).
+ * ``rows`` are the first rows as printed; ``header_row`` indexes them (a guess when not read).
+ */
+export const SheetTable = z.object({
+  id: z.string(),
+  source_doc: z.string(),
+  page: z.number().int().positive(),
+  title: z.string(),
+  header_row: z.number().int().nonnegative(),
+  rows: z.array(z.array(z.string())),
+  columns: z.partialRecord(ColumnRole, z.number().int().nonnegative()),
+  how: z.enum(["rules", "layout", "continued", "none"]),
+  lines: z.number().int().nonnegative(),
+});
+export type SheetTable = z.infer<typeof SheetTable>;
+
+export const RfqLines = z.object({
+  items: z.array(RfqLine),
+  total: z.number().int().nonnegative(),
+  limit: z.number().int().positive(),
+  tables: z.array(SheetTable).max(40),
+});
+export type RfqLines = z.infer<typeof RfqLines>;
 
 export const PrecostSetupResponse = envelope(
   z.object({
@@ -443,7 +475,7 @@ export const PrecostSetupResponse = envelope(
     suggested_items: z.array(CostItem.extend({ expired: z.boolean(), note: z.string() })),
     assumption_note: z.string(),
     /** Price-sheet rows found in the RFQ; total counts rows beyond the limit too. */
-    lines: z.object({ items: z.array(RfqLine), total: z.number().int().nonnegative(), limit: z.number().int().positive() }),
+    lines: RfqLines,
   }),
 );
 export type PrecostSetupResponse = z.infer<typeof PrecostSetupResponse>;
@@ -786,6 +818,35 @@ export const UploadResponse = envelope(
 );
 export type UploadResponse = z.infer<typeof UploadResponse>;
 
+/** Assign the columns of one table by hand; the same header is read this way from now on. */
+export const SheetColumnsRequest = z.object({
+  table: z.string().min(1).max(120),
+  header_row: z.number().int().min(0).max(5),
+  columns: z.partialRecord(ColumnRole, z.number().int().nonnegative()),
+});
+export type SheetColumnsRequest = z.infer<typeof SheetColumnsRequest>;
+
+export const SheetColumnsResponse = envelope(z.object({ lines: RfqLines }));
+export type SheetColumnsResponse = z.infer<typeof SheetColumnsResponse>;
+
+/** Header words assigned by hand: candidates wait for approval; approved ones are used like price_sheet.yaml. */
+export const SheetWordsResponse = envelope(
+  z.object({
+    candidates: z.array(
+      z.object({ role: ColumnRole, text: z.string(), count: z.number().int().positive(), last_seen: z.string() }),
+    ),
+    approved: z.array(z.object({ role: ColumnRole, text: z.string() })),
+  }),
+);
+export type SheetWordsResponse = z.infer<typeof SheetWordsResponse>;
+
+export const SheetWordRequest = z.object({
+  role: ColumnRole,
+  text: z.string().min(1).max(80),
+  action: z.enum(["approve", "reject", "remove"]),
+});
+export type SheetWordRequest = z.infer<typeof SheetWordRequest>;
+
 export const ErrorResponse = z.object({ error: z.object({ code: z.string(), message: z.string() }) });
 export type ErrorResponse = z.infer<typeof ErrorResponse>;
 
@@ -813,6 +874,10 @@ export const CONTRACT_SCHEMAS = {
   meta: MetaResponse,
   "org-departments": OrgDepartmentsResponse,
   "org-departments-request": OrgDepartmentsRequest,
+  "sheet-columns-request": SheetColumnsRequest,
+  "sheet-columns": SheetColumnsResponse,
+  "sheet-words": SheetWordsResponse,
+  "sheet-word-request": SheetWordRequest,
   "upload-request": UploadRequest,
   upload: UploadResponse,
   error: ErrorResponse,
