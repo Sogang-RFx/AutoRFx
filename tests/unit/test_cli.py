@@ -142,7 +142,11 @@ def test_score_search_explains_a_malformed_question_file(
 
 
 def test_score_search_explains_what_is_missing(
-    data_dir: Path, score_files, fake_encoder, capsys: pytest.CaptureFixture[str]
+    data_dir: Path,
+    score_files,
+    fake_encoder,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ):
     questions, key = score_files
     base = ["score-search", "--model", "fake", "--questions", str(questions)]
@@ -150,8 +154,12 @@ def test_score_search_explains_what_is_missing(
     assert "정답 표가 없습니다" in capsys.readouterr().err
     assert main([*base, "--gates", "0.5,abc"]) == 2
     assert "--gates" in capsys.readouterr().err
+    monkeypatch.setenv("EMBEDDING_MODEL", "")  # embedding search switched off on purpose
+    get_settings.cache_clear()
     assert main(["score-search", "--questions", str(questions)]) == 2  # no model configured
     assert "임베딩 모델" in capsys.readouterr().err
+    monkeypatch.delenv("EMBEDDING_MODEL")
+    get_settings.cache_clear()
 
     key.write_text(key.read_text(encoding="utf-8") + "  other-rfq:\n    Q01: none\n", encoding="utf-8")
     assert main(base) == 2

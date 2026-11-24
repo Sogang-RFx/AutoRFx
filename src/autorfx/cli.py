@@ -106,7 +106,7 @@ def _compare_search(args: argparse.Namespace) -> int:
     if found is None:
         return 2
     sources, name, is_sample = found
-    gate = args.min_score if args.min_score is not None else settings.embedding_min_score
+    gate = args.min_score if args.min_score is not None else settings.min_score_for(model)
     # Retrieval only needs parsing and chunking. The analysis runs on rules in its own temporary
     # workspace, so it neither spends API calls nor replaces the served analysis (possibly GPT) of the
     # same files under data/work. The embedding cache and the report stay where they are.

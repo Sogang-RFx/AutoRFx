@@ -170,7 +170,7 @@ class AppState:
                 workspace,
                 self.ruleset,
                 encoder=self.encoder,
-                min_score=self.settings.embedding_min_score,
+                min_score=self.settings.min_score_for(self.settings.embedding_model),
             )
         except (PipelineError, OSError, ValueError) as exc:
             log.exception("stored results of %s cannot be read", rfq_id)

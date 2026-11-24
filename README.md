@@ -20,12 +20,12 @@ RFQ 한 건(PDF, DOC, DOCX, XLSX로 된 파일 묶음, 영어·독일어)을 조
 | 문서 간 정합성 (값 충돌, 첨부 누락, 참조 오류, 표기 불일치) | 작동 | 결정적 |
 | 회사 부서 설정 (부서 추가, 업무 영역 선택, 금액 열람) | 작동 | `/settings/departments`. 분류는 그대로 두고 보는 단위만 바꿈. 금액 열람 기본값은 꺼짐. 드래그앤드롭은 12/7 |
 | 팀별 금액 가림 | 작동 (한계 있음) | 응답을 만들기 전에 제거. 원문 PDF는 글자를 지운 사본이고, 지운 뒤 쪽 전체를 다시 검사해 남으면 원문을 주지 않음. **그림 안의 글자는 가리지 못함** |
-| 검색·질의응답 | 작동 | 키워드 검색(BM25)과 용어 사전. `EMBEDDING_MODEL`을 넣으면 임베딩 검색과 합친 하이브리드(RRF). 답은 원문 문장 그대로 |
+| 검색·질의응답 | 작동 | 키워드 검색(BM25)과 용어 사전에 OpenAI 임베딩(`text-embedding-3-large`, 기본값)을 합친 하이브리드(RRF). `OPENAI_API_KEY`가 없으면 키워드 검색만 씀. 답은 원문 문장 그대로 |
 | 사전원가 Go/No-Go (유형 분류, 1차 넉아웃 Q&A, 원가 항목, 수명주기 최소견적, 충격 범위, 가중 점수) | 작동 | `Decimal` 계산. 단가표·회사 설정은 `/settings/company`. 점수 가중치와 충격 크기는 `data/rules/cost_model.yaml`의 가정값이며 도메인 팀 확인 전. 유통형 RFQ의 품목별 판정은 아직 없음 |
 | RTM Excel 내보내기 | 작동 | 서버에서 생성 |
 | 정답지 채점 | 작동 | 정답지가 없으면 수치를 내지 않음. 정답지는 아직 없음 |
 | 조항 요약, 번역, 생성형 답변 | **미확인** | LLM 경로. 코드와 대역 테스트만 있고 실제 모델로 돌려 보지 못함 |
-| 임베딩 검색 (BGE-M3 등) | **미확인** | 코드와 대역 테스트만 있음. 근거 기준 점수(`EMBEDDING_MIN_SCORE`)는 개발용 RFQ로 맞춰야 함 |
+| 임베딩 검색 (3-large 기본) | 작동 (정답표는 검수 전) | 11/24 정답표(질문 30 × RFQ 5, 123칸)에서 하이브리드 3-large 82/123, BGE-M3 71/123. 근거 기준은 모델별 측정값(3-large 0.30, BGE-M3 0.55)을 자동 적용 |
 | 과거 제안서 DB, 전용 번역 API, 부서별 정리본, 로그인, 배포 | 없음 | — |
 
 룰셋의 부서 키워드, 금액 열람 팀, 판정 규칙은 개발용 문서에서 뽑은 **가정값**입니다. 화면 스택(Next.js)과 백엔드 방식(FastAPI)은 팀 합의 전입니다.
@@ -48,19 +48,22 @@ uv run autorfx analyze path/to/rfq.pdf path/to/annex.xlsx
 uv run autorfx serve --port 8000
 ```
 
-### 임베딩 검색 (선택)
+### 임베딩 검색
+
+기본은 OpenAI `text-embedding-3-large`입니다 (`.env`의 `OPENAI_API_KEY`만 있으면 됨, 모델 내려받기 없음). 키가 없으면 키워드 검색만 씁니다. 근거 기준(`EMBEDDING_MIN_SCORE`)은 비워 두면 모델별 측정값을 씁니다. 모델마다 점수 눈금이 달라서 3-large는 0.30, BGE-M3는 0.55입니다.
 
 ```bash
-uv sync --extra embedding                       # sentence-transformers + torch (처음 한 번)
-# .env: EMBEDDING_MODEL=BAAI/bge-m3              # 첫 실행 때 모델(약 2.3GB)을 내려받음
-uv run autorfx compare-search --sample <id>      # 질문 10개로 BM25 · 임베딩 · 하이브리드 비교
-uv run autorfx compare-search --sample <id> --model openai:text-embedding-3-small   # API 키로 비교
+# .env: EMBEDDING_MODEL=                         # 비우면 임베딩을 끄고 키워드 검색만
+# .env: EMBEDDING_MODEL=BAAI/bge-m3              # 로컬 모델로 바꾸기 (첫 실행 때 약 2.3GB)
+uv sync --extra embedding                        # BGE-M3를 쓸 때만: sentence-transformers + torch
+uv run autorfx compare-search --sample <id>      # 질문으로 BM25 · 임베딩 · 하이브리드 비교
+uv run autorfx compare-search --sample <id> --model BAAI/bge-m3   # 다른 모델로 비교
 ```
 
 질문은 `data/questions/retrieval_ko.yaml`에 있습니다. 질문별 정답 표(`data/answer_keys/retrieval_ko.yaml`, 커밋하지 않음)가 있으면 사람이 O/X를 매기지 않고 자동으로 채점합니다:
 
 ```bash
-uv run autorfx score-search --model BAAI/bge-m3          # BM25 · 임베딩 · 하이브리드 × 근거 기준 0.45~0.65
+uv run autorfx score-search --gates 0.2,0.3,0.4,0.5,0.6   # BM25 · 임베딩 · 하이브리드 × 근거 기준 (모델은 EMBEDDING_MODEL, 바꾸려면 --model)
 ```
 
 `compare-search`의 결과(`.md`, 채점용 `.csv`)는 `data/work/_compare/`에 생기며 RFQ 원문이 들어 있으니 커밋하지 않습니다. `score-search`는 원문 없이 점수표 `data/work/_compare/score-*.md` 하나만 만듭니다. 정답 표에 있는 RFQ가 `data/raw/dev`에 하나라도 없으면 멈추고(일부만 보려면 `--allow-missing`), 분석은 API 키가 있어도 규칙으로만 해서 LLM을 부르지 않습니다.
