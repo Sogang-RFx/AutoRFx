@@ -18,9 +18,7 @@ from typing import Protocol
 
 from autorfx.analysis.candidates import Candidates
 from autorfx.analysis.usage import Usage
-from autorfx.models import Clause, Lang, Locus, Model, Priority
-
-MAX_EXTRACT = 3
+from autorfx.models import Clause, Lang, Model, Priority
 
 
 class TransientProviderError(RuntimeError):
@@ -64,20 +62,6 @@ class Judgement(Model):
     red_flag_evidence: tuple[int, ...] = ()
     summary: str = ""
     citations: tuple[int, ...] = ()
-
-
-class EvidenceSentence(Model):
-    number: int
-    text: str
-    locus: Locus
-
-
-class Answer(Model):
-    text: str
-    citations: tuple[int, ...]
-    answered: bool
-    """False when the evidence does not answer the question. Required, with no default, so the
-    model always states it (and strict structured output accepts the schema)."""
 
 
 class SentenceTranslation(Model):
@@ -126,8 +110,6 @@ class AnalysisProvider(Protocol):
 
     def confirm(self, clause: ClauseInput, candidates: Candidates, feedback: str | None) -> Judgement: ...
 
-    def answer(self, question: str, evidence: Sequence[EvidenceSentence], feedback: str | None) -> Answer: ...
-
     def map_sheet(self, sample: str) -> SheetMap | None: ...
 
 
@@ -147,7 +129,7 @@ def rule_judgement(candidates: Candidates) -> Judgement:
 
 
 class RuleOnlyProvider:
-    """No LLM: judgements are the rule candidates, answers are original sentences, nothing is translated."""
+    """No LLM: judgements are the rule candidates, nothing is translated."""
 
     id = "rule-only"
     uses_llm = False
@@ -159,12 +141,6 @@ class RuleOnlyProvider:
 
     def confirm(self, clause: ClauseInput, candidates: Candidates, feedback: str | None) -> Judgement:
         return rule_judgement(candidates)
-
-    def answer(self, question: str, evidence: Sequence[EvidenceSentence], feedback: str | None) -> Answer:
-        top = list(evidence)[:MAX_EXTRACT]
-        return Answer(
-            text="\n".join(e.text for e in top), citations=tuple(e.number for e in top), answered=True
-        )
 
     def map_sheet(self, sample: str) -> SheetMap | None:
         return None
@@ -179,7 +155,6 @@ class ScriptedProvider:
         self,
         script: dict[str, list[Judgement | Exception]] | None = None,
         *,
-        answers: list[Answer | Exception] | None = None,
         sheet_maps: list[SheetMap | Exception] | None = None,
         translation: str | None = None,
         translations: dict[str, list[dict[int, str] | str | TranslationBatch | Exception]] | None = None,
@@ -193,13 +168,11 @@ class ScriptedProvider:
         self._translations = {key: list(value) for key, value in (translations or {}).items()}
         self.translate_calls: list[tuple[str, tuple[int, ...]]] = []
         self._script = {key: list(value) for key, value in (script or {}).items()}
-        self._answers = list(answers or [])
         self._sheet_maps = list(sheet_maps or [])
         self.sheet_calls: list[str] = []
         self._translation = translation
         self._lock = threading.Lock()
         self.confirm_calls: list[tuple[str, str | None]] = []
-        self.answer_calls: list[tuple[str, tuple[str, ...], str | None]] = []
 
     def translate(self, clause: ClauseInput, numbers: Sequence[int]) -> tuple[TranslationBatch, Usage]:
         """A queued dict or batch is returned as it is (requested or not); a text answers every number."""
@@ -225,14 +198,6 @@ class ScriptedProvider:
             self.confirm_calls.append((clause.clause_id, feedback))
             queue = self._script.get(clause.clause_id)
             item = (queue.pop(0) if len(queue) > 1 else queue[0]) if queue else rule_judgement(candidates)
-        if isinstance(item, Exception):
-            raise item
-        return item
-
-    def answer(self, question: str, evidence: Sequence[EvidenceSentence], feedback: str | None) -> Answer:
-        with self._lock:
-            self.answer_calls.append((question, tuple(e.text for e in evidence), feedback))
-            item = self._answers.pop(0) if len(self._answers) > 1 else self._answers[0]
         if isinstance(item, Exception):
             raise item
         return item

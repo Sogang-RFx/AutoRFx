@@ -10,6 +10,29 @@
       "type": "string",
       "minLength": 1,
       "maxLength": 500
+    },
+    "history": {
+      "maxItems": 6,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "answer": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        },
+        "required": [
+          "question",
+          "answer"
+        ],
+        "additionalProperties": false
+      }
     }
   },
   "required": [

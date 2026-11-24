@@ -16,6 +16,7 @@ from starlette.exceptions import HTTPException
 from autorfx.analysis import AnalysisProvider
 from autorfx.api.routes import router
 from autorfx.api.state import ApiError, AppState
+from autorfx.chat.model import ChatModel
 from autorfx.config import Settings, get_settings
 from autorfx.rules import Ruleset
 
@@ -38,13 +39,14 @@ def create_app(
     *,
     ruleset: Ruleset | None = None,
     provider: AnalysisProvider | None = None,
+    chat_model: ChatModel | None = None,
 ) -> FastAPI:
-    """The application. ``ruleset`` and ``provider`` are injected by tests."""
+    """The application. ``ruleset``, ``provider`` and ``chat_model`` are injected by tests."""
     settings = settings or get_settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        state = AppState(settings, ruleset=ruleset, provider=provider)
+        state = AppState(settings, ruleset=ruleset, provider=provider, chat_model=chat_model)
         app.state.autorfx = state
         log.info("engines: %s", state.engines)
         try:

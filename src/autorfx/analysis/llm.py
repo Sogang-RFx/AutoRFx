@@ -21,9 +21,7 @@ from pydantic import BaseModel
 
 from autorfx.analysis.candidates import Candidates
 from autorfx.analysis.providers import (
-    Answer,
     ClauseInput,
-    EvidenceSentence,
     Judgement,
     SheetMap,
     TransientProviderError,
@@ -93,20 +91,6 @@ def clause_prompt(clause: ClauseInput, candidates: Candidates, ruleset: Ruleset,
         "red_flag_reason (Korean), red_flag_evidence (sentence numbers), "
         "summary (Korean, at most two sentences), "
         "citations (sentence numbers that support the summary and the judgement; at least one).",
-    ]
-    if feedback:
-        parts.append(f"Your previous answer was rejected by the citation check: {feedback} Fix exactly that.")
-    return "\n\n".join(parts)
-
-
-def answer_prompt(question: str, evidence: Sequence[EvidenceSentence], feedback: str | None) -> str:
-    parts = [
-        "Answer the question using ONLY the evidence sentences below.",
-        f"Question: {question}",
-        "Evidence:\n" + "\n".join(f"[S{e.number}] {e.text}" for e in evidence),
-        "Return: answered (true only if the evidence states the answer), text (Korean, concise) and "
-        "citations (the sentence numbers you used; at least one when answered is true). If the evidence "
-        "does not state the answer, set answered to false, say so in text and give no citations.",
     ]
     if feedback:
         parts.append(f"Your previous answer was rejected by the citation check: {feedback} Fix exactly that.")
@@ -247,9 +231,6 @@ class OpenAIProvider:
 
     def confirm(self, clause: ClauseInput, candidates: Candidates, feedback: str | None) -> Judgement:
         return self._ask(clause_prompt(clause, candidates, self._ruleset, feedback), Judgement)
-
-    def answer(self, question: str, evidence: Sequence[EvidenceSentence], feedback: str | None) -> Answer:
-        return self._ask(answer_prompt(question, evidence, feedback), Answer)
 
     def map_sheet(self, sample: str) -> SheetMap | None:
         return self._ask(sheet_prompt(sample), SheetMap)

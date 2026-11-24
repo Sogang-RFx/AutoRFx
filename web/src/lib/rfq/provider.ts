@@ -24,6 +24,8 @@ import {
   SheetSuggestResponse,
   SheetWordsResponse,
   UploadResponse,
+  type ChatRequest,
+  type ChatTurn,
   type CompanyRequest,
   type OrgDepartmentsRequest,
   type PrecostRequest,
@@ -224,8 +226,14 @@ export const rfqApi = {
   precost: (body: Omit<PrecostRequest, "team">, ctx: RequestCtx) =>
     request("precost", PrecostResponse, buildUrl("precost", "/precost", {}), post({ ...body, team: ctx.team ?? undefined })),
 
-  chat: (id: string, question: string, ctx: RequestCtx) =>
-    request("chat", ChatResponse, buildUrl("chat", `${rfq(id)}/chat`, {}), post({ team: ctx.team ?? undefined, question })),
+  /** `history`: earlier turns of this conversation, only so the backend can tell what the question refers to. */
+  chat: (id: string, question: string, history: ChatTurn[], ctx: RequestCtx, signal?: AbortSignal) =>
+    request(
+      "chat",
+      ChatResponse,
+      buildUrl("chat", `${rfq(id)}/chat`, {}),
+      post({ team: ctx.team ?? undefined, question, history } satisfies ChatRequest, signal),
+    ),
 
   /** The team decides which error rows are shown: rows about hidden clauses are left out (INV-8). */
   evaluation: (id: string, ctx: RequestCtx, signal?: AbortSignal) =>

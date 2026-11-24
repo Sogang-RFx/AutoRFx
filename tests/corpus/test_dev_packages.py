@@ -21,12 +21,13 @@ from autorfx.config import Settings
 from autorfx.export import rtm_workbook
 from autorfx.ingest import list_samples
 from autorfx.pipeline import RfqData, load_rfq, run_pipeline
-from autorfx.retrieval import answer_question
 from autorfx.rules import Ruleset
+from conftest import REPO
 
 pytestmark = pytest.mark.corpus
 
 QUESTIONS = ("목표가는 얼마인가요?", "단가", "price", "결제 조건", "payment terms", "납기", "보증 기간은?")
+STORED_QUESTIONS = ("독소조항이 있나요?", "문서끼리 값이 다른 곳은?", "RFQ 요약")
 MIN_SECRET = 12
 
 
@@ -83,7 +84,14 @@ def test_positions_are_unique_and_inside_the_page(packages: dict[str, RfqData]):
 
 
 def test_nothing_hidden_reaches_a_restricted_team(packages: dict[str, RfqData], ruleset: Ruleset):
-    """INV-4, INV-8, SC-004: no hidden sentence appears in any response, export, answer or masked PDF."""
+    """INV-4, INV-8, SC-004: no hidden sentence appears in any response, export, answer or masked PDF,
+    nor in the evidence an answer would be written from."""
+    from autorfx.chat.gather import gather
+    from autorfx.chat.models import ChatContext
+    from autorfx.chat.service import answer_question
+    from autorfx.chat.topics import load_topics
+
+    topics = load_topics(REPO / "data" / "chat" / "topics.yaml")
     for name, data in packages.items():
         hidden_clauses = [c for c in data.clauses if c.is_cost_sensitive]
         if not hidden_clauses:
@@ -103,16 +111,28 @@ def test_nothing_hidden_reaches_a_restricted_team(packages: dict[str, RfqData], 
             rows, manifest=data.manifest, ruleset=ruleset, engines=data.engines, group=group
         )
         sheet = load_workbook(io.BytesIO(workbook)).active
+        context = ChatContext(
+            index=data.index,
+            clauses=data.clauses,
+            analyses=data.analyses,
+            issues=data.consistency.issues,
+            files=data.manifest.files,
+            topics=topics,
+        )
         payloads = [
             access.clause_items(data.clauses, data.analyses, group=group, department=None, ruleset=ruleset),
             rows,
             access.issue_items(data.consistency.issues, group=group, clauses=data.clauses),
             [list(row) for row in sheet.iter_rows(values_only=True)],
             [
-                answer_question(
-                    q, index=data.index, clauses=data.clauses, group=group, provider=RuleOnlyProvider()
-                )
+                answer_question(q, context=context, group=group, model=None)
+                for q in (*QUESTIONS, *STORED_QUESTIONS)
+            ],
+            [
+                evidence.model_dump(mode="json")
                 for q in QUESTIONS
+                for overview in (False, True)
+                for evidence in gather(q, QUESTIONS, context=context, group=group, overview=overview)
             ],
         ]
         for file in data.manifest.files:

@@ -1,6 +1,5 @@
-"""Retrieval and question answering: BM25 with a glossary, an evidence gate, and cited answers."""
+"""Retrieval: BM25 with a glossary, an evidence gate, and optional embeddings. Answers: autorfx.chat."""
 
-from autorfx.retrieval.chat import answer_question
 from autorfx.retrieval.index import Hit, SearchIndex, SearchResult
 
-__all__ = ["Hit", "SearchIndex", "SearchResult", "answer_question"]
+__all__ = ["Hit", "SearchIndex", "SearchResult"]

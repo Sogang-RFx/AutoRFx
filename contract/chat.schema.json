@@ -11,16 +11,16 @@
           "enum": [
             "answered",
             "no_evidence",
-            "not_prepared",
-            "restricted"
+            "restricted",
+            "guide"
           ]
         },
         "mode": {
           "type": "string",
           "enum": [
-            "scripted",
             "extractive",
-            "generative"
+            "generative",
+            "stored"
           ]
         },
         "answer": {
@@ -196,6 +196,139 @@
             }
           ]
         },
+        "statements": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "citations": {
+                "minItems": 1,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "source_doc": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "page_number": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "section_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "paragraph_index": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "sentence_index": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "anchor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "source_doc",
+                    "page_number",
+                    "section_id",
+                    "paragraph_index",
+                    "sentence_index",
+                    "anchor"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "text",
+              "citations"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "conflicts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "detail": {
+                "type": "string"
+              },
+              "citations": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "source_doc": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "page_number": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "section_id": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "paragraph_index": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "sentence_index": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 9007199254740991
+                    },
+                    "anchor": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "source_doc",
+                    "page_number",
+                    "section_id",
+                    "paragraph_index",
+                    "sentence_index",
+                    "anchor"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "id",
+              "title",
+              "detail",
+              "citations"
+            ],
+            "additionalProperties": false
+          }
+        },
         "message": {
           "type": "string"
         },
@@ -210,6 +343,8 @@
         "status",
         "mode",
         "answer",
+        "statements",
+        "conflicts",
         "message",
         "suggestions"
       ],

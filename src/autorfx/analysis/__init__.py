@@ -8,10 +8,8 @@ from autorfx.analysis.graph import analyze, assemble, cache_key
 from autorfx.analysis.llm import PROMPT_VERSION, OpenAIProvider, openai_call, openai_translation_call
 from autorfx.analysis.providers import (
     AnalysisProvider,
-    Answer,
     CacheStore,
     ClauseInput,
-    EvidenceSentence,
     Judgement,
     MemoryCache,
     RuleOnlyProvider,
@@ -26,11 +24,9 @@ from autorfx.rules import Ruleset
 __all__ = [
     "PROMPT_VERSION",
     "AnalysisProvider",
-    "Answer",
     "CacheStore",
     "Candidates",
     "ClauseInput",
-    "EvidenceSentence",
     "Judgement",
     "MemoryCache",
     "OpenAIProvider",

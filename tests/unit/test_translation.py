@@ -14,8 +14,8 @@ import pytest
 from pydantic import ValidationError
 
 from autorfx.analysis import (
-    Answer,
     ClauseInput,
+    Judgement,
     MemoryCache,
     OpenAIProvider,
     RuleOnlyProvider,
@@ -25,6 +25,7 @@ from autorfx.analysis import (
     analyze,
     cache_key,
     engine_ids,
+    find_candidates,
     make_provider,
 )
 from autorfx.analysis import llm as llm_module
@@ -407,13 +408,13 @@ def test_engines_follow_the_translation_model(ruleset: Ruleset):
 
 
 def test_judgement_calls_never_use_the_translation_model(ruleset: Ruleset):
-    """TRANS-03: confirm and answer use the judgement call; translate uses the translation call only."""
+    """TRANS-03: confirm uses the judgement call; translate uses the translation call only."""
     judged: list[type] = []
     translated: list[type] = []
 
     def judge(system: str, user: str, schema: type):
         judged.append(schema)
-        return Answer(text="답", citations=(1,), answered=True)
+        return Judgement(primary_department="sales", priority="must", citations=(1,))
 
     systems: list[str] = []
 
@@ -424,9 +425,10 @@ def test_judgement_calls_never_use_the_translation_model(ruleset: Ruleset):
 
     provider = OpenAIProvider(ruleset, "gpt-4o", judge, translation_model="gpt-x", translation_call=translate)
     assert provider.id == "openai:gpt-4o" and provider.translation_id == "openai:gpt-x"
-    batch, usage = provider.translate(ClauseInput.of(PLAIN), (1,))
-    provider.answer("q", [], None)
-    assert translated == [TranslationBatch] and judged == [Answer]
+    clause = ClauseInput.of(PLAIN)
+    batch, usage = provider.translate(clause, (1,))
+    provider.confirm(clause, find_candidates(PLAIN, ruleset), None)
+    assert translated == [TranslationBatch] and judged == [Judgement]
     assert batch.items[0].text == "번역" and usage == USED
     assert systems == [TRANSLATE_SYSTEM], "the translation call gets the translation-only system prompt"
     assert llm_module.TRANSLATION_PROMPT_VERSION == "2026-11-25.1", (

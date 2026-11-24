@@ -1,0 +1,20 @@
+# 챗봇이 저장된 결과로 답하는 주제 (docs/design/chat.md §3.4).
+#
+# LLM이 없을 때, 또는 계획 호출이 실패했을 때 질문의 의도를 정하는 표현이다.
+# 질문에 patterns의 말이 그대로 들어 있으면 그 의도로 본다. 위에서부터 먼저 맞는 것을 쓴다.
+# "충돌"만 적지 않는다: 충돌 시험(crash test) 질문이 걸린다.
+# data/rules 밖에 둔다: 이 파일이 바뀌어도 저장된 분석은 그대로 유효하다.
+
+topics:
+  - intent: conflicts
+    label: 문서 간 불일치
+    patterns: [문서 간 불일치, 문서끼리, 서로 안 맞, 서로 다른 값, 값이 다른, 값 충돌, 문서 충돌, 문서 간 충돌]
+  - intent: red_flags
+    label: 불리한 조항
+    patterns: [불리한 조항, 독소조항, 독소 조항, 위험 조항, 위험한 조항]
+  - intent: overview
+    label: RFQ 요약
+    patterns: [RFQ 요약해, RFQ를 요약, RFQ 개요, 전체 요약, 어떤 RFQ, 무슨 RFQ]
+  - intent: guide
+    label: 사용 안내
+    patterns: [안녕, 도움말, 뭘 물어, 무엇을 물어]

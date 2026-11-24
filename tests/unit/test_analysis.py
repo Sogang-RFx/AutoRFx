@@ -9,9 +9,7 @@ from pathlib import Path
 import pytest
 
 from autorfx.analysis import (
-    Answer,
     ClauseInput,
-    EvidenceSentence,
     Judgement,
     MemoryCache,
     OpenAIProvider,
@@ -390,9 +388,8 @@ def test_openai_provider_builds_prompts_from_the_rule_files(ruleset: Ruleset):
         seen.append((system, user, schema))
         if schema is Judgement:
             return GOOD
-        if schema is TranslationBatch:
-            return TranslationBatch(items=(SentenceTranslation(n=1, text=" 번역 "),))
-        return Answer(text="답", citations=(1,), answered=True)
+        assert schema is TranslationBatch
+        return TranslationBatch(items=(SentenceTranslation(n=1, text=" 번역 "),))
 
     inherited = make_clause("4.2.1", ["4.2.1 Delivery is FCA supplier plant."], title="Target price EUR 1.20")
     assert ClauseInput.of(inherited).title == "", "INV-8: an inherited price heading never reaches the LLM"
@@ -409,9 +406,7 @@ def test_openai_provider_builds_prompts_from_the_rule_files(ruleset: Ruleset):
     assert "unlimited_liquidated_damages" in user and "fix it" in user
     batch, usage = provider.translate(clause, (1,))
     assert [(i.n, i.text) for i in batch.items] == [(1, " 번역 ")] and usage == Usage(calls=1)
-    evidence = [EvidenceSentence(number=1, text="Delivery is FCA.", locus=make_locus(1))]
-    assert provider.answer("인도조건은?", evidence, None).citations == (1,)
-    assert "[S1] Delivery is FCA." in seen[-1][1]
+    assert "4.1 Delivery is FCA" in seen[-1][1]
 
 
 def test_translation_prompt_has_no_sentence_markers_and_only_the_requested_sentences(ruleset: Ruleset):

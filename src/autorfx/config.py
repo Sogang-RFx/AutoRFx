@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     """Cosine similarity a sentence needs to count as evidence in dense search. Empty = the measured value
     of the model (``min_score_for``): the scale differs a lot between models."""
 
+    chat_reasoning_effort: str | None = Field(default="low", validation_alias="OPENAI_CHAT_EFFORT")
+    """How long a reasoning model thinks before it answers a question. Empty: not sent."""
+
     confirm_policy: ConfirmPolicy = Field(default="ambiguous_only", validation_alias="AUTORFX_CONFIRM_POLICY")
     llm_concurrency: int = Field(default=4, ge=1, le=16, validation_alias="AUTORFX_LLM_CONCURRENCY")
 
@@ -90,6 +93,7 @@ class Settings(BaseSettings):
         "embedding_min_score",
         "openai_translation_model",
         "openai_translation_effort",
+        "chat_reasoning_effort",
         mode="before",
     )
     @classmethod
@@ -126,6 +130,11 @@ class Settings(BaseSettings):
     @property
     def rules_dir(self) -> Path:
         return self.data_dir / "rules"
+
+    @property
+    def chat_topics_path(self) -> Path:
+        """Outside ``rules_dir``: changing a wording must not invalidate stored analyses."""
+        return self.data_dir / "chat" / "topics.yaml"
 
     @property
     def samples_dir(self) -> Path:

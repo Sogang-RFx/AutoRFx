@@ -21,6 +21,8 @@ from pydantic import Field
 
 from autorfx import access, scoring
 from autorfx.api.state import ApiError, AppState, discard, now_ms
+from autorfx.chat.models import ChatContext, Turn
+from autorfx.chat.service import answer_question
 from autorfx.export import rtm_workbook
 from autorfx.ingest import ACCEPT, IngestError
 from autorfx.models import Answer, FileRecord, Group, Model, PrecostInput
@@ -42,7 +44,6 @@ from autorfx.precost import (
 from autorfx.precost.lines import LAYOUT_SCAN, find_grid, header_roles, signature
 from autorfx.precost.sheet_store import PriceSheetError, check_columns, header_label
 from autorfx.precost.sheet_suggest import SuggestError, suggest_columns
-from autorfx.retrieval import answer_question
 from autorfx.work_areas import catalog
 
 router = APIRouter()
@@ -67,9 +68,15 @@ class CompanyBody(Model):
     prices: list[dict] = Field(max_length=400)
 
 
+class ChatTurn(Model):
+    question: str = Field(min_length=1, max_length=500)
+    answer: str = Field(max_length=4000)
+
+
 class ChatBody(Model):
     team: str | None = None
     question: str
+    history: tuple[ChatTurn, ...] = Field(default=(), max_length=6)
 
 
 def state_of(request: Request) -> AppState:
@@ -578,9 +585,18 @@ def _answer(value: str) -> Answer:
 @router.post("/rfqs/{rfq_id}/chat")
 def chat(rfq_id: str, body: ChatBody, state: State) -> dict:
     data, group = state.data(rfq_id), state.group_of(body.team)
+    context = ChatContext(
+        index=data.index,
+        clauses=data.clauses,
+        analyses=data.analyses,
+        issues=data.consistency.issues,
+        files=data.manifest.files,
+        topics=state.chat_topics,
+    )
+    history = tuple(Turn(question=t.question, answer=t.answer) for t in body.history)
     try:
         answer = answer_question(
-            body.question, index=data.index, clauses=data.clauses, group=group, provider=state.provider
+            body.question, context=context, group=group, model=state.chat_model, history=history
         )
     except ValueError as exc:
         raise ApiError(422, "invalid_request", str(exc)) from exc

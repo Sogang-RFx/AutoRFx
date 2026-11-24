@@ -17,6 +17,8 @@ from pathlib import Path
 
 from autorfx.analysis import AnalysisProvider, SqliteCache, engine_ids, make_provider
 from autorfx.analysis.usage import load_prices
+from autorfx.chat.model import ChatModel, make_chat_model
+from autorfx.chat.topics import load_topics
 from autorfx.config import Settings
 from autorfx.ingest import identify_package
 from autorfx.jobs import JobStore, close_interrupted, load_job
@@ -74,10 +76,14 @@ class AppState:
         ruleset: Ruleset | None = None,
         provider: AnalysisProvider | None = None,
         encoder: Encoder | None = None,
+        chat_model: ChatModel | None = None,
     ) -> None:
         self.settings = settings
         self.ruleset = ruleset or load_ruleset(settings.rules_dir)
         self.provider = provider or make_provider(settings, self.ruleset)
+        # An injected provider replaces the configured engine, so the key must not bring the LLM back.
+        self.chat_model = chat_model or (make_chat_model(settings) if provider is None else None)
+        self.chat_topics = load_topics(settings.chat_topics_path)
         # Read now, so a missing price file stops the start and not a job half way.
         self.prices = load_prices(settings.translation_prices_path) if settings.llm_connected else None
         self.cache = SqliteCache(settings.cache_dir / "analysis.sqlite")
