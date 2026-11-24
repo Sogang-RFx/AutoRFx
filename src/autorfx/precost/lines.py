@@ -394,13 +394,22 @@ def _pdf_grids(
     return tuple(grids)
 
 
-def pdf_grids(doc: str, path: Path, rules: PriceSheetRules) -> tuple[Grid, ...]:
-    """Tables of a PDF, read once per file version."""
+def pdf_grids(
+    doc: str,
+    path: Path,
+    rules: PriceSheetRules,
+    words: Mapping[str, Sequence[str]] | None = None,
+) -> tuple[Grid, ...]:
+    """Tables of a PDF, read once per file version.
+
+    ``words`` are approved header phrases (per role). They join the rules for the
+    text-alignment fallback so a line-less table is found after those words are approved.
+    """
     if not path.is_file():
         return ()
     stat = path.stat()
-    # Only the two header vocabularies decide the text-alignment fallback; they key the cache.
-    compiled = rules.compiled()
+    # Quantity and description vocabularies decide the text-alignment fallback; they key the cache.
+    compiled = rules.compiled({role: tuple(ws) for role, ws in (words or {}).items()})
     quantity, description = (
         "|".join(f"(?:{p.pattern})" for p, _ in compiled[r]) for r in ("quantity", "description")
     )
@@ -697,6 +706,7 @@ def file_grids(
     parsed: Mapping[str, ParsedFile],
     canonical: Mapping[str, Path],
     rules: PriceSheetRules,
+    words: Mapping[str, Sequence[str]] | None = None,
 ) -> list[tuple[Grid, ...]]:
     """Tables of every file, in file order."""
     found = []
@@ -704,7 +714,7 @@ def file_grids(
         if file.kind == "xlsx" and file.id in parsed:
             found.append(table_grids(file.id, parsed[file.id].tables))
         elif file.id in canonical:
-            found.append(pdf_grids(file.id, canonical[file.id], rules))
+            found.append(pdf_grids(file.id, canonical[file.id], rules, words))
     return found
 
 
@@ -811,7 +821,7 @@ def rfq_lines(
     """
     compiled = rules.compiled({role: tuple(ws) for role, ws in (words or {}).items()})
     readings: list[Reading] = []
-    for grids in file_grids(manifest, parsed, canonical, rules):
+    for grids in file_grids(manifest, parsed, canonical, rules, words):
         readings.extend(read_grids(grids, compiled, layouts or {}))
     lists = _lists(readings)[:MAX_LISTS]
     shown = {lst["id"]: lst for lst in lists if lst["id"]}

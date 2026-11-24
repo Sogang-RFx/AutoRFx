@@ -7,6 +7,7 @@ approved. Test PDFs draw their own cell borders, as a word processor's table wou
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator, Sequence
 from datetime import date
 from pathlib import Path
@@ -21,8 +22,8 @@ from autorfx.config import Settings
 from autorfx.models import Locus, PackageManifest, Table
 from autorfx.precost import lines as lines_mod
 from autorfx.precost.lines import pdf_grids, read_grids, rfq_lines, signature, table_grids
-from autorfx.precost.sheet_store import PriceSheetError, PriceSheetStore, check_columns
-from autorfx.rules import PriceSheetRules, Ruleset
+from autorfx.precost.sheet_store import PriceSheetError, PriceSheetStore, check_columns, usable_header_word
+from autorfx.rules import PriceSheetRules, Ruleset, keyword_pattern
 from contract_schema import assert_valid
 
 Cells = Sequence[str]
@@ -69,7 +70,7 @@ def rules(ruleset: Ruleset) -> PriceSheetRules:
 def _read(
     path: Path, rules: PriceSheetRules, layouts: dict | None = None, words: dict | None = None
 ) -> list[dict]:
-    grids = pdf_grids("d01", path, rules)
+    grids = pdf_grids("d01", path, rules, words)
     return [line for r in read_grids(grids, rules.compiled(words), layouts or {}) for line in r.lines]
 
 
@@ -166,6 +167,15 @@ def test_an_approved_header_word_reads_every_table_that_uses_it(
     assert [r["name"] for r in rows] == ["Schraube M8", "Mutter M8"]
 
 
+def test_approved_words_find_an_unruled_pdf_table(tmp_path: Path, rules: PriceSheetRules) -> None:
+    """Approved dictionary words must also drive the text-alignment table search."""
+    sheet = [UNKNOWN, ("1", "Schraube M8", "5000", ""), ("2", "Mutter M8", "5000", "")]
+    path = _pdf(tmp_path / "u.pdf", [[sheet]], (40, 200, 90, 90), ruled=False)
+    assert _read(path, rules) == []
+    rows = _read(path, rules, words={"description": ("artikeltext",), "quantity": ("bedarf 2027",)})
+    assert [r["name"] for r in rows] == ["Schraube M8", "Mutter M8"]
+
+
 def test_a_revised_sheet_replaces_the_earlier_listing_of_a_group(
     tmp_path: Path, rules: PriceSheetRules
 ) -> None:
@@ -209,9 +219,7 @@ def test_a_group_title_repeated_on_the_next_page_keeps_earlier_rows(
     assert only["lines"] == 2
 
 
-def test_spec_and_bid_form_sharing_a_lot_name_keep_both_lists(
-    tmp_path: Path, rules: PriceSheetRules
-) -> None:
+def test_spec_and_bid_form_sharing_a_lot_name_keep_both_lists(tmp_path: Path, rules: PriceSheetRules) -> None:
     """Parallel lists that both say \"Lot 1\" must not treat the later as a revision."""
     spec = [
         ("Lot 1 - Electrical",),
@@ -496,6 +504,25 @@ def test_an_assignment_needs_a_quantity_and_a_name_column() -> None:
         check_columns({"quantity": 2, "description": 2}, 4)
     with pytest.raises(PriceSheetError, match="표 밖"):
         check_columns({"quantity": 9, "description": 1}, 4)
+
+
+def test_punctuation_and_digit_only_header_words_are_rejected(tmp_path: Path) -> None:
+    assert usable_header_word("Artikeltext")
+    assert not usable_header_word("-")
+    assert not usable_header_word("/")
+    assert not usable_header_word("1")
+    assert not usable_header_word("2027")
+    store = PriceSheetStore(tmp_path)
+    store.assign(
+        "a|b",
+        {"description": 1, "quantity": 2},
+        {"description": "-", "quantity": "1", "no": "Lfd"},
+        date(2026, 11, 24),
+    )
+    assert [(c.role, c.text) for c in store.candidates] == [("no", "lfd")]
+    # Digit tokens that slip through still match only as whole words.
+    assert re.search(keyword_pattern("1"), "1") and not re.search(keyword_pattern("1"), "2027")
+    assert re.search(keyword_pattern("-"), " - ") and not re.search(keyword_pattern("-"), "Part-No")
 
 
 def test_assigned_words_wait_for_approval_and_survive_a_restart(tmp_path: Path) -> None:

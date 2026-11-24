@@ -321,11 +321,14 @@ def keyword_pattern(term: str) -> str:
 
     ``re:`` is a regular expression as written; a Latin word matches as a whole word with an
     optional plural or inflection ending; Korean takes particles and compounds, so it matches as is.
+    Digits or punctuation-only tokens get word boundaries so ``1`` does not match inside ``2027``.
     """
     if term.startswith("re:"):
         return term[3:]
     if re.search(r"[a-zäöüß]", term, re.IGNORECASE):
         return rf"(?<!\w){re.escape(term)}(?:s|es|e|n|en)?(?!\w)"
+    if re.search(r"\d", term) or not re.search(r"[^\W\d_]", term, re.UNICODE):
+        return rf"(?<!\w){re.escape(term)}(?!\w)"
     return re.escape(term)
 
 

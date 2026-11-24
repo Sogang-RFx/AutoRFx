@@ -441,8 +441,20 @@ def assign_columns(rfq_id: str, body: ColumnsBody, state: State, team: Team = No
     except PriceSheetError as exc:
         raise ApiError(400, "invalid_request", str(exc)) from exc
     # Header words the rules would have given another role (or none) are dictionary candidates.
+    # Values may sit one cell right of the label; use the nearest non-empty header cell then.
     known = header_roles(header, rules.compiled(state.price_sheets.approved))
-    words = {role: header[i] for role, i in columns.items() if known.get(role) != i and header[i].strip()}
+
+    def _label(index: int) -> str:
+        if header[index].strip():
+            return header[index]
+        for j in range(index - 1, -1, -1):
+            if header[j].strip() and all(not header[k].strip() for k in range(j + 1, index)):
+                return header[j]
+            if header[j].strip():
+                break
+        return ""
+
+    words = {role: label for role, i in columns.items() if known.get(role) != i and (label := _label(i))}
     state.price_sheets.assign(signature(header), columns, words, date.today())
     return envelope({"lines": _lines(state, data)}, precost="real")
 

@@ -282,11 +282,15 @@ export function SheetTables({
         <span className="min-w-0 flex-1 truncate text-label text-ink-muted" title={t.rows[t.header_row]?.join(" · ")}>
           {t.rows[t.header_row]?.filter(Boolean).join(" · ")}
         </span>
-        <Button variant="ghost" data-testid={`assign-open-${t.id}`} onClick={() => setOpen(open === t.id ? null : t.id)}>
-          {t.how === "none" ? "열 지정" : "열 다시 지정"}
-        </Button>
+        {t.how === "continued" ? (
+          <span className="text-label text-ink-muted">이어진 표 — 첫 표에서 열을 지정하세요</span>
+        ) : (
+          <Button variant="ghost" data-testid={`assign-open-${t.id}`} onClick={() => setOpen(open === t.id ? null : t.id)}>
+            {t.how === "none" ? "열 지정" : "열 다시 지정"}
+          </Button>
+        )}
       </div>
-      {open === t.id && (
+      {open === t.id && t.how !== "continued" && (
         <ColumnAssigner table={t} rfqId={rfqId} team={team} onCancel={() => setOpen(null)}
           onRead={(lines) => {
             setOpen(null);

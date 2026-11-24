@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import threading
 from collections.abc import Mapping
 from datetime import date
@@ -54,6 +55,12 @@ class _Stored(Model):
 
 def clean_word(text: str) -> str:
     return " ".join(text.split()).strip().lower()[:MAX_WORD]
+
+
+def usable_header_word(text: str) -> bool:
+    """True when a header cell is safe as a dictionary word (has a letter, not only digits/punct)."""
+    cleaned = clean_word(text)
+    return bool(cleaned) and bool(re.search(r"[^\W\d_]", cleaned, re.UNICODE))
 
 
 def check_columns(columns: Mapping[str, int], width: int) -> dict[str, int]:
@@ -126,7 +133,12 @@ class PriceSheetStore:
             kept = {(c.role, c.text): c for c in self._data.candidates}
             for role, raw in words.items():
                 text = clean_word(raw)
-                if not text or text.startswith("re:") or text in approved.get(role, set()):
+                if (
+                    not text
+                    or text.startswith("re:")
+                    or not usable_header_word(text)
+                    or text in approved.get(role, set())
+                ):
                     continue
                 old = kept.get((role, text))
                 kept[(role, text)] = Candidate(
@@ -146,6 +158,8 @@ class PriceSheetStore:
             if action == "approve":
                 if len(candidates) == len(self._data.candidates):
                     raise PriceSheetError("승인할 후보가 없습니다. 화면을 새로 고쳐 주세요.")
+                if not usable_header_word(text):
+                    raise PriceSheetError("글자가 없는 머리글은 승인할 수 없습니다.")
                 if text not in approved.setdefault(role, []):
                     approved[role].append(text)
             elif action == "reject":
@@ -167,4 +181,11 @@ class PriceSheetStore:
             )
 
 
-__all__ = ["Candidate", "PriceSheetError", "PriceSheetStore", "check_columns", "clean_word"]
+__all__ = [
+    "Candidate",
+    "PriceSheetError",
+    "PriceSheetStore",
+    "check_columns",
+    "clean_word",
+    "usable_header_word",
+]

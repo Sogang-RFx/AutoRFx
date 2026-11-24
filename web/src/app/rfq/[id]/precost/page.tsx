@@ -713,7 +713,11 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
                 setChosenLists(chosen);
                 const rows = pickedItems(read, chosen).slice(0, read.limit);
                 const kept = (list: LineRow[]) => list.filter((l) => l.group === MANUAL);
+                // Keep hand-added lines; when the re-read finds sheet rows, replace auto lines.
+                // A zero-row re-read leaves the previous auto lines (and manuals) in place.
                 setLines((list) => (rows.length > 0 ? [...linesFromRfq(rows, sheetYear, processValues), ...kept(list)] : list));
+                const next = read.lists.find((l) => l.suggested) ?? read.lists[0];
+                if (next) setRegion({ id: next.id, region: listRegion(next) });
               }} />
           )}
         </Step>
