@@ -8,6 +8,7 @@ import pytest
 
 from autorfx.access import hidden_keys
 from autorfx.analysis import Answer, RuleOnlyProvider, ScriptedProvider, TransientProviderError
+from autorfx.analysis.llm import answer_prompt
 from autorfx.retrieval import SearchIndex, answer_question
 from autorfx.rules import Ruleset
 from contract_schema import assert_valid
@@ -179,7 +180,9 @@ def test_empty_or_oversized_question_is_refused(index: SearchIndex):
 
 def test_llm_answer_is_accepted_when_its_citations_and_numbers_check_out(index: SearchIndex):
     """CITE-01: the model cites sentence numbers; code turns them into positions and verifies them."""
-    provider = ScriptedProvider(answers=[Answer(text="보증 기간은 36개월입니다.", citations=(1,))])
+    provider = ScriptedProvider(
+        answers=[Answer(text="보증 기간은 36개월입니다.", citations=(1,), answered=True)]
+    )
     data = ask(index, "보증 기간은?", provider=provider)
     assert (data["status"], data["mode"]) == ("answered", "generative")
     assert cited(data) == [("4.5", 5)] and data["answer"]["finding"]["text"] == "보증 기간은 36개월입니다."
@@ -188,7 +191,7 @@ def test_llm_answer_is_accepted_when_its_citations_and_numbers_check_out(index: 
 
 def test_llm_answer_with_an_unsupported_number_is_retried_then_replaced(index: SearchIndex):
     """CITE-03, INV-3: '24' is not in the cited sentence; after one retry the original sentences are shown."""
-    wrong = Answer(text="보증 기간은 24개월입니다.", citations=(1,))
+    wrong = Answer(text="보증 기간은 24개월입니다.", citations=(1,), answered=True)
     provider = ScriptedProvider(answers=[wrong, wrong])
     data = ask(index, "보증 기간은?", provider=provider)
     assert (data["status"], data["mode"]) == ("answered", "extractive")
@@ -198,7 +201,10 @@ def test_llm_answer_with_an_unsupported_number_is_retried_then_replaced(index: S
 
 def test_llm_retry_can_succeed(index: SearchIndex):
     provider = ScriptedProvider(
-        answers=[Answer(text="24개월", citations=(1,)), Answer(text="36개월입니다.", citations=(1,))]
+        answers=[
+            Answer(text="24개월", citations=(1,), answered=True),
+            Answer(text="36개월입니다.", citations=(1,), answered=True),
+        ]
     )
     data = ask(index, "보증 기간은?", provider=provider)
     assert (data["mode"], data["answer"]["finding"]["text"]) == ("generative", "36개월입니다.")
@@ -207,15 +213,45 @@ def test_llm_retry_can_succeed(index: SearchIndex):
 @pytest.mark.parametrize(
     "reply",
     [
-        Answer(text="36개월", citations=(99,)),
-        Answer(text="36개월", citations=()),
-        Answer(text="  ", citations=(1,)),
+        Answer(text="36개월", citations=(99,), answered=True),
+        Answer(text="36개월", citations=(), answered=True),
+        Answer(text="  ", citations=(1,), answered=True),
     ],
 )
 def test_llm_answer_that_cites_nothing_usable_is_replaced(index: SearchIndex, reply: Answer):
     """CITE-01: a sentence number that was not given, no citation, or no text is never shown."""
     data = ask(index, "보증 기간은?", provider=ScriptedProvider(answers=[reply]))
     assert data["mode"] == "extractive" and data["answer"]["citation_status"] == "verified"
+
+
+def test_llm_that_finds_no_answer_in_the_evidence_gives_no_evidence(index: SearchIndex):
+    """RAG-03, INV-3: when the model says the evidence does not answer, nothing is shown as an answer.
+
+    Not as a generative answer (a "no information" sentence with citations would pass the citation
+    check), and not as quoted sentences either: the model has just judged them not to answer.
+    """
+    no_answer = Answer(text="제공된 문장에는 그 정보가 없습니다.", citations=(1,), answered=False)
+    provider = ScriptedProvider(answers=[no_answer])
+    data = ask(index, "보증 기간은?", provider=provider)
+    assert (data["status"], data["mode"], data["answer"]) == ("no_evidence", "generative", None)
+    assert data["suggestions"], "the topics the text does cover are offered"
+    assert len(provider.answer_calls) == 1, "a judged non-answer is not retried"
+
+
+def test_llm_that_finds_no_answer_on_the_retry_gives_no_evidence(index: SearchIndex):
+    """RAG-03: a non-answer after a rejected first reply is still no_evidence, not quoted sentences."""
+    wrong = Answer(text="보증 기간은 24개월입니다.", citations=(1,), answered=True)
+    no_answer = Answer(text="제공된 문장에는 그 정보가 없습니다.", citations=(), answered=False)
+    provider = ScriptedProvider(answers=[wrong, no_answer])
+    data = ask(index, "보증 기간은?", provider=provider)
+    assert (data["status"], data["mode"], data["answer"]) == ("no_evidence", "generative", None)
+    assert len(provider.answer_calls) == 2
+
+
+def test_answer_prompt_asks_the_model_to_say_when_nothing_answers():
+    """RAG-03: the model reports a non-answer as a flag, not only in prose."""
+    prompt = answer_prompt("보증 기간은?", [], None)
+    assert "answered" in prompt and "false" in prompt
 
 
 def test_provider_outage_falls_back_to_the_original_sentences(index: SearchIndex):

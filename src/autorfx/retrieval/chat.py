@@ -16,6 +16,7 @@ from autorfx.access import hidden_keys
 from autorfx.analysis.citation import verify
 from autorfx.analysis.providers import (
     AnalysisProvider,
+    Answer,
     EvidenceSentence,
     RuleOnlyProvider,
     TransientProviderError,
@@ -48,15 +49,14 @@ def _reply(
     }
 
 
-def _ask(
-    provider: AnalysisProvider,
-    question: str,
+def _check(
+    reply: Answer,
     evidence: Sequence[EvidenceSentence],
     clauses: Sequence[Clause],
-    feedback: str | None,
+    *,
+    check_numbers: bool,
 ) -> VerifiedFinding | None:
-    """One answer of the provider, with its citations checked. None when it cites nothing usable."""
-    reply = provider.answer(question, evidence, feedback)
+    """One reply with its citations checked. None when it cites nothing usable."""
     by_number = {e.number: e.locus for e in evidence}
     if not reply.text.strip() or not reply.citations or any(n not in by_number for n in reply.citations):
         return None
@@ -66,7 +66,7 @@ def _ask(
         citations=tuple(by_number[n] for n in dict.fromkeys(reply.citations)),
     )
     allowed = {e.locus.key() for e in evidence}
-    return verify(finding, clauses, allowed=allowed, check_numbers=provider.uses_llm)
+    return verify(finding, clauses, allowed=allowed, check_numbers=check_numbers)
 
 
 def answer_question(
@@ -110,13 +110,22 @@ def answer_question(
         feedback: str | None = None
         for _ in range(ATTEMPTS):
             try:
-                answer = _ask(provider, question, evidence, visible, feedback)
+                reply = provider.answer(question, evidence, feedback)
             except TransientProviderError:
                 break
+            if not reply.answered:
+                # The model judged the evidence not to answer. A "no information" sentence would pass the
+                # citation check, and quoting the sentences instead would contradict the judgement (RAG-03).
+                return _reply(
+                    "no_evidence", "generative", None, MESSAGES["no_evidence"], index.suggestions(group)
+                )
+            answer = _check(reply, evidence, visible, check_numbers=True)
             if answer is not None and answer.citation_status == "verified":
                 return _reply("answered", "generative", answer, MESSAGES["generative"] + partial, [])
             feedback = FEEDBACK
-    extract = _ask(RuleOnlyProvider(), question, evidence, visible, None)
+    extract = _check(
+        RuleOnlyProvider().answer(question, evidence, None), evidence, visible, check_numbers=False
+    )
     if extract is None or extract.citation_status != "verified":
         return _reply("no_evidence", "extractive", None, MESSAGES["no_evidence"], index.suggestions(group))
     message = MESSAGES["fallback" if provider.uses_llm else "extractive"]

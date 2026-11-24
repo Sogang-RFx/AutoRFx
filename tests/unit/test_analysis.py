@@ -375,7 +375,7 @@ def test_openai_provider_builds_prompts_from_the_rule_files(ruleset: Ruleset):
             return GOOD
         if schema is Translation:
             return Translation(text=" 번역 ")
-        return Answer(text="답", citations=(1,))
+        return Answer(text="답", citations=(1,), answered=True)
 
     inherited = make_clause("4.2.1", ["4.2.1 Delivery is FCA supplier plant."], title="Target price EUR 1.20")
     assert ClauseInput.of(inherited).title == "", "INV-8: an inherited price heading never reaches the LLM"

@@ -66,6 +66,9 @@ class EvidenceSentence(Model):
 class Answer(Model):
     text: str
     citations: tuple[int, ...]
+    answered: bool
+    """False when the evidence does not answer the question. Required, with no default, so the
+    model always states it (and strict structured output accepts the schema)."""
 
 
 class AnalysisProvider(Protocol):
@@ -110,7 +113,9 @@ class RuleOnlyProvider:
 
     def answer(self, question: str, evidence: Sequence[EvidenceSentence], feedback: str | None) -> Answer:
         top = list(evidence)[:MAX_EXTRACT]
-        return Answer(text="\n".join(e.text for e in top), citations=tuple(e.number for e in top))
+        return Answer(
+            text="\n".join(e.text for e in top), citations=tuple(e.number for e in top), answered=True
+        )
 
 
 class ScriptedProvider:
