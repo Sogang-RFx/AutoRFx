@@ -25,7 +25,7 @@ from auth_helpers import (
     running_app,
     settings_in,
 )
-from autorfx.analysis import Answer, RuleOnlyProvider
+from autorfx.analysis import RuleOnlyProvider
 from autorfx.pipeline import load_rfq, run_pipeline
 from autorfx.rules import Ruleset
 from contract_schema import assert_valid
@@ -391,18 +391,28 @@ class EveryTextEncoder:
         return np.ones((len(texts), 2), dtype=np.float32) / np.sqrt(2)
 
 
-class SpyProvider(RuleOnlyProvider):
-    """Test double for an LLM: records the evidence it is given and repeats its first sentence."""
+class SpyChatModel:
+    """Test double for a chat LLM: records the evidence it is given and repeats its first sentence."""
 
     id = "spy"
-    uses_llm = True
 
     def __init__(self) -> None:
         self.seen: list[str] = []
 
-    def answer(self, question, evidence, feedback):
+    def plan(self, question, history, languages):
+        from autorfx.chat.models import Plan
+
+        return Plan(intent="lookup", question=question, queries=())
+
+    def answer(self, question, evidence, *, overview, feedback):
+        from autorfx.chat.models import Draft, Statement
+
         self.seen += [e.text for e in evidence]
-        return Answer(text=evidence[0].text, citations=(evidence[0].number,), answered=True)
+        return Draft(
+            answered=True,
+            complete=True,
+            statements=(Statement(text=evidence[0].text, citations=(evidence[0].number,)),),
+        )
 
 
 @pytest.fixture(scope="module")
@@ -436,15 +446,15 @@ def test_embedding_search_stays_inside_the_scope(dense_api: Api, name: str):
 
 @pytest.mark.parametrize("name", [*LIMITED, "sales"])
 def test_the_language_model_is_given_evidence_of_the_scope_only(dense_api: Api, name: str):
-    """INV-4: what is sent to the provider is inside the scope, not only what comes back."""
+    """INV-4: what is sent to the chat model is inside the scope, not only what comes back."""
     accounts, rfq_id = dense_api
-    spy, before = SpyProvider(), accounts.state.provider
-    accounts.state.provider = spy
+    spy, before = SpyChatModel(), accounts.state.chat_model
+    accounts.state.chat_model = spy
     try:
         for question in QUESTIONS:
             ask(accounts, name, rfq_id, question)
     finally:
-        accounts.state.provider = before
+        accounts.state.chat_model = before
     assert spy.seen, "the model was asked"
     sent = "\n".join(spy.seen)
     assert not [w for w in foreign(name) if name in LIMITED and w in sent]

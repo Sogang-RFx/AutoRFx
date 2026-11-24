@@ -18,8 +18,11 @@ from pathlib import Path
 from typing import TypeVar
 
 from autorfx.analysis import AnalysisProvider, SqliteCache, engine_ids, make_provider
+from autorfx.analysis.usage import load_prices
 from autorfx.auth import AuditLog, AuthStore
 from autorfx.auth.passwords import MAX_CONCURRENT
+from autorfx.chat.model import ChatModel, make_chat_model
+from autorfx.chat.topics import load_topics
 from autorfx.config import Settings
 from autorfx.guard import GuardError
 from autorfx.ingest import identify_package
@@ -79,11 +82,21 @@ class AppState:
         ruleset: Ruleset | None = None,
         provider: AnalysisProvider | None = None,
         encoder: Encoder | None = None,
+        chat_model: ChatModel | None = None,
     ) -> None:
         self.settings = settings
         self.ruleset = ruleset or load_ruleset(settings.rules_dir)
         self.provider = provider or make_provider(settings, self.ruleset)
+        # An injected provider replaces the configured engine, so the key must not bring the LLM back.
+        self.chat_model = chat_model or (make_chat_model(settings) if provider is None else None)
+        self.chat_topics = load_topics(settings.chat_topics_path)
+        # Read now, so a missing price file stops the start and not a job half way.
+        self.prices = load_prices(settings.translation_prices_path) if settings.llm_connected else None
         self.cache = SqliteCache(settings.cache_dir / "analysis.sqlite")
+        # Only a translating provider reads or writes it: a keyless run leaves no file behind.
+        self.translation_cache = (
+            SqliteCache(settings.cache_dir / "translation.sqlite") if self.provider.translates else None
+        )
         key = settings.openai_api_key.get_secret_value() if settings.openai_api_key else None
         self.encoder = encoder or load_encoder(
             settings.embedding_model, openai_api_key=key, cache_dir=settings.cache_dir
@@ -124,6 +137,10 @@ class AppState:
     def close(self) -> None:
         self._worker.shutdown(wait=True, cancel_futures=True)
         self._passwords.shutdown(wait=True, cancel_futures=True)
+        # After the worker: a running job still reads and writes both.
+        self.cache.close()
+        if self.translation_cache is not None:
+            self.translation_cache.close()
 
     def wait(self) -> None:
         """Block until every job submitted so far has ended. Jobs run in order on one worker."""
@@ -296,6 +313,8 @@ class AppState:
                 now_ms=started,
                 reporter=store,
                 cache=self.cache,
+                translation_cache=self.translation_cache,
+                prices=self.prices,
                 retrieval=retrieval_engine(self.encoder),
             )
         except PipelineError as exc:

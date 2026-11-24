@@ -257,9 +257,16 @@ class ScopedSearchIndex:
     def __init__(
         self, clauses: Sequence[Clause], ruleset: Ruleset, *, dense: DenseIndex | None = None
     ) -> None:
+        self._clauses = tuple(clauses)
         self._ruleset = ruleset
         self.dense = dense
         self._corpus = _Corpus(clauses)
+
+    def scoped(self, clause_ids: AbstractSet[str]) -> ScopedSearchIndex:
+        """Further narrow this index; never widens past the clauses already in it."""
+        allowed = [c for c in self._clauses if c.clause_id in clause_ids]
+        dense = self.dense.subset(clause_ids) if self.dense is not None else None
+        return ScopedSearchIndex(allowed, self._ruleset, dense=dense)
 
     def concepts(self, question: str, *, keep_hangul: bool = True) -> tuple[Concept, ...]:
         return _concepts_for(self._ruleset, question, keep_hangul=keep_hangul)

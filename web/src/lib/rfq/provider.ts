@@ -28,17 +28,21 @@ import {
   RtmResponse,
   SentencesResponse,
   SheetColumnsResponse,
+  SheetSuggestResponse,
   SheetWordsResponse,
   UploadResponse,
   ViewerResponse,
   type AdminPasswordRequest,
   type AdminUserCreateRequest,
   type AdminUserPatchRequest,
+  type ChatRequest,
+  type ChatTurn,
   type CompanyRequest,
   type LoginRequest,
   type PasswordChangeRequest,
   type PrecostRequest,
   type SheetColumnsRequest,
+  type SheetSuggestRequest,
   type SheetWordRequest,
 } from "./contract";
 
@@ -261,6 +265,15 @@ export const rfqApi = {
       post(body),
     ),
 
+  /** An AI suggestion for the columns of one table (positions only); the user accepts it with assignSheetColumns. */
+  suggestSheetColumns: (id: string, body: SheetSuggestRequest) =>
+    request(
+      "cost_inputs",
+      SheetSuggestResponse,
+      endpoint("cost_inputs", `${rfq(id)}/price-sheet/suggest`),
+      post(body),
+    ),
+
   /** Header words assigned by hand: candidates for the price-sheet dictionary, and the approved ones. */
   sheetWords: (signal?: AbortSignal) =>
     request("precost", SheetWordsResponse, endpoint("precost", "/price-sheet/words"), { signal }),
@@ -279,8 +292,14 @@ export const rfqApi = {
   precost: (body: PrecostRequest) =>
     request("precost", PrecostResponse, endpoint("precost", "/precost"), post(body)),
 
-  chat: (id: string, question: string) =>
-    request("chat", ChatResponse, endpoint("chat", `${rfq(id)}/chat`), post({ question })),
+  /** `history`: earlier turns of this conversation, only so the backend can tell what the question refers to. */
+  chat: (id: string, question: string, history: ChatTurn[] = [], signal?: AbortSignal) =>
+    request(
+      "chat",
+      ChatResponse,
+      endpoint("chat", `${rfq(id)}/chat`),
+      post({ question, history } satisfies ChatRequest, signal),
+    ),
 
   /** Rows about clauses outside the account's scope are left out by the server (INV-8). */
   evaluation: (id: string, signal?: AbortSignal) =>

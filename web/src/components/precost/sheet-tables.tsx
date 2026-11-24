@@ -10,9 +10,20 @@ import Link from "next/link";
 import { useState } from "react";
 import type { SourceRegion } from "@/components/source-viewer/source-viewer";
 import { Button, cx } from "@/components/ui/primitives";
-import { ColumnRole, type RfqLines, type SheetList, type SheetTable } from "@/lib/rfq/contract";
+import { ColumnRole, MAX_HEADER_ROW, type RfqLines, type SheetList, type SheetSuggestResponse, type SheetTable } from "@/lib/rfq/contract";
 import { fileTag, usePackageFiles } from "@/lib/rfq/package-context";
 import { describeError, rfqApi } from "@/lib/rfq/provider";
+import { useMeta } from "@/lib/rfq/use-meta";
+import {
+  gridWidth,
+  headerRows,
+  joinHeader,
+  problem,
+  rolesOf,
+  shownColumns,
+  type Roles,
+  type Shown,
+} from "@/lib/rfq/sheet-columns";
 
 export const ROLE_LABEL: Record<ColumnRole, string> = {
   no: "번호",
@@ -35,96 +46,6 @@ const HOW_LABEL: Record<SheetTable["how"], string> = {
 
 const select = "min-h-8 w-full rounded-control border border-line-control bg-surface px-1 text-label text-ink";
 
-type Roles = (ColumnRole | "")[];
-
-function rolesOf(table: SheetTable, width: number): Roles {
-  const roles: Roles = Array.from({ length: width }, () => "");
-  for (const [role, index] of Object.entries(table.columns)) {
-    if (index !== undefined && index < width) roles[index] = role as ColumnRole;
-  }
-  return roles;
-}
-
-/**
- * A column as shown: one or two columns of the table, and the one whose cells hold the values.
- * ``extra`` are hidden columns beside it whose only text is a title above the header.
- */
-type Shown = { cols: number[]; data: number; extra: number[] };
-
-/**
- * The columns worth showing. A table read from a PDF often has empty columns, and a header cell
- * one column away from the values under it ("Description" over nothing, the names in the next
- * column): empty columns are left out, and such a header is shown over its values as one column.
- */
-function shownColumns(rows: string[][], header: number, end: number, width: number): Shown[] {
-  const text = (r: number, i: number) => (rows[r]?.[i] ?? "").trim() !== "";
-  const head = (i: number) => text(header, i);
-  const value = (i: number) => rows.some((_, r) => r >= end && text(r, i));
-  // Titles above the header span the table; a column used only by them is not a column. Rows of
-  // several cells with numbers above it are items (the header was guessed too low): they count.
-  const items = (r: number) => rows[r].filter((c) => c.trim()).length >= 2 && rows[r].some((c) => /\d/.test(c));
-  const used = (i: number) => rows.some((_, r) => (r >= header || items(r)) && text(r, i));
-  const shown: Shown[] = [];
-  const leading: number[] = [];
-  for (let i = 0; i < width; i++) {
-    if (!used(i)) {
-      (shown.length ? shown[shown.length - 1].extra : leading).push(i);
-      continue;
-    }
-    if (head(i) && !value(i)) {
-      let j = i + 1;
-      while (j < width && !used(j)) j++;
-      if (j < width && !head(j) && value(j)) {
-        shown.push({ cols: [i, j], data: j, extra: [] });
-        i = j;
-        continue;
-      }
-    }
-    shown.push({ cols: [i], data: i, extra: [] });
-  }
-  shown[0]?.extra.unshift(...leading);
-  return shown;
-}
-
-/**
- * Rows under the header that still belong to it, and how. A header cell may wrap onto the rows
- * below it ("ABC, inclusive of all" / "applicable taxes"): such a row, without digits and with
- * text only under header cells, is joined into the header ("wrap"), and so is the header printed
- * again. A row of sub-headings under a merged heading ("Total Bid Price" over "Unit Price | Total
- * Amount") stays a row of its own, shown as header ("sub"). A row with text in its first column
- * only is a group heading ("General equipment"), not part of the header.
- */
-function headerRows(rows: string[][], header: number): ("wrap" | "sub")[] {
-  const first = rows[header].findIndex((c) => c.trim());
-  const found: ("wrap" | "sub")[] = [];
-  for (let r = header + 1; r < rows.length && r <= header + 3; r++) {
-    const filled = rows[r].map((c, i) => [c.trim(), i] as const).filter(([c]) => c);
-    const heading = filled.length === 1 && filled[0][1] <= Math.max(first, 0);
-    if (filled.length === 0 || heading || filled.some(([c]) => /\d/.test(c))) break;
-    const under = filled.every(([, i]) => (rows[header][i] ?? "").trim());
-    if (under) found.push("wrap");
-    else if (filled.length >= 2) found.push("sub");
-    else break;
-  }
-  return found;
-}
-
-/** Header lines of one column joined; a line that repeats or extends the text so far replaces it. */
-function joinHeader(parts: string[]): string {
-  return parts.reduce((acc, part) => {
-    const text = part.trim();
-    if (!text) return acc;
-    if (!acc || text.startsWith(acc)) return text;
-    return acc.includes(text) ? acc : `${acc} ${text}`;
-  }, "");
-}
-
-function problem(roles: Roles): string | null {
-  if (!roles.includes("quantity")) return "수량 열을 지정하세요.";
-  if (!roles.includes("description") && !roles.includes("part")) return "품명(설명) 열이나 품번 열을 지정하세요.";
-  return null;
-}
-
 function ColumnAssigner({
   table,
   rfqId,
@@ -136,18 +57,25 @@ function ColumnAssigner({
   onRead: (lines: RfqLines) => void;
   onCancel: () => void;
 }) {
-  const width = Math.max(...table.rows.map((r) => r.length));
+  const { engines } = useMeta();
+  // The AI suggestion brings more rows when the header sits low (a sheet that starts with notes).
+  const [allRows, setAllRows] = useState(table.rows);
+  const width = gridWidth(allRows);
   const [header, setHeader] = useState(table.header_row);
-  const [roles, setRoles] = useState<Roles>(() => rolesOf(table, width));
+  const [roles, setRoles] = useState<Roles>(() => rolesOf(table.columns, width));
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const below = headerRows(table.rows, header);
+  const [asking, setAsking] = useState(false);
+  const [suggestion, setSuggestion] = useState<SheetSuggestResponse["data"] | null>(null);
+  const below = headerRows(allRows, header);
   const end = header + 1 + below.length;
   const isHeader = (r: number) => r === header || (r > header && below[r - header - 1] === "sub");
-  const shown = shownColumns(table.rows, header, end, width);
+  // Keep columns the AI or a saved layout already assigned, even when their cells are empty.
+  const kept = new Set(roles.flatMap((role, i) => (role ? [i] : [])));
+  const shown = shownColumns(allRows, header, end, width, kept);
   // The header's wrapped lines are joined into it and not repeated; sub-heading rows stay.
-  const wrapped = table.rows.slice(header, end).filter((_, k) => k === 0 || below[k - 1] === "wrap");
-  const rows = table.rows
+  const wrapped = allRows.slice(header, end).filter((_, k) => k === 0 || below[k - 1] === "wrap");
+  const rows = allRows
     .map((row, r) => (r === header ? row.map((_, i) => joinHeader(wrapped.map((x) => x[i] ?? ""))) : row))
     .map((row, r) => ({ row, r }))
     .filter(({ r }) => r <= header || r >= end || below[r - header - 1] === "sub");
@@ -161,6 +89,25 @@ function ColumnAssigner({
     setRoles((prev) =>
       prev.map((r, i) => (i === col.data ? role : col.cols.includes(i) || (r === role && role !== "") ? "" : r)),
     );
+
+  // Positions only: the server checked the suggestion by reading the table; the user still accepts it.
+  const ask = async () => {
+    setAsking(true);
+    setError(null);
+    try {
+      const res = await rfqApi.suggestSheetColumns(rfqId, { table: table.id });
+      const found = res.data;
+      setAllRows(found.rows);
+      setHeader(found.header_row);
+      setRoles(rolesOf(found.columns, gridWidth(found.rows)));
+      setSuggestion(found);
+    } catch (e) {
+      setSuggestion(null);
+      setError(describeError(e));
+    } finally {
+      setAsking(false);
+    }
+  };
 
   const submit = async () => {
     const columns: Partial<Record<ColumnRole, number>> = {};
@@ -187,17 +134,37 @@ function ColumnAssigner({
         <span className="font-semibold text-ink">품명·설명</span>(또는 품번)은 꼭 필요합니다. 단가·금액 열은 보통 비어 있지만
         수량으로 잘못 읽지 않도록 지정해 두면 좋습니다.
       </p>
-      <label className="flex items-center gap-2 text-label text-ink-muted">
-        머리글 줄
-        <select className={cx(select, "w-auto")} value={header} data-testid="assign-header"
-          onChange={(e) => setHeader(Number(e.target.value))}>
-          {table.rows.slice(0, 6).map((row, i) => (
-            <option key={i} value={i}>
-              {i + 1}번째 줄: {row.filter(Boolean).join(" · ").slice(0, 40) || "(빈 줄)"}
-            </option>
-          ))}
-        </select>
-      </label>
+      <div className="flex flex-wrap items-center gap-2">
+        <label className="flex items-center gap-2 text-label text-ink-muted">
+          머리글 줄
+          <select className={cx(select, "w-auto")} value={header} data-testid="assign-header"
+            onChange={(e) => setHeader(Number(e.target.value))}>
+            {allRows.slice(0, MAX_HEADER_ROW + 1).map((row, i) => (
+              <option key={i} value={i}>
+                {i + 1}번째 줄: {row.filter(Boolean).join(" · ").slice(0, 40) || "(빈 줄)"}
+              </option>
+            ))}
+          </select>
+        </label>
+        {engines?.llm_connected && (
+          <Button variant="ghost" onClick={ask} disabled={asking || busy} data-testid="assign-suggest"
+            title="이 표의 앞부분(최대 40줄)만 AI에 보내 머리글 줄과 열 위치를 묻습니다. 품목 이름과 숫자는 코드가 원본 칸에서 읽습니다.">
+            {asking ? "AI가 표를 보는 중…" : "AI로 열 찾기"}
+          </Button>
+        )}
+      </div>
+      {suggestion && (
+        <div className="rounded-control bg-accent-tint p-2 text-label text-ink" data-testid="assign-suggestion">
+          <p>
+            <span className="font-semibold">AI 제안</span> ({suggestion.engine}): {suggestion.reason}
+          </p>
+          <p className="text-ink-muted">
+            이 열 지정으로 미리 읽어 보니 품목 {suggestion.lines}개가 나옵니다
+            {suggestion.preview.length > 0 && ` (${suggestion.preview.join(", ")} …)`}. 아래 표에서 열을 확인하고, 맞으면
+            &lsquo;이 열 지정으로 품목 읽기&rsquo;를 누르세요. 다르면 고친 뒤 누르면 됩니다.
+          </p>
+        </div>
+      )}
       <div className="overflow-x-auto">
         <table className="w-full min-w-[32rem] text-left text-dense">
           <thead>

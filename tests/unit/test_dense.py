@@ -9,11 +9,14 @@ import pytest
 
 from auth_helpers import scope_for, visible_of
 from autorfx.analysis import RuleOnlyProvider, analyze
+from autorfx.chat.models import ChatContext
+from autorfx.chat.service import answer_question
 from autorfx.pipeline import _dense
-from autorfx.retrieval import SearchIndex, answer_question, compare
+from autorfx.retrieval import SearchIndex, compare
 from autorfx.retrieval.dense import CachedEncoder, DenseIndex, load_encoder
 from autorfx.rules import Ruleset
 from contract_schema import assert_valid
+from factories import make_file
 from topic_encoder import CLAUSES, DEADLINE, PACKAGING, PRICE, QUALITY, TopicEncoder  # noqa: F401
 
 
@@ -103,14 +106,20 @@ def test_a_subset_gives_the_same_ranking_as_an_index_of_those_clauses_alone(rule
 
 def test_chat_answers_a_paraphrase_with_a_verified_citation(index: SearchIndex, ruleset: Ruleset):
     scope = scope_for("logistics", ruleset)
-    visible = visible_of(CLAUSES, analyze(CLAUSES, ruleset, RuleOnlyProvider()), scope, ruleset)
-    assert "d01:3.2" in {c.clause_id for c in visible}
-    data = answer_question(
-        "부품을 어떤 상자에 담아서 보내야 하나요?",
-        index=index.scoped(frozenset(c.clause_id for c in visible)),
+    analyses = analyze(CLAUSES, ruleset, RuleOnlyProvider())
+    visible = visible_of(CLAUSES, analyses, scope, ruleset)
+    shown = frozenset(c.clause_id for c in visible)
+    assert "d01:3.2" in shown
+    context = ChatContext(
+        index=index.scoped(shown),
         clauses=visible,
-        scope=scope,
-        provider=RuleOnlyProvider(),
+        analyses=tuple(a for a in analyses if a.clause_id in shown),
+        issues=(),
+        files=(make_file("d01", "d01.pdf"),),
+        topics=(),
+    )
+    data = answer_question(
+        "부품을 어떤 상자에 담아서 보내야 하나요?", context=context, scope=scope, model=None
     )
     assert_valid("chat", {"data": data, "provenance": {"chat": "real"}})
     assert data["status"] == "answered"

@@ -9,7 +9,9 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import sqlite3
 from collections.abc import Iterator
+from decimal import Decimal
 from pathlib import Path
 
 import pymupdf
@@ -29,14 +31,23 @@ from auth_helpers import (
     settings_in,
 )
 from auth_helpers import error_of as error
+from autorfx.analysis import RuleOnlyProvider, ScriptedProvider
+from autorfx.analysis.usage import Usage, usd_text
+from autorfx.api import create_app
 from autorfx.config import Settings
-from autorfx.rules import Ruleset
+from autorfx.rules import RulesError, Ruleset
 from contract_schema import assert_valid
 from factories import PACKAGE_SECRET, make_package, precost_inputs
 
 FULL_VIEW, VISIBLE, RESTRICTED = "sales", "costing", "logistics"
 """Everything; its own department with cost clauses; its own department without them."""
 NO_COST = ("development", "quality", "production_engineering", "logistics", "legal")
+TOPICS = """\
+topics:
+  - {intent: conflicts, label: 문서 간 불일치, patterns: [문서끼리]}
+  - {intent: red_flags, label: 불리한 조항, patterns: [독소]}
+  - {intent: overview, label: RFQ 요약, patterns: [RFQ 요약]}
+"""
 SECRETS = (PACKAGE_SECRET, "1.2345", "target price", "rejected")
 Api = tuple[Accounts, str, list[Path]]
 
@@ -46,6 +57,8 @@ def api(tmp_path_factory: pytest.TempPathFactory, ruleset: Ruleset) -> Iterator[
     root = tmp_path_factory.mktemp("api")
     settings = settings_in(root)
     make_package(settings.samples_dir / "synthetic-sample")
+    (settings.data_dir / "chat").mkdir(parents=True)
+    (settings.data_dir / "chat" / "topics.yaml").write_text(TOPICS, encoding="utf-8")
     sources = make_package(root / "upload")
     with running_app(settings, ruleset) as accounts:
         yield accounts, accounts.upload(sources), sources
@@ -295,6 +308,37 @@ def test_a_request_for_another_host_is_refused(api: Api):
     assert client.get("/health", headers={"Host": "127.0.0.1:8000"}).status_code == 200
 
 
+def keyed_settings(root: Path) -> Settings:
+    return Settings(_env_file=None, data_dir=root / "data", OPENAI_API_KEY="sk-test-not-real")  # type: ignore[call-arg]
+
+
+def test_a_key_without_a_price_file_stops_the_server_at_start(tmp_path: Path, ruleset: Ruleset):
+    """INV-12: the price file is read when the app starts, so a missing file is not found mid-job."""
+    app = create_app(keyed_settings(tmp_path), ruleset=ruleset, provider=RuleOnlyProvider())
+    with pytest.raises(RulesError, match="prices.yaml"), TestClient(app):
+        pass
+
+
+def test_a_job_records_its_estimated_cost(tmp_path: Path, ruleset: Ruleset):
+    """INV-12: the server passes the prices to the pipeline; run.json holds the usage and the cost."""
+    settings = keyed_settings(tmp_path)
+    prices = settings.translation_prices_path
+    prices.parent.mkdir(parents=True)
+    prices.write_text(
+        'source: x\nchecked: "2026-11-24"\nmodels:\n  gpt-x:\n    input: "1"\n    cached_input: "1"\n'
+        '    output: "1"\n',
+        encoding="utf-8",
+    )
+    provider = ScriptedProvider(
+        translation="번역문", provider_id="openai:gpt-x", usage=Usage(calls=1, output_tokens=1000)
+    )
+    with running_app(settings, ruleset, provider=provider) as accounts:
+        rfq_id = accounts.upload(make_package(tmp_path / "upload"))
+    run = json.loads((settings.work_dir / rfq_id / "run.json").read_text(encoding="utf-8"))
+    calls = run["translation"]["usage"]["calls"]
+    assert calls > 0 and run["translation"]["cost_usd"] == usd_text(Decimal(calls) / 1000)
+
+
 def test_a_failed_job_is_reported_and_has_no_results(api: Api):
     """JOB-02: the job shows where it stopped; result endpoints say so instead of serving partial data."""
     accounts, _, _ = api
@@ -397,7 +441,13 @@ def test_nothing_about_the_price_reaches_a_restricted_account(api: Api, name: st
     for department in ("costing", "sales", "quality"):
         filtered = get(client, f"/rfqs/{rfq_id}/clauses", department=department)
         texts.append(json.dumps(filtered, ensure_ascii=False))
-    for question in ("목표가는 얼마인가요?", "price"):
+    for question in (
+        "목표가는 얼마인가요?",
+        "price",
+        "독소조항이 있나요?",
+        "문서끼리 다른 값은?",
+        "RFQ 요약",
+    ):
         reply = client.post(f"/rfqs/{rfq_id}/chat", json={"question": question})
         assert reply.status_code == 200
         texts.append(reply.text)
@@ -559,6 +609,154 @@ def test_chat_refuses_an_empty_question(api: Api):
     assert error(client.post(f"/rfqs/{rfq_id}/chat", json={})) == (422, "invalid_request")
 
 
+# ── chat ────────────────────────────────────────────────────────────────────
+TURN = {"question": "보증 기간은?", "answer": "36개월입니다."}
+
+
+@pytest.fixture(scope="module")
+def chat_api(tmp_path_factory: pytest.TempPathFactory, ruleset: Ruleset) -> Iterator[Api]:
+    """The same package, with a chat model that each test replaces."""
+    root = tmp_path_factory.mktemp("chat-api")
+    settings = settings_in(root)
+    sources = make_package(root / "upload")
+    with running_app(settings, ruleset) as accounts:
+        yield accounts, accounts.upload(sources), sources
+
+
+def script(accounts: Accounts, *drafts: object):
+    """Queue drafts for the next question and return the model to inspect its calls."""
+    from autorfx.chat.model import ScriptedChatModel
+
+    model = ScriptedChatModel(plans=[], drafts=list(drafts))
+    accounts.state.chat_model = model
+    return model
+
+
+def test_history_is_accepted_and_reaches_the_planner(chat_api: Api):
+    """RAG-03, CONTRACT-01: a follow-up arrives with the conversation; a missing history is an empty one."""
+    from autorfx.chat.models import Draft, Turn
+
+    accounts, rfq_id, _ = chat_api
+    client = accounts[FULL_VIEW]
+    nothing = Draft(answered=False, complete=True, statements=())
+    body = {"question": "그럼 그건 언제부터야?", "history": [TURN]}
+    assert_valid("chat-request", body)
+    model = script(accounts, nothing)
+    response = client.post(f"/rfqs/{rfq_id}/chat", json=body)
+    assert response.status_code == 200, response.text
+    assert_valid("chat", response.json())
+    ((question, history, _),) = model.plan_calls
+    assert question == body["question"] and tuple(history) == (Turn(**TURN),)
+
+    model = script(accounts, nothing)
+    plain = client.post(f"/rfqs/{rfq_id}/chat", json={"question": "보증 기간은?"})
+    assert plain.status_code == 200 and tuple(model.plan_calls[0][1]) == ()
+
+
+def test_the_longest_allowed_history_is_accepted(chat_api: Api):
+    """CONTRACT-01: six turns, 500 characters asked, 4000 answered."""
+    from autorfx.chat.models import Draft
+
+    accounts, rfq_id, _ = chat_api
+    script(accounts, Draft(answered=False, complete=True, statements=()))
+    body = {
+        "question": "보증 기간은?",
+        "history": [{"question": "q" * 500, "answer": "a" * 4000}] * 6,
+    }
+    assert_valid("chat-request", body)
+    assert accounts[FULL_VIEW].post(f"/rfqs/{rfq_id}/chat", json=body).status_code == 200
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        "보증",
+        [["q", "a"]],
+        [{"answer": "a"}],
+        [{"question": "", "answer": "a"}],
+        [{"question": "q" * 501, "answer": "a"}],
+        [{"question": "q", "answer": "a" * 4001}],
+        [{"question": "q", "answer": 1}],
+        [{**TURN, "role": "system"}],
+        [TURN] * 7,
+    ],
+    ids=["text", "list", "no-question", "empty", "long-q", "long-a", "number", "extra", "seven"],
+)
+def test_a_malformed_history_is_refused(api: Api, history: object):
+    """§5, INV-9: checked at the boundary; more than six turns is malformed too."""
+    accounts, rfq_id, _ = api
+    body = {"question": "보증 기간은?", "history": history}
+    assert error(accounts[FULL_VIEW].post(f"/rfqs/{rfq_id}/chat", json=body)) == (422, "invalid_request")
+
+
+def test_a_generated_answer_is_served_with_its_citations(chat_api: Api):
+    """CITE-01, INV-12: the API passes the model's answer through the same checks."""
+    from autorfx.chat.models import Draft, Statement
+
+    accounts, rfq_id, _ = chat_api
+
+    class Reader:
+        """Cites the warranty sentence by the number it was given, whatever that is."""
+
+        id = "reader"
+
+        def plan(self, question, history, languages):
+            from autorfx.chat.models import Plan
+
+            return Plan(intent="lookup", question=question, queries=())
+
+        def answer(self, question, evidence, *, overview, feedback):
+            number = next(e.number for e in evidence if "36 months" in e.text)
+            statement = Statement(text="보증 기간은 36개월입니다.", citations=(number,))
+            return Draft(answered=True, complete=True, statements=(statement,))
+
+    accounts.state.chat_model = Reader()
+    reply = accounts[RESTRICTED].post(f"/rfqs/{rfq_id}/chat", json={"question": "보증 기간은?"})
+    assert_valid("chat", reply.json())
+    data = reply.json()["data"]
+    assert (data["status"], data["mode"]) == ("answered", "generative")
+    assert data["statements"][0]["citations"][0]["source_doc"] == "d01"
+
+
+def test_stored_results_answer_without_a_model(api: Api):
+    """INV-12: the delivery terms contradict each other; the consistency check found it, no LLM did."""
+    accounts, rfq_id, _ = api
+    client = accounts[FULL_VIEW]
+    issues = get(client, f"/rfqs/{rfq_id}/consistency")["data"]["issues"]
+    assert issues, "the delivery terms contradict each other"
+    reply = client.post(f"/rfqs/{rfq_id}/chat", json={"question": "문서끼리 다른 값은?"})
+    assert_valid("chat", reply.json())
+    data = reply.json()["data"]
+    assert (data["status"], data["mode"]) == ("answered", "stored")
+    assert {s["text"] for s in data["statements"]} == {i["title"] for i in issues}
+
+
+def test_the_chat_model_follows_settings_and_injection(tmp_path: Path, ruleset: Ruleset):
+    """§5, ENGINE-03: an injected provider means no chat model unless one is injected too."""
+    from autorfx.chat.model import ScriptedChatModel
+
+    prices = tmp_path / "data" / "translation" / "prices.yaml"
+    prices.parent.mkdir(parents=True, exist_ok=True)
+    prices.write_text(
+        'checked: "2026-11-24"\nmodels:\n  gpt-4o:\n'
+        '    input: "2.50"\n    cached_input: "1.25"\n    output: "10.00"\n',
+        encoding="utf-8",
+    )
+    keyed = Settings(_env_file=None, data_dir=tmp_path / "data", OPENAI_API_KEY="sk-test-not-real")  # type: ignore[call-arg]
+    plain = Settings(_env_file=None, data_dir=tmp_path / "data", OPENAI_API_KEY="")  # type: ignore[call-arg]
+    scripted = ScriptedChatModel(plans=[], drafts=[])
+    for settings, options, expected in (
+        (keyed, {"provider": RuleOnlyProvider()}, None),
+        (plain, {}, None),
+        (keyed, {}, "openai:gpt-4o"),
+        (plain, {"provider": RuleOnlyProvider(), "chat_model": scripted}, scripted.id),
+    ):
+        with TestClient(create_app(settings, ruleset=ruleset, **options)) as client:
+            model = client.app.state.autorfx.chat_model
+        assert (model.id if model is not None else None) == expected
+    assert plain.chat_topics_path == tmp_path / "data" / "chat" / "topics.yaml"
+
+
 def test_security_headers_and_cors(api: Api):
     client = api[0].anonymous(origin=None)
     response = client.get("/health", headers={"Origin": "http://localhost:3000"})
@@ -568,6 +766,24 @@ def test_security_headers_and_cors(api: Api):
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
     other = client.get("/health", headers={"Origin": "https://example.org"})
     assert "access-control-allow-origin" not in other.headers
+
+
+def test_a_keyless_server_creates_no_translation_cache(tmp_path: Path, ruleset: Ruleset):
+    """TRANS-03: without a translating provider no translation.sqlite is created; with one it is."""
+    settings = Settings(_env_file=None, data_dir=tmp_path / "data")  # type: ignore[call-arg]
+    keyless = create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())
+    with TestClient(keyless):
+        assert keyless.state.autorfx.translation_cache is None
+    assert not (settings.cache_dir / "translation.sqlite").exists()
+    translating = create_app(settings, ruleset=ruleset, provider=ScriptedProvider(translation="번역문"))
+    with TestClient(translating):
+        state = translating.state.autorfx
+        assert state.translation_cache is not None
+    # Shutdown closes both caches: a server started many times must not pile up connections.
+    for cache in (state.cache, state.translation_cache):
+        with pytest.raises(sqlite3.ProgrammingError):
+            cache.get("k")
+    assert (settings.cache_dir / "translation.sqlite").exists()
 
 
 def test_the_evidence_gate_follows_the_loaded_encoder(

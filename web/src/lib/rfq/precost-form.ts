@@ -126,7 +126,8 @@ export function linesFromRfq(rows: RfqLine[], year: string, processes: string[])
     key: newKey(),
     item: r.part ? `${r.name} (${r.part})` : r.name,
     target: "",
-    volumes: [{ key: newKey(), year, quantity: String(r.quantity) }],
+    // An order form leaves the quantity to the buyer: the user enters it (no number is made up).
+    volumes: [{ key: newKey(), year, quantity: r.quantity === null ? "" : String(r.quantity) }],
     items: [{ key: newKey(), label: "매입가", category: "purchased", quantity: "1", unit: "개", unit_price: "", price_id: null }],
     processes,
     included: true,

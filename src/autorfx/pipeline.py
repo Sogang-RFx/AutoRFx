@@ -17,6 +17,7 @@ from pathlib import Path
 
 from autorfx import access
 from autorfx.analysis import AnalysisProvider, CacheStore, analyze, engine_ids
+from autorfx.analysis.usage import Price, UsageMeter, translation_record
 from autorfx.chunker import apply_cost_entities, build_clauses
 from autorfx.config import Settings
 from autorfx.consistency import ConsistencyReport, check_package, extract_mentions
@@ -40,12 +41,15 @@ def retrieval_engine(encoder: Encoder | None) -> str:
     return RETRIEVAL_ENGINE if encoder is None else f"{RETRIEVAL_ENGINE}+dense:{encoder.name}"
 
 
-PIPELINE_VERSION = "2026-11-24.1"
+PIPELINE_VERSION = "2026-11-25.3"
 """Raise when a change alters stored results (parsing, chunking, masking): older results are then
 re-computed, like after a rules change. .2: page-level masking, index runs, body-less leaf clauses.
 .3: page-level masking spares the lines of visible sentences.
 .4: positions in no clause count as cost-sensitive in mentions and issues.
-2026-11-24: translations are asked without sentence markers; ones withheld before are re-made."""
+2026-11-24: translations are asked without sentence markers; ones withheld before are re-made.
+2026-11-25.1: translations are made sentence by sentence, with a status and a usage record.
+2026-11-25.2: spreadsheet header cells keep their sheet columns (empty columns no longer shift them).
+2026-11-25.3: combines 2026-11-25.1 (translation) and 2026-11-25.2 (spreadsheet headers)."""
 MASK_FAILED = "가림 처리에 실패했습니다. 금액 열람 권한이 없는 팀에는 이 파일의 원문을 제공하지 않습니다."
 CATEGORY_LABEL = {
     "conflict": "값 충돌",
@@ -146,9 +150,15 @@ def run_pipeline(
     now_ms: int,
     reporter: JobReporter | None = None,
     cache: CacheStore | None = None,
+    translation_cache: CacheStore | None = None,
+    prices: Mapping[str, Price] | None = None,
     retrieval: str = RETRIEVAL_ENGINE,
 ) -> Workspace:
-    """Process a package end to end and store the results in its workspace."""
+    """Process a package end to end and store the results in its workspace.
+
+    ``prices`` (USD per 1M tokens per model) turn the translation usage into the estimated cost in run.json;
+    without them the cost is null.
+    """
     report = reporter or NullReporter()
     try:
         workspace, manifest = ingest_package(
@@ -158,14 +168,17 @@ def run_pipeline(
         raise PipelineError(str(exc)) from exc
     manifest, parsed, clauses, mentions = _parse(workspace, manifest, ruleset, report)
 
+    meter = UsageMeter()
     analyses = analyze(
         clauses,
         ruleset,
         provider,
         cache=cache,
+        translation_cache=translation_cache,
         reporter=report,
         max_concurrency=settings.llm_concurrency,
         policy=settings.confirm_policy,
+        meter=meter,
     )
     workspace.save_analysis(analyses)
 
@@ -180,6 +193,7 @@ def run_pipeline(
         workspace.run_path,
         {
             "engines": {**engine_ids(provider), "retrieval": retrieval},
+            "translation": translation_record(provider.translation_id, meter.total(), prices, analyses),
             "ruleset_digest": ruleset.digest,
             "pipeline_version": PIPELINE_VERSION,
             "finished_at": now_ms,

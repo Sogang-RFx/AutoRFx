@@ -32,6 +32,8 @@ from autorfx.api.security import (
 )
 from autorfx.api.state import ApiError, AppState, discard, now_ms
 from autorfx.auth import Scope, can_manage
+from autorfx.chat.models import ChatContext, Turn
+from autorfx.chat.service import answer_question
 from autorfx.export import rtm_workbook
 from autorfx.ingest import ACCEPT, IngestError
 from autorfx.models import Answer, FileRecord, Group, Model, PrecostInput
@@ -49,9 +51,9 @@ from autorfx.precost import (
     requirements,
     rfq_lines,
 )
-from autorfx.precost.lines import find_grid, header_roles, signature
+from autorfx.precost.lines import LAYOUT_SCAN, find_grid, header_roles, signature
 from autorfx.precost.sheet_store import PriceSheetError, check_columns, header_label
-from autorfx.retrieval import answer_question
+from autorfx.precost.sheet_suggest import SuggestError, suggest_columns
 from autorfx.scoped_pdf import scoped_pdf
 
 open_router = APIRouter()
@@ -77,8 +79,14 @@ class CompanyBody(Model):
     prices: list[dict] = Field(max_length=400)
 
 
+class ChatTurn(Model):
+    question: str = Field(min_length=1, max_length=500)
+    answer: str = Field(max_length=4000)
+
+
 class ChatBody(Model):
     question: str
+    history: tuple[ChatTurn, ...] = Field(default=(), max_length=6)
 
 
 Department = Annotated[str | None, Query(max_length=64)]
@@ -402,13 +410,44 @@ def _lines(state: AppState, data: RfqData) -> dict:
         state.ruleset.price_sheet,
         words=store.approved,
         layouts=store.layouts,
+        rendered={
+            f.id: layout
+            for f in data.manifest.files
+            if f.kind == "xlsx" and (layout := data.workspace.layout(f.id)) is not None
+        },
     )
 
 
 class ColumnsBody(Model):
     table: str = Field(min_length=1, max_length=120)
-    header_row: int = Field(ge=0, le=5)
+    header_row: int = Field(ge=0, lt=LAYOUT_SCAN)
     columns: dict[str, int]
+
+
+class SuggestBody(Model):
+    table: str = Field(min_length=1, max_length=120)
+
+
+@router.post("/rfqs/{rfq_id}/price-sheet/suggest")
+def suggest_sheet_columns(rfq_id: str, body: SuggestBody, state: State, scope: CurrentScope) -> dict:
+    """An AI suggestion for the columns of one table: positions only, checked by reading the table.
+
+    Nothing is stored: the user reviews the suggestion in the column assigner and accepts it there
+    (``/price-sheet/columns``). Only the first rows of this one table are sent to the model.
+    """
+    _cost_visible(scope.group)
+    data = rfq_data(state, rfq_id, scope)
+    rules = state.ruleset.price_sheet
+    grid = find_grid(
+        data.manifest, data.parsed, _canonical(data), rules, body.table, words=state.price_sheets.approved
+    )
+    if grid is None:
+        raise ApiError(404, "not_found", "표를 찾을 수 없습니다. 화면을 새로 고쳐 주세요.")
+    try:
+        suggestion = suggest_columns(grid, state.provider, rules.compiled(state.price_sheets.approved))
+    except SuggestError as exc:
+        raise ApiError(422, "no_suggestion", str(exc)) from exc
+    return envelope(suggestion, precost="real")
 
 
 @router.post("/rfqs/{rfq_id}/price-sheet/columns")
@@ -433,8 +472,14 @@ def assign_columns(
     if body.header_row >= len(grid.rows):
         raise ApiError(400, "invalid_request", "머리글 줄이 표 밖입니다.")
     header = grid.rows[body.header_row]
+    if sum(1 for c in header if c and str(c).strip()) < 2:
+        raise ApiError(
+            400, "invalid_request", "머리글 줄에 열이 너무 적습니다. 빈 줄이나 제목 줄은 머리글이 아닙니다."
+        )
+    # Row lengths can differ (ragged PDF tables); use the grid width, not this header alone.
+    width = max((len(row) for row in grid.rows), default=len(header))
     try:
-        columns = check_columns(body.columns, len(header))
+        columns = check_columns(body.columns, width)
     except PriceSheetError as exc:
         raise ApiError(400, "invalid_request", str(exc)) from exc
     # Header words the rules would have given another role (or none) are dictionary candidates.
@@ -531,14 +576,20 @@ def _answer(value: str) -> Answer:
 # ── chat and evaluation ─────────────────────────────────────────────────────
 @router.post("/rfqs/{rfq_id}/chat")
 def chat(body: ChatBody, rfq: CurrentRfq, state: State) -> dict:
-    scoped = rfq.data.index.scoped(frozenset(c.clause_id for c in rfq.visible))
+    data, scope, visible = rfq.data, rfq.scope, rfq.visible
+    visible_ids = frozenset(c.clause_id for c in visible)
+    context = ChatContext(
+        index=data.index.scoped(visible_ids),
+        clauses=visible,
+        analyses=tuple(a for a in data.analyses if a.clause_id in visible_ids),
+        issues=access.visible_issues(data.consistency.issues, scope=scope, visible=visible),
+        files=access.package_view(data.manifest, visible, scope=scope).files,
+        topics=state.chat_topics,
+    )
+    history = tuple(Turn(question=t.question, answer=t.answer) for t in body.history)
     try:
         answer = answer_question(
-            body.question,
-            index=scoped,
-            clauses=rfq.visible,
-            scope=rfq.scope,
-            provider=state.provider,
+            body.question, context=context, scope=scope, model=state.chat_model, history=history
         )
     except ValueError as exc:
         raise ApiError(422, "invalid_request", str(exc)) from exc

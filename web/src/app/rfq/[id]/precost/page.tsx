@@ -416,7 +416,7 @@ function Workbench({ setup, company, rfqId }: { setup: Setup; company: Company; 
             </div>
           )}
           {byLine && sheet.length > 0 && (
-            <SheetPicker key={[...chosenLists].join("|")} sheet={sheet} total={sheetAll.length} limit={sheetLines.limit}
+            <SheetPicker key={[...chosenLists].join("|")} sheet={sheetAll} limit={sheetLines.limit}
               apply={(rows) =>
                 // Lines added by hand are kept: the sheet reading missed them.
                 setLines((list) => [...linesFromRfq(rows, sheetYear, processValues), ...list.filter((l) => l.group === MANUAL)])

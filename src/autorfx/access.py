@@ -229,6 +229,7 @@ def clause_items(
                 "excerpt": _excerpt(clause, analysis),
                 "summary": analysis.summary.model_dump(mode="json"),
                 "translation_ko": analysis.translation_ko,
+                "translation_status": analysis.translation_status,
                 "origin": analysis.origin,
             }
         )
@@ -305,6 +306,14 @@ def _is_issue_shown(issue: ConsistencyIssue, scope: Scope, keys: frozenset[Key])
     if issue.is_cost_sensitive and not scope.cost_visible:
         return False
     return 0 < len(issue.evidence) < MAX_EVIDENCE and all(e.locus.key() in keys for e in issue.evidence)
+
+
+def visible_issues(
+    issues: Sequence[ConsistencyIssue], *, scope: Scope, visible: Sequence[Clause]
+) -> tuple[ConsistencyIssue, ...]:
+    """Issues this scope may see, in their stored order."""
+    keys = visible_keys(visible)
+    return tuple(issue for issue in issues if _is_issue_shown(issue, scope, keys))
 
 
 def issue_items(

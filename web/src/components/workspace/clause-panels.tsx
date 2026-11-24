@@ -12,6 +12,8 @@ import type { ClauseItem, Department, Locus, ProvenanceMap, VisibleClause } from
 import { fileName, fileTag, usePackageFiles } from "@/lib/rfq/package-context";
 import { departmentOptions, departmentRole, inDepartment, scopeLine } from "@/lib/rfq/scope";
 import { useViewer } from "@/lib/rfq/session";
+import { noTranslationMessage } from "@/lib/rfq/translation";
+import { useMeta } from "@/lib/rfq/use-meta";
 import { IconClose, IconLock, IconWarn } from "../ui/icons";
 import {
   CitationChip,
@@ -282,6 +284,7 @@ export function ClauseDetail({
 }: DetailProps) {
   const files = usePackageFiles();
   const locusLabel = useLocusLabel();
+  const { engines } = useMeta();
   const [showTranslation, setShowTranslation] = useState(true);
   const deptLabel = (id: string) => departments.find((d) => d.id === id)?.label ?? id;
 
@@ -442,10 +445,19 @@ export function ClauseDetail({
             )}
           </div>
           {clause.translation_ko ? (
-            showTranslation && <p className="text-dense text-ink">{clause.translation_ko}</p>
+            showTranslation && (
+              <>
+                <p className="text-dense text-ink">{clause.translation_ko}</p>
+                {clause.translation_status === "partial" && (
+                  <p className="text-label text-ink-muted" data-testid="partial-translation">
+                    일부 문장은 번역하지 못했거나 보류했습니다. 원문을 확인하세요.
+                  </p>
+                )}
+              </>
+            )
           ) : (
             <p className="text-label text-ink-muted" data-testid="no-translation">
-              번역 없음. 번역 제공자가 연결되지 않아 원문만 제공합니다.
+              {noTranslationMessage(clause.lang, engines?.translation ?? "", clause.translation_status)}
             </p>
           )}
         </section>

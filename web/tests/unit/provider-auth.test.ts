@@ -70,6 +70,7 @@ function everyCall(): Record<keyof Provider["rfqApi"], () => Promise<unknown>> {
     consistency: () => rfqApi.consistency("r1"),
     precostSetup: () => rfqApi.precostSetup("r1"),
     assignSheetColumns: () => rfqApi.assignSheetColumns("r1", { table: "t", header_row: 0, columns: {} }),
+    suggestSheetColumns: () => rfqApi.suggestSheetColumns("r1", { table: "t" }),
     sheetWords: () => rfqApi.sheetWords(),
     decideSheetWord: () => rfqApi.decideSheetWord({ role: "part", text: "x", action: "approve" }),
     company: () => rfqApi.company(),

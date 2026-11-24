@@ -125,6 +125,19 @@ export type SourceExcerpt = z.infer<typeof SourceExcerpt>;
 export const Lang = z.enum(["en", "de", "ko", "mixed", "unknown"]);
 export type Lang = z.infer<typeof Lang>;
 
+/** Why a clause has a translation or not (TRANS-03). "not_recorded": analysed before this was recorded. */
+export const TranslationStatus = z.enum([
+  "not_recorded",
+  "no_provider",
+  "boilerplate",
+  "source_ko",
+  "translated",
+  "partial",
+  "withheld",
+  "failed",
+]);
+export type TranslationStatus = z.infer<typeof TranslationStatus>;
+
 export const VisibleClause = z.object({
   kind: z.literal("clause"),
   /** Unique inside the RFQ, e.g. "d01:II.G". */
@@ -143,6 +156,7 @@ export const VisibleClause = z.object({
   excerpt: z.array(SourceExcerpt),
   summary: VerifiedFinding,
   translation_ko: z.string().nullable(),
+  translation_status: TranslationStatus.optional(),
   origin: Origin,
 });
 export type VisibleClause = z.infer<typeof VisibleClause>;
@@ -424,7 +438,8 @@ export const RfqLine = z.object({
   no: z.string(),
   part: z.string().nullable(),
   name: z.string(),
-  quantity: z.number().int().positive(),
+  /** Null on an order form whose quantity column is left for the buyer: the user enters it. */
+  quantity: z.number().int().positive().nullable(),
   yearly: z.boolean(),
   group: z.string().nullable(),
   source_doc: z.string(),
@@ -494,11 +509,11 @@ export type SheetList = z.infer<typeof SheetList>;
 
 /** Items of every list (``total`` of them, at most 600 sent); the screen fills at most ``limit``. */
 export const RfqLines = z.object({
-  items: z.array(RfqLine).max(600),
+  items: z.array(RfqLine).max(3000),
   total: z.number().int().nonnegative(),
   limit: z.number().int().positive(),
   tables: z.array(SheetTable).max(40),
-  lists: z.array(SheetList).max(20),
+  lists: z.array(SheetList).max(40),
 });
 export type RfqLines = z.infer<typeof RfqLines>;
 
@@ -741,15 +756,29 @@ export const PrecostResponse = envelope(
 export type PrecostResponse = z.infer<typeof PrecostResponse>;
 
 // ── Chat ────────────────────────────────────────────────────────────────────
-export const ChatRequest = z.object({ question: z.string().min(1).max(500) });
+/** One earlier exchange. Used only to resolve what the new question refers to; never as evidence. */
+export const ChatTurn = z.object({ question: z.string().min(1).max(500), answer: z.string().max(4000) });
+export type ChatTurn = z.infer<typeof ChatTurn>;
+export const ChatRequest = z.object({
+  question: z.string().min(1).max(500),
+  /** The latest turns, oldest first. Optional. */
+  history: z.array(ChatTurn).max(6).optional(),
+});
 export type ChatRequest = z.infer<typeof ChatRequest>;
 export const ChatResponse = envelope(
   z.object({
-    /** `no_evidence`: nothing in the RFQ supports an answer. `not_prepared`: mock only. */
-    status: z.enum(["answered", "no_evidence", "not_prepared", "restricted"]),
-    /** "scripted" (mock), "extractive" (original sentences, no LLM), "generative" (LLM). */
-    mode: z.enum(["scripted", "extractive", "generative"]),
+    /** `no_evidence`: nothing in the RFQ supports an answer. `guide`: how to use the chat. */
+    status: z.enum(["answered", "no_evidence", "restricted", "guide"]),
+    /** "extractive" (original sentences, no LLM), "generative" (LLM), "stored" (saved analysis, no LLM). */
+    mode: z.enum(["extractive", "generative", "stored"]),
+    /** `text` is the statements joined by newlines; `citations` are theirs, without duplicates. */
     answer: VerifiedFinding.nullable(),
+    /** One entry per answer sentence, each with its own citations. Empty when there is no answer. */
+    statements: z.array(z.object({ text: z.string(), citations: z.array(Locus).min(1) })),
+    /** Conflicts between documents that touch the cited sentences. Empty when none. */
+    conflicts: z.array(
+      z.object({ id: z.string(), title: z.string(), detail: z.string(), citations: z.array(Locus) }),
+    ),
     message: z.string(),
     suggestions: z.array(z.string()),
   }),
@@ -821,12 +850,36 @@ export const UploadResponse = envelope(
 export type UploadResponse = z.infer<typeof UploadResponse>;
 
 /** Assign the columns of one table by hand; the same header is read this way from now on. */
+/** Header rows a table may have above its items (LAYOUT_SCAN in lines.py): a sheet may start with notes. */
+export const MAX_HEADER_ROW = 39;
+
 export const SheetColumnsRequest = z.object({
   table: z.string().min(1).max(120),
-  header_row: z.number().int().min(0).max(5),
+  header_row: z.number().int().min(0).max(MAX_HEADER_ROW),
   columns: z.partialRecord(ColumnRole, z.number().int().nonnegative()),
 });
 export type SheetColumnsRequest = z.infer<typeof SheetColumnsRequest>;
+
+/** Ask the AI where the items of one table are. Only that table's first rows are sent. */
+export const SheetSuggestRequest = z.object({ table: z.string().min(1).max(120) });
+export type SheetSuggestRequest = z.infer<typeof SheetSuggestRequest>;
+
+/**
+ * An AI suggestion for a table's columns: positions only. The server read the table with it once
+ * (``lines`` items, the first names in ``preview``); nothing is stored until the user accepts it.
+ */
+export const SheetSuggestResponse = envelope(
+  z.object({
+    header_row: z.number().int().min(0).max(MAX_HEADER_ROW),
+    columns: z.partialRecord(ColumnRole, z.number().int().nonnegative()),
+    reason: z.string(),
+    lines: z.number().int().positive(),
+    preview: z.array(z.string()).max(5),
+    rows: z.array(z.array(z.string())),
+    engine: z.string(),
+  }),
+);
+export type SheetSuggestResponse = z.infer<typeof SheetSuggestResponse>;
 
 export const SheetColumnsResponse = envelope(z.object({ lines: RfqLines }));
 export type SheetColumnsResponse = z.infer<typeof SheetColumnsResponse>;
@@ -1000,6 +1053,8 @@ export const CONTRACT_SCHEMAS = {
   ok: OkResponse,
   "sheet-columns-request": SheetColumnsRequest,
   "sheet-columns": SheetColumnsResponse,
+  "sheet-suggest-request": SheetSuggestRequest,
+  "sheet-suggest": SheetSuggestResponse,
   "sheet-words": SheetWordsResponse,
   "sheet-word-request": SheetWordRequest,
   "upload-request": UploadRequest,

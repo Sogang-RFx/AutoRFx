@@ -8,6 +8,7 @@ import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode, Ref } from "
 import type { Engines, Locus, Origin, Priority, ProvenanceMap } from "@/lib/rfq/contract";
 import { fileName, fileTag, usePackageFiles } from "@/lib/rfq/package-context";
 import { LOCKED_CLAUSE } from "@/lib/rfq/scope";
+import { translationLabel } from "@/lib/rfq/translation";
 import { IconCheck, IconFlag, IconLock, IconWarn } from "./icons";
 
 export function cx(...parts: Array<string | false | null | undefined>): string {
@@ -154,12 +155,10 @@ export function engineLabel(engines: Engines): string | null {
   return `LLM 분석 · ${engines.analysis.replace(/^openai:/, "")}`;
 }
 
-const TRANSLATION_LABEL: Record<string, string> = { none: "번역 없음", deepl: "DeepL" };
-
 export function EngineBadge({ engines }: { engines: Engines }) {
   const label = engineLabel(engines);
   if (!label) return null;
-  const translation = TRANSLATION_LABEL[engines.translation] ?? engines.translation;
+  const translation = translationLabel(engines.translation);
   const title = `분석: ${engines.analysis} · 번역: ${translation} · 검색: ${engines.retrieval}`;
   return (
     <span

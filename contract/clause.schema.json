@@ -329,6 +329,19 @@
             "null"
           ]
         },
+        "translation_status": {
+          "type": "string",
+          "enum": [
+            "not_recorded",
+            "no_provider",
+            "boilerplate",
+            "source_ko",
+            "translated",
+            "partial",
+            "withheld",
+            "failed"
+          ]
+        },
         "origin": {
           "type": "string",
           "enum": [

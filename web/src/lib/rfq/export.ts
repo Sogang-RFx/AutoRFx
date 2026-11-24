@@ -5,12 +5,13 @@
  */
 import type { Engines, RtmRow, VisibleClause } from "./contract";
 import { LOCKED_CLAUSE } from "./scope";
+import { translationLabel } from "./translation";
 
 /** First-line note of an export: the engine that computed the data, and the scope it was made with. */
 export function exportNote(engines: Engines | null, scope: string): string | null {
   if (!engines) return null;
   const how = engines.llm_connected ? `LLM 분석 (${engines.analysis})` : "규칙 기반 분석 (LLM 미연결)";
-  return `${how} · 번역: ${engines.translation} · 원문 위치로 확인한 뒤 사용하세요. · 만든 범위: ${scope}`;
+  return `${how} · 번역: ${translationLabel(engines.translation)} · 원문 위치로 확인한 뒤 사용하세요. · 만든 범위: ${scope}`;
 }
 
 function csvCell(value: string): string {

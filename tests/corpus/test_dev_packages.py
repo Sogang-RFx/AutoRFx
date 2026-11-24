@@ -22,13 +22,14 @@ from autorfx.config import Settings
 from autorfx.export import rtm_workbook
 from autorfx.ingest import list_samples
 from autorfx.pipeline import RfqData, load_rfq, run_pipeline
-from autorfx.retrieval import answer_question
 from autorfx.rules import Ruleset
+from conftest import REPO
 from scoped_pdf_helpers import scoped_pdf
 
 pytestmark = pytest.mark.corpus
 
 QUESTIONS = ("목표가는 얼마인가요?", "단가", "price", "결제 조건", "payment terms", "납기", "보증 기간은?")
+STORED_QUESTIONS = ("독소조항이 있나요?", "문서끼리 값이 다른 곳은?", "RFQ 요약")
 MIN_SECRET = 12
 
 
@@ -86,9 +87,15 @@ def test_positions_are_unique_and_inside_the_page(packages: dict[str, RfqData]):
 
 @pytest.mark.parametrize("who", ["no_cost", *LIMITED])
 def test_nothing_hidden_reaches_a_limited_scope(packages: dict[str, RfqData], ruleset: Ruleset, who: str):
-    """INV-4, INV-8, SC-004: no sentence outside the scope appears in any response, export, answer or
-    PDF; ``no_cost`` is every department without the cost clauses."""
+    """INV-4, INV-8, SC-004: no sentence outside the scope appears in any response, export, answer,
+    gathered evidence or PDF; ``no_cost`` is every department without the cost clauses."""
+    from autorfx.chat.gather import gather
+    from autorfx.chat.models import ChatContext
+    from autorfx.chat.service import answer_question
+    from autorfx.chat.topics import load_topics
+
     scope = cost_restricted_scope(ruleset) if who == "no_cost" else scope_for(who, ruleset)
+    topics = load_topics(REPO / "data" / "chat" / "topics.yaml")
     for name, data in packages.items():
         visible = visible_of(data.clauses, data.analyses, scope, ruleset)
         shown = {c.clause_id for c in visible}
@@ -109,15 +116,28 @@ def test_nothing_hidden_reaches_a_limited_scope(packages: dict[str, RfqData], ru
             rows, manifest=data.manifest, ruleset=ruleset, engines=data.engines, group=scope.group
         )
         sheet = load_workbook(io.BytesIO(workbook)).active
-        index = data.index.scoped(frozenset(shown))
+        context = ChatContext(
+            index=data.index.scoped(frozenset(shown)),
+            clauses=visible,
+            analyses=tuple(a for a in data.analyses if a.clause_id in shown),
+            issues=access.visible_issues(data.consistency.issues, scope=scope, visible=visible),
+            files=access.package_view(data.manifest, visible, scope=scope).files,
+            topics=topics,
+        )
         payloads = [
             access.clause_items(data.clauses, data.analyses, scope=scope, ruleset=ruleset, secret=SECRET),
             rows,
             access.issue_items(data.consistency.issues, scope=scope, visible=visible, secret=SECRET),
             [list(row) for row in sheet.iter_rows(values_only=True)],
             [
-                answer_question(q, index=index, clauses=visible, scope=scope, provider=RuleOnlyProvider())
+                answer_question(q, context=context, scope=scope, model=None)
+                for q in (*QUESTIONS, *STORED_QUESTIONS)
+            ],
+            [
+                evidence.model_dump(mode="json")
                 for q in QUESTIONS
+                for overview in (False, True)
+                for evidence in gather(q, QUESTIONS, context=context, scope=scope, overview=overview)
             ],
         ]
         for file in data.manifest.files:
