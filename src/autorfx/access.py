@@ -148,7 +148,7 @@ def clause_items(
         if _is_hidden(clause, analysis, group, hidden):
             items.append(_masked(clause))
             continue
-        work_areas = matching_areas(clause.text)
+        work_areas = matching_areas(ruleset.work_areas, clause.text)
         if not _matches(analysis, wanted, ruleset) and not any(a in work_areas for a in wanted or ()):
             continue
         flag = analysis.red_flag

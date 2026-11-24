@@ -20,11 +20,11 @@ import threading
 from collections.abc import Sequence
 from pathlib import Path
 
-from pydantic import Field, ValidationError, field_validator
+from pydantic import Field, ValidationError
 
 from autorfx.models import Group, Model
 from autorfx.rules import Ruleset
-from autorfx.work_areas import CATALOG, canonical_area
+from autorfx.work_areas import canonical_area
 
 log = logging.getLogger(__name__)
 
@@ -43,12 +43,6 @@ class OrgDepartment(Model):
     label: str = Field(min_length=1, max_length=MAX_LABEL)
     areas: tuple[str, ...] = Field(min_length=1)
     cost_visible: bool = False
-
-    @field_validator("areas")
-    @classmethod
-    def _current_ids(cls, areas: tuple[str, ...]) -> tuple[str, ...]:
-        """Settings saved with the earlier fine-grained work areas load as the grouped ones."""
-        return tuple(dict.fromkeys(canonical_area(a) for a in areas))
 
     @property
     def group(self) -> Group:
@@ -71,7 +65,7 @@ def validate(
     """Check a whole list and give new departments an id. Raises :class:`OrgError`."""
     if len(raw) > MAX_DEPARTMENTS:
         raise OrgError(f"부서는 {MAX_DEPARTMENTS}개까지 둘 수 있습니다.")
-    known_areas = set(ruleset.department_ids) | CATALOG.keys()
+    known_areas = set(ruleset.department_ids) | {a.id for a in ruleset.work_areas.areas}
     known_ids = {d.id for d in current}
     taken = set(known_ids)
     seen_labels: set[str] = set()
@@ -87,7 +81,10 @@ def validate(
             raise OrgError(f"'{label}': 같은 이름의 부서가 두 번 있습니다.")
         seen_labels.add(label.casefold())
 
-        areas = tuple(dict.fromkeys(canonical_area(str(a)) for a in item.get("areas") or ()))
+        # Settings saved with the earlier fine-grained work areas load as the grouped ones.
+        areas = tuple(
+            dict.fromkeys(canonical_area(ruleset.work_areas, str(a)) for a in item.get("areas") or ())
+        )
         if not areas:
             raise OrgError(f"'{label}': 받을 업무 영역을 하나 이상 고르세요.")
         if unknown := [a for a in areas if a not in known_areas]:

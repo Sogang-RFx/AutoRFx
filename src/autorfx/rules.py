@@ -15,11 +15,20 @@ from pathlib import Path
 from typing import Literal
 
 import yaml
-from pydantic import Field, ValidationError, field_validator, model_validator
+from pydantic import Field, PrivateAttr, ValidationError, field_validator, model_validator
 
 from autorfx.models import Group, Model, Priority, Severity
 
-RULE_FILES = ("departments", "priority", "red_flags", "entities", "glossary", "sensitivity", "cost_model")
+RULE_FILES = (
+    "departments",
+    "priority",
+    "red_flags",
+    "entities",
+    "glossary",
+    "sensitivity",
+    "cost_model",
+    "work_areas",
+)
 
 # Same list, same order, as COST_FIELDS in web/src/lib/rfq/contract.ts.
 # What the RFQ itself can state for a pre-cost; everything else is the supplier's own input.
@@ -306,6 +315,59 @@ class CostModelRules(Model):
         return self
 
 
+def work_area_pattern(term: str) -> str:
+    """Expression for a work-area keyword (rules in the header of ``work_areas.yaml``).
+
+    ``re:`` is a regular expression as written; a Latin word matches as a whole word with an
+    optional plural or inflection ending; Korean takes particles and compounds, so it matches as is.
+    """
+    if term.startswith("re:"):
+        return term[3:]
+    if re.search(r"[a-zäöüß]", term, re.IGNORECASE):
+        return rf"(?<!\w){re.escape(term)}(?:s|es|e|n|en)?(?!\w)"
+    return re.escape(term)
+
+
+class WorkArea(Model):
+    id: str = Field(pattern=r"^[a-z][a-z-]*$")
+    label: str
+    topics: dict[str, tuple[str, ...]] = Field(min_length=1)
+    """The narrower topics the area groups (the earlier area ids) -> their keywords."""
+
+
+class WorkAreaRules(Model):
+    """Work areas a company department receives (work_areas.yaml)."""
+
+    areas: tuple[WorkArea, ...] = Field(min_length=1)
+    _patterns: dict[str, tuple[tuple[re.Pattern[str], int], ...]] = PrivateAttr(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _consistent(self) -> WorkAreaRules:
+        ids = [a.id for a in self.areas]
+        if len(set(ids)) != len(ids):
+            raise ValueError("work_areas.yaml: 영역 id가 중복됩니다")
+        topics = [t for a in self.areas for t in a.topics]
+        if len(set(topics)) != len(topics):
+            raise ValueError("work_areas.yaml: 주제 id가 중복됩니다")
+        for area in self.areas:
+            compiled = []
+            for terms in area.topics.values():
+                for term in terms:
+                    try:
+                        pattern = re.compile(work_area_pattern(term), re.IGNORECASE)
+                    except re.error as exc:
+                        raise ValueError(f"work_areas.yaml '{area.id}': 정규식 오류 '{term}': {exc}") from exc
+                    # A longer keyword is more specific: it weighs more when areas are ranked.
+                    compiled.append((pattern, len(term.removeprefix("re:"))))
+            self._patterns[area.id] = tuple(compiled)
+        return self
+
+    @property
+    def patterns(self) -> dict[str, tuple[tuple[re.Pattern[str], int], ...]]:
+        """Area id -> (compiled keyword, weight), in catalog order."""
+        return self._patterns
+
+
 class Ruleset(Model):
     departments: tuple[DepartmentRule, ...] = Field(min_length=1)
     priority: tuple[PriorityRule, ...]
@@ -314,6 +376,7 @@ class Ruleset(Model):
     glossary: tuple[GlossaryEntry, ...]
     sensitivity: SensitivityRules
     cost_model: CostModelRules
+    work_areas: WorkAreaRules
     assumption_note: str = ""
     digest: str
     """SHA-256 over the rule files' content; part of every analysis cache key."""
@@ -387,6 +450,7 @@ def load_ruleset(rules_dir: Path) -> Ruleset:
             glossary=raw["glossary"]["entries"],
             sensitivity=raw["sensitivity"],
             cost_model=raw["cost_model"],
+            work_areas=raw["work_areas"],
             digest=digest,
         )
     except KeyError as exc:

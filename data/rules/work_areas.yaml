@@ -1,0 +1,93 @@
+# 업무 영역 (도메인 팀 관리). 코드를 고치지 않고 이 파일만 고치면 반영된다.
+#
+# 회사 부서는 부서 설정 화면에서 받을 업무 영역을 고른다. 조항은 원문에 아래 키워드가
+# 나오는 모든 영역에 속한다. 영역 10개는 처음 34개였던 세부 주제(topics)를 묶은 것이고,
+# 예전 34개 id로 저장된 부서 설정은 그 주제를 담은 영역으로 읽는다.
+#
+# 키워드를 찾는 방식 (대소문자 구분 없음):
+#   - 영어·독일어 단어: 단어 전체로만 찾는다. "claim"은 "disclaimer"에, "reach"는 "breach"에
+#     걸리지 않는다. 복수·굴절 어미 s, es, e, n, en은 붙어도 된다 (claims, Zahlungen).
+#   - 한국어 단어: 조사와 합성어가 붙으므로 글자 그대로 찾는다 (결제 → 결제는, 결제조건).
+#   - "re:"로 시작하면 정규식이다. 독일어 합성어처럼 앞뒤에 다른 말이 붙는 경우에 쓴다.
+#       re:(?<!\w)zahlung\w*      Zahlung으로 시작하는 말 (Zahlungsbedingungen)
+#       re:\w*haftung(?!\w)       Haftung으로 끝나는 말 (Produkthaftung)
+#       re:(?-i:\bREACH\b)        대문자로 쓴 것만 (영어 동사 reach와 구분)
+#   - 여러 영역의 키워드가 함께 걸리면 걸린 키워드가 긴 영역이 앞에 온다.
+#
+# 2026-11-24 리뷰 반영: "anlage"(첨부 N)는 생산 공정이 아닌 조항에 걸려 뺐다.
+# 영역과 키워드는 확정 전 제안값이다. 개발용 RFQ와 일반 표현에서 골랐고 도메인 팀이 검토해 고친다.
+
+areas:
+  - id: bidding
+    label: 입찰 일정·절차·협상
+    topics:
+      intake: [rfq schedule, submission deadline, quotation deadline, quote due, angebotsfrist, 일정, 접수]
+      tender: [bidding procedure, tender procedure, appeal, vergabeverfahren, einspruch, 입찰 절차, 이의제기]
+      negotiation: [negotiation, deviation request, exception request, verhandlung, abweichungsantrag, 협상, 예외 요청]
+
+  - id: pricing
+    label: 견적가·원가·가격 조건
+    topics:
+      quote: [target price, quotation price, quoted price, zielpreis, angebotspreis, 목표가, 견적가]
+      breakdown: [cost breakdown, cost structure, kostenaufschlüsselung, kostenstruktur, 원가 분해, 원가분해]
+      price-lock: [price reduction, fixed price, price freeze, festpreis, preissenkung, 단가 인하, 가격 고정]
+      investment: [tooling cost, investment, tool ownership, werkzeugkosten, werkzeugeigentum, eigentum, 투자비, 소유권]
+
+  - id: payment
+    label: 결제·세금·통화
+    topics:
+      payment: [payment, invoicing, invoice, 're:(?<!\w)zahlung\w*', 're:(?<!\w)rechnung\w*', 결제, 청구]
+      currency: [currency, currencies, tax, vat, 're:(?<!\w)währung\w*', 're:\w*steuer(?:n)?(?!\w)', 세금, 통화]
+
+  - id: volume
+    label: 물량·생산능력
+    topics:
+      volume: [volume, quantity, quantities, forecast, forecasting, 're:\w*stückzahl\w*', 're:(?<!\w)menge\w*', 're:\w*menge(?:n)?(?!\w)', 물량, 수량]
+      capacity: [capacity, capacities, flexibility, kapazität, flexibilität, 생산능력, 유연성]
+
+  - id: engineering
+    label: 도면·사양·시험 검증
+    topics:
+      specification: [drawing, specification, engineering change, 're:(?<!\w)zeichnung\w*', spezifikation, 도면, 사양, 설계변경]
+      validation: [testing, test plan, validation, 're:\w*prüfung(?:en)?(?!\w)', validierung, 시험, 검증]
+
+  - id: quality-assurance
+    label: 품질·인증·양산 승인·클레임
+    topics:
+      credentials: [qualification evidence, proof of certification, qualification documents, 're:(?<!\w)nachweis\w*', 're:(?<!\w)eignung\w*', 증빙, 자격]
+      quality-system: [iatf, iso 9001, quality system, 're:(?<!\w)qualitätsmanagement\w*', 품질 시스템, 품질 인증]
+      approval: [ppap, production part approval, serienfreigabe, 양산 승인]
+      capability: [cpk, ppk, ppm, process capability, prozessfähigkeit, 공정능력, 불량 목표]
+      traceability: [special process, cleanliness, traceability, 're:\w*sauberkeit(?!\w)', rückverfolgbarkeit, 특수공정, 청정도, 추적성]
+      claims: [claim, warranty claim, reklamation, gewährleistungsabwicklung, 클레임, 보증 이행]
+
+  - id: production
+    label: 생산 공정·소재·협력사
+    topics:
+      production: [production process, equipment, manufacturing process, fertigungsprozess, produktionsanlage, fertigungsanlage, 생산 공정, 설비]
+      material: [raw material, material sourcing, steel grade, rohstoff, werkstoff, 소재, 원자재]
+      subcontract: [subcontract, subcontractor, subcontracting, subsupplier, unterlieferant, unterauftragnehmer, 외주, 협력사]
+      parts: [component sourcing, alternative part, substitute part, ersatzteil, alternativteil, 부품 조달, 대체품]
+
+  - id: delivery
+    label: 물류·납품·포장·재고
+    topics:
+      freight: [incoterms, incoterm, freight, delivery terms, 're:(?<!\w)fracht\w*', lieferbedingung, 인도 조건, 운임]
+      delivery: [delivery schedule, lead time, delivery date, just in time, liefertermin, lieferzeit, 납품 방식, 납기]
+      packaging: [packaging, label, labelling, labeling, 're:\w*verpackung\w*', etikett, 포장, 라벨]
+      inventory: [inventory, safety stock, stock level, sicherheitsbestand, lagerbestand, 재고]
+      shipping-docs: [delivery note, shipping document, dispatch advice, lieferschein, versandanzeige, 납품 서류, 납품 보고]
+
+  - id: contract
+    label: 계약·책임·지재권·법규
+    topics:
+      contract: [contract terms, general terms, governing law, vertragsbedingungen, gerichtsstand, 계약 조건, 준거법]
+      liability: [warranty, warranties, liability, liabilities, insurance, 're:(?<!\w)gewährleistung\w*', 're:\w*haftung(?!\w)', 're:\w*versicherung\w*', 보증, 책임, 보험]
+      ip: [intellectual property, confidential, confidentiality, disclosure, patent, 're:(?<!\w)geheimhaltung\w*', schutzrechte, 지재권, 비밀유지, 정보공개]
+      compliance: [regulatory, compliance, 're:(?-i:\bREACH\b)', rohs, gesetzliche, 're:(?<!\w)konformität\w*', 법규, 규제]
+
+  - id: it-site
+    label: 정보보안·현장·환경
+    topics:
+      integration: [edi, interface, cybersecurity, information security, schnittstelle, informationssicherheit, 시스템 연동, 정보보안]
+      site: [environmental, personnel, site safety, 're:(?<!\w)umwelt\w*', personal, arbeitsschutz, 환경, 인력, 현장]

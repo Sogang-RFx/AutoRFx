@@ -40,7 +40,7 @@ from autorfx.precost import (
     rfq_lines,
 )
 from autorfx.retrieval import answer_question
-from autorfx.work_areas import CATALOG
+from autorfx.work_areas import catalog
 
 router = APIRouter()
 CHUNK = 1024 * 1024
@@ -113,7 +113,7 @@ def meta(state: State) -> dict:
     )
     data = {
         "teams": teams,
-        "work_areas": [{"id": key, "label": label} for key, (label, _) in CATALOG.items()],
+        "work_areas": catalog(rules.work_areas),
         "departments": [
             {"id": d.id, "label": d.label, "role": d.role, "receives_all": d.receives_all}
             for d in rules.departments

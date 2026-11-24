@@ -231,7 +231,8 @@ def test_an_earlier_fine_grained_area_is_saved_as_its_group(client: TestClient, 
     assert team["areas"] == ["pricing", "delivery"]
 
 
-def test_a_german_attachment_reference_is_not_a_production_clause():
+def test_a_german_attachment_reference_is_not_a_production_clause(ruleset: Ruleset):
     """US10: "Anlage N" names an attachment; the production area must not take the clause."""
-    assert "production" not in matching_areas("Die Zeichnungen sind in Anlage 3 beigefügt.")
-    assert "production" in matching_areas("Der Lieferant beschreibt den Fertigungsprozess.")
+    areas = ruleset.work_areas
+    assert "production" not in matching_areas(areas, "Die Zeichnungen sind in Anlage 3 beigefügt.")
+    assert "production" in matching_areas(areas, "Der Lieferant beschreibt den Fertigungsprozess.")
