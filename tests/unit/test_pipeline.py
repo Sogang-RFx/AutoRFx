@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from autorfx import scoring
-from autorfx.analysis import RuleOnlyProvider, ScriptedProvider
+from autorfx.analysis import RuleOnlyProvider, ScriptedProvider, TransientProviderError
 from autorfx.analysis.usage import Price, Usage, usd_text
 from autorfx.config import Settings
 from autorfx.jobs import JobStore, load_job
@@ -296,6 +296,7 @@ ZERO_USAGE = {
 def translated_run(folder: Path, ruleset: Ruleset, prices: dict[str, Price] | None) -> Workspace:
     provider = ScriptedProvider(
         translation="번역문",
+        translations={"d01:1.1": [TransientProviderError("TimeoutError")]},  # one clause fails: two statuses
         provider_id="openai:gpt-x",
         usage=Usage(calls=1, input_tokens=1000, cached_input_tokens=200, output_tokens=1000),
     )
@@ -333,6 +334,16 @@ def test_a_translating_run_records_usage_and_the_estimated_cost(tmp_path: Path, 
     one_call = Decimal("800") * Decimal("0.10") + Decimal("200") * Decimal("0.01") + 1000 * Decimal("0.50")
     assert record["cost_usd"] == usd_text(one_call * calls / 1_000_000)
     assert sum(record["counts"].values()) == len(load_rfq(workspace, ruleset).clauses)
+
+
+def test_two_translating_runs_write_the_same_run_json(tmp_path: Path, ruleset: Ruleset):
+    """INV-7: with several worker threads and several statuses, run.json is byte-identical."""
+    first = translated_run(tmp_path / "a", ruleset, PRICES)
+    second = translated_run(tmp_path / "b", ruleset, PRICES)
+    record = json.loads(first.run_path.read_text())["translation"]
+    assert len(record["counts"]) >= 2 and list(record["counts"]) == sorted(record["counts"])
+    assert settings_in(tmp_path / "a").llm_concurrency > 1
+    assert first.run_path.read_bytes() == second.run_path.read_bytes()
 
 
 def test_without_prices_the_cost_is_null_but_usage_is_kept(tmp_path: Path, ruleset: Ruleset):

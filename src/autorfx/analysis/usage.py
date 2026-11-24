@@ -113,7 +113,8 @@ def cost_usd(usage: Usage, model: str, prices: Mapping[str, Price]) -> Decimal |
     """Estimated cost of ``usage`` in USD, or None when the model has no price.
 
     Cached input is billed at the cached price and the rest at the input price; output tokens already
-    include reasoning tokens. Cache-write charges and client retries that never reached the API are not known.
+    include reasoning tokens. Cache-write charges and calls that failed without returning usage are not
+    included.
     """
     price = prices.get(model)
     if price is None:

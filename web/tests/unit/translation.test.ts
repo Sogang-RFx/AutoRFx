@@ -8,7 +8,12 @@ import type { Engines } from "@/lib/rfq/contract";
 import { exportNote, rtmCsv } from "@/lib/rfq/export";
 import { noTranslationMessage, translationLabel } from "@/lib/rfq/translation";
 
-const ENGINES: Engines = { analysis: "rule-only", translation: "none", retrieval: "bm25", llm_connected: false };
+const ENGINES: Engines = {
+  analysis: "rule-only",
+  translation: "none",
+  retrieval: "bm25",
+  llm_connected: false,
+};
 
 describe("translationLabel", () => {
   it("names no translation", () => {

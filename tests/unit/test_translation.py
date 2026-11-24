@@ -929,10 +929,20 @@ def test_a_broken_price_file_is_a_rules_error_naming_the_file(tmp_path: Path, ca
 def test_the_committed_price_file_loads():
     """INV-12: the repository's own prices.yaml is valid, names its source and the day it was checked."""
     prices = load_prices(REPO_PRICES)
-    assert prices["gpt-4o"] == Price(
-        input=Decimal("2.50"), cached_input=Decimal("1.25"), output=Decimal("10.00")
-    )
-    assert "gpt-4o-mini" in prices and len(prices) == 9
+    assert prices == {
+        model: Price(input=Decimal(i), cached_input=Decimal(c), output=Decimal(o))
+        for model, (i, c, o) in {
+            "gpt-4o": ("2.50", "1.25", "10.00"),
+            "gpt-4o-mini": ("0.15", "0.075", "0.60"),
+            "gpt-4.1-mini": ("0.40", "0.10", "1.60"),
+            "gpt-5.1": ("1.25", "0.125", "10.00"),
+            "gpt-5.4-mini": ("0.75", "0.075", "4.50"),
+            "gpt-5.4-nano": ("0.20", "0.02", "1.25"),
+            "gpt-5.6-luna": ("0.20", "0.02", "1.20"),
+            "gpt-6-luna": ("0.10", "0.01", "0.50"),
+            "gpt-6.1-terra": ("1.00", "0.05", "5.00"),
+        }.items()
+    }
     text = REPO_PRICES.read_text(encoding="utf-8")
     assert "developers.openai.com/api/docs/pricing" in text and "2026-11-24" in text
 
@@ -949,6 +959,15 @@ def test_the_record_names_model_usage_cost_and_counts(ruleset: Ruleset):
     priced = translation_record("openai:gpt-x", meter.total(), PRICES, results)
     assert priced["cost_usd"] == "0.0000291"  # 90 fresh at 0.10 + 10 cached at 0.01 + 40 out at 0.50 per 1M
     assert translation_record("openai:gpt-x", meter.total(), None, results)["cost_usd"] is None
+
+
+def test_counts_are_sorted_by_status_whatever_the_order_of_clauses(ruleset: Ruleset):
+    """INV-7: run.json bytes do not depend on which status a thread saw first."""
+    provider = ScriptedProvider(translations={"d01:1.1": ["인도조건은 FCA이다."]}, usage=USED)
+    results = analyze([PLAIN, BOILER, KOREAN], ruleset, provider)
+    assert [r.translation_status for r in results] == ["translated", "boilerplate", "source_ko"]
+    record = translation_record(provider.translation_id, USED, PRICES, results)
+    assert list(record["counts"]) == ["boilerplate", "source_ko", "translated"]  # type: ignore[arg-type]
 
 
 def test_a_rule_only_run_records_zero_usage_and_no_cost(ruleset: Ruleset):

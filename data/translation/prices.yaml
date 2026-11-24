@@ -1,6 +1,6 @@
 # Translation prices, USD per 1M tokens, for the estimated cost in run.json (INV-12).
 # Not a rule file: it is not part of the ruleset digest, so changing it does not re-run analyses.
-# The cost is an estimate: cache-write charges and client retries that never reached the API are not included.
+# The cost is an estimate: cache-write charges and calls that failed without returning usage are not included.
 # A model missing here has no cost: the run records null instead of a guess.
 source: https://developers.openai.com/api/docs/pricing
 checked: "2026-11-24"
