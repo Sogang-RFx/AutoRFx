@@ -26,7 +26,7 @@ from autorfx.analysis import (
     verify,
 )
 from autorfx.analysis.citation import number_signatures
-from autorfx.analysis.llm import SYSTEM, Translation
+from autorfx.analysis.llm import SYSTEM, Translation, strip_sentence_marks
 from autorfx.config import Settings
 from autorfx.jobs import JobStore, load_job
 from autorfx.models import Finding
@@ -398,17 +398,20 @@ def test_openai_provider_builds_prompts_from_the_rule_files(ruleset: Ruleset):
 
 
 def test_translation_prompt_has_no_sentence_markers_and_markers_are_stripped(ruleset: Ruleset):
-    """A copied "[S1]" adds the digit 1 to the translation; the number check then withheld it."""
+    """CITE-02: a copied "[S1]" adds the digit 1 to the translation; the number check then withheld it."""
     seen: list[str] = []
+    seen_system: list[str] = []
 
     def fake(system: str, user: str, schema: type):
         seen.append(user)
+        seen_system.append(system)
         return Translation(text="[S1] 인도 조건은 FCA입니다. [S2] 포장 포함.")
 
     clause = ClauseInput.of(DELIVERY)
     provider = OpenAIProvider(ruleset, "gpt-test", fake)
     text = provider.translate(clause)
     assert "[S" not in seen[0], "sentence markers are only for citations, not for translation"
+    assert "[S1]" not in seen_system[0], "the citation rule is not sent with a translation"
     assert text == "인도 조건은 FCA입니다. 포장 포함."
     assert not number_signatures(text) - number_signatures(DELIVERY.text)
 
@@ -463,3 +466,32 @@ def test_rule_edit_changes_the_result_without_code_changes(tmp_path: Path, rules
     edited = load_ruleset(rules)
     assert find_candidates(PLAIN, ruleset).primary == "sales"
     assert find_candidates(PLAIN, edited).primary == "legal"
+
+
+def _translate_to(ruleset: Ruleset, answer: str, clause=DELIVERY) -> str | None:
+    provider = OpenAIProvider(ruleset, "gpt-test", lambda system, user, schema: Translation(text=answer))
+    return provider.translate(ClauseInput.of(clause))
+
+
+def test_marks_only_in_the_answer_are_removed_and_line_breaks_are_kept(ruleset: Ruleset):
+    assert _translate_to(ruleset, "[S1]") is None
+    assert _translate_to(ruleset, "인도는 FCA입니다.\n[S2] 포장 포함.") == "인도는 FCA입니다.\n포장 포함."
+
+
+def test_a_mark_the_source_itself_contains_is_kept():
+    """A connector named "[S1]" in the clause is a part name, not a citation mark."""
+    source = "Use connector [S1] at the rear."
+    assert (
+        strip_sentence_marks("후면의 커넥터 [S1]을 사용합니다.", source) == "후면의 커넥터 [S1]을 사용합니다."
+    )
+    assert strip_sentence_marks("[S1] 후면의 커넥터 [S1]을 사용.", source).count("[S1]") == 2
+
+
+def test_a_number_the_clause_lacks_is_still_withheld_after_marks_are_removed(ruleset: Ruleset):
+    """CITE-02: removing the marks must not weaken the number check; an invented 999 is still caught."""
+
+    def call(system: str, user: str, schema: type):
+        return GOOD if schema is Judgement else Translation(text="[S1] 인도 조건은 FCA이며 999일 이내입니다.")
+
+    result = run_one(OpenAIProvider(ruleset, "gpt-test", call), ruleset)
+    assert result.translation_ko is None
