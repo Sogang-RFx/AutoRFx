@@ -616,7 +616,6 @@ export const PrecostInputs = z.object({
 export type PrecostInputs = z.infer<typeof PrecostInputs>;
 
 export const PrecostRequest = z.object({
-  team: z.string().optional(),
   /** When given, the RFQ's type, knockout questions, clauses and cost conflicts are taken into account. */
   rfq_id: z.string().nullable(),
   inputs: PrecostInputs,
@@ -742,7 +741,7 @@ export const PrecostResponse = envelope(
 export type PrecostResponse = z.infer<typeof PrecostResponse>;
 
 // ── Chat ────────────────────────────────────────────────────────────────────
-export const ChatRequest = z.object({ team: z.string().optional(), question: z.string().min(1).max(500) });
+export const ChatRequest = z.object({ question: z.string().min(1).max(500) });
 export type ChatRequest = z.infer<typeof ChatRequest>;
 export const ChatResponse = envelope(
   z.object({
@@ -784,41 +783,6 @@ export const EvaluationResponse = envelope(
 export type EvaluationResponse = z.infer<typeof EvaluationResponse>;
 
 // ── Meta and upload ─────────────────────────────────────────────────────────
-export const Team = z.object({
-  id: z.string(),
-  label: z.string(),
-  group: Group,
-  /** A company department (SPEC US10) lists the rule departments it receives; a rule team has none. */
-  areas: z.array(z.string()).optional(),
-});
-export type Team = z.infer<typeof Team>;
-
-// ── Company departments (SPEC US10) ─────────────────────────────────────────
-/**
- * A department the company defined. `areas` are rule department ids ("업무 영역");
- * the clause filter is their union. Cost visibility is off unless switched on.
- */
-export const OrgDepartment = z.object({
-  id: z.string().regex(/^org-[0-9a-f]{12}$/),
-  label: z.string().min(1).max(40),
-  areas: z.array(z.string()).min(1),
-  cost_visible: z.boolean(),
-});
-export type OrgDepartment = z.infer<typeof OrgDepartment>;
-export const OrgDepartmentsResponse = envelope(z.object({ departments: z.array(OrgDepartment).max(30) }));
-export type OrgDepartmentsResponse = z.infer<typeof OrgDepartmentsResponse>;
-/** Body of `PUT /org/departments`: the whole list. `id: null` is a new department. */
-export const OrgDepartmentsRequest = z.object({
-  departments: z.array(
-    z.object({
-      id: z.string().nullable(),
-      label: z.string(),
-      areas: z.array(z.string()),
-      cost_visible: z.boolean(),
-    }),
-  ),
-});
-export type OrgDepartmentsRequest = z.infer<typeof OrgDepartmentsRequest>;
 export const Department = z.object({
   id: z.string(),
   label: z.string(),
@@ -826,13 +790,13 @@ export const Department = z.object({
   role: z.string(),
   /** True for the department that receives every clause of every RFQ. */
   receives_all: z.boolean(),
+  /** True for a department whose accounts may see amount and unit-price clauses (the cost-visible group). */
+  cost_visible: z.boolean(),
 });
 export type Department = z.infer<typeof Department>;
 export const MetaResponse = envelope(
   z.object({
-    teams: z.array(Team),
     departments: z.array(Department),
-    work_areas: z.array(z.object({ id: z.string(), label: z.string() })).optional(),
     assumption_note: z.string(),
     engines: Engines,
     /** Packages already on the server that can be opened without an upload. */
@@ -885,6 +849,119 @@ export const SheetWordRequest = z.object({
 });
 export type SheetWordRequest = z.infer<typeof SheetWordRequest>;
 
+// ── Accounts, sessions and audit (docs/auth-rbac.md §3) ─────────────────────
+// Identity comes from the session cookie only; no request body carries a team or a role to trust.
+// Times are epoch milliseconds, like `started_at`.
+export const Role = z.enum(["admin", "member"]);
+export type Role = z.infer<typeof Role>;
+
+/** Who the session belongs to, and what the server lets that account do. The screen hides, the server refuses. */
+export const Viewer = z.object({
+  user_id: z.string().min(1),
+  username: z.string().min(1),
+  display_name: z.string().min(1),
+  role: Role,
+  /** Rule department id; null for an admin. */
+  department: z.string().nullable(),
+  department_label: z.string().nullable(),
+  group: Group,
+  /** True when no clause is out of scope (admin, or a department that receives all). */
+  full_scope: z.boolean(),
+  can_upload: z.boolean(),
+  can_manage: z.boolean(),
+  must_change_password: z.boolean(),
+});
+export type Viewer = z.infer<typeof Viewer>;
+/** `POST /auth/login`, `GET /auth/me` and `POST /auth/password` (the new session's viewer). */
+export const ViewerResponse = envelope(z.object({ viewer: Viewer }));
+export type ViewerResponse = z.infer<typeof ViewerResponse>;
+
+/** Body of `POST /auth/login`. Any wrong pair gets the same answer, so no pattern is checked here. */
+export const LoginRequest = z.object({ username: z.string().min(1).max(64), password: z.string().min(1).max(128) });
+export type LoginRequest = z.infer<typeof LoginRequest>;
+
+/** Body of `POST /auth/password`. */
+export const PasswordChangeRequest = z.object({
+  current_password: z.string().min(1).max(128),
+  new_password: z.string().min(8).max(128),
+});
+export type PasswordChangeRequest = z.infer<typeof PasswordChangeRequest>;
+
+const username = z.string().regex(/^[a-z0-9][a-z0-9_-]{2,31}$/);
+
+export const AdminUser = z.object({
+  id: z.string().min(1),
+  username,
+  display_name: z.string().min(1),
+  role: Role,
+  department: z.string().nullable(),
+  disabled: z.boolean(),
+  must_change_password: z.boolean(),
+  created_at: z.int(),
+  last_login: z.int().nullable(),
+  /** Open sessions right now. */
+  sessions: z.int().min(0),
+});
+export type AdminUser = z.infer<typeof AdminUser>;
+export const AdminUsersResponse = envelope(z.object({ users: z.array(AdminUser) }));
+export type AdminUsersResponse = z.infer<typeof AdminUsersResponse>;
+/** Create, update and password reset answer with the account as it is now. */
+export const AdminUserResponse = envelope(z.object({ user: AdminUser }));
+export type AdminUserResponse = z.infer<typeof AdminUserResponse>;
+
+/** Body of `POST /admin/users`. The admin sets a temporary password; the account must change it. */
+export const AdminUserCreateRequest = z.object({
+  username,
+  display_name: z.string().min(1).max(60),
+  password: z.string().min(8).max(128),
+  role: Role,
+  department: z.string().min(1).nullable(),
+});
+export type AdminUserCreateRequest = z.infer<typeof AdminUserCreateRequest>;
+
+/** Body of `PATCH /admin/users/{id}`: only what is sent changes. `department: null` clears it. */
+export const AdminUserPatchRequest = z.object({
+  display_name: z.string().min(1).max(60).optional(),
+  role: Role.optional(),
+  department: z.string().min(1).nullable().optional(),
+  disabled: z.boolean().optional(),
+});
+export type AdminUserPatchRequest = z.infer<typeof AdminUserPatchRequest>;
+
+/** Body of `POST /admin/users/{id}/password`. */
+export const AdminPasswordRequest = z.object({ password: z.string().min(8).max(128) });
+export type AdminPasswordRequest = z.infer<typeof AdminPasswordRequest>;
+
+/** One line of the audit log: never a password, token, RFQ text or question. */
+export const AuditEntry = z.object({
+  at: z.int(),
+  /** Username, or null when nobody was signed in (a failed login). */
+  actor: z.string().nullable(),
+  event: z.string().min(1),
+  target: z.string().nullable(),
+  outcome: z.enum(["ok", "denied", "failed"]),
+  detail: z.string(),
+});
+export type AuditEntry = z.infer<typeof AuditEntry>;
+export const AuditResponse = envelope(z.object({ entries: z.array(AuditEntry) }));
+export type AuditResponse = z.infer<typeof AuditResponse>;
+
+/** One row of `GET /rfqs`. `name` is a placeholder ("RFQ …") when the account may not see the first file. */
+export const RfqListItem = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  status: z.enum(["done", "running", "failed", "stale"]),
+  created_at: z.int().nullable(),
+  file_count: z.int().min(0),
+});
+export type RfqListItem = z.infer<typeof RfqListItem>;
+export const RfqListResponse = envelope(z.object({ rfqs: z.array(RfqListItem) }));
+export type RfqListResponse = z.infer<typeof RfqListResponse>;
+
+/** Logout, delete and force logout (`POST /admin/users/{id}/logout`). */
+export const OkResponse = envelope(z.object({ ok: z.literal(true) }));
+export type OkResponse = z.infer<typeof OkResponse>;
+
 export const ErrorResponse = z.object({ error: z.object({ code: z.string(), message: z.string() }) });
 export type ErrorResponse = z.infer<typeof ErrorResponse>;
 
@@ -910,8 +987,17 @@ export const CONTRACT_SCHEMAS = {
   chat: ChatResponse,
   evaluation: EvaluationResponse,
   meta: MetaResponse,
-  "org-departments": OrgDepartmentsResponse,
-  "org-departments-request": OrgDepartmentsRequest,
+  viewer: ViewerResponse,
+  "login-request": LoginRequest,
+  "password-change-request": PasswordChangeRequest,
+  "admin-users": AdminUsersResponse,
+  "admin-user": AdminUserResponse,
+  "admin-user-create-request": AdminUserCreateRequest,
+  "admin-user-patch-request": AdminUserPatchRequest,
+  "admin-password-request": AdminPasswordRequest,
+  audit: AuditResponse,
+  "rfq-list": RfqListResponse,
+  ok: OkResponse,
   "sheet-columns-request": SheetColumnsRequest,
   "sheet-columns": SheetColumnsResponse,
   "sheet-words": SheetWordsResponse,

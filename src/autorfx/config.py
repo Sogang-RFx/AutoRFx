@@ -63,6 +63,10 @@ class Settings(BaseSettings):
         default="127.0.0.1,localhost,testserver", validation_alias="AUTORFX_ALLOWED_HOSTS"
     )
     """Host names the API answers for (DNS rebinding). "testserver" is the test client's name."""
+    session_hours: float = Field(default=12.0, gt=0, le=168, validation_alias="AUTORFX_SESSION_HOURS")
+    """Lifetime of a login, counted from the login; using it does not extend it."""
+    cookie_secure: bool = Field(default=False, validation_alias="AUTORFX_COOKIE_SECURE")
+    """Send the session cookie over HTTPS only. Must be true where the API is served over HTTPS."""
     max_files: int = Field(default=30, ge=1, validation_alias="AUTORFX_MAX_FILES")
     max_file_mb: int = Field(default=50, ge=1, validation_alias="AUTORFX_MAX_FILE_MB")
 
@@ -86,6 +90,14 @@ class Settings(BaseSettings):
         if self.embedding_min_score is not None:
             return self.embedding_min_score
         return MODEL_MIN_SCORE.get((model or "").strip().lower(), FALLBACK_MIN_SCORE)
+
+    @field_validator("cors_origins")
+    @classmethod
+    def _named_origins(cls, value: str) -> str:
+        """Requests carry the session cookie, so every allowed origin is named: no wildcard."""
+        if "*" in value:
+            raise ValueError("AUTORFX_CORS_ORIGINS에는 *를 쓸 수 없습니다. 화면 주소를 하나씩 적어 주세요.")
+        return value
 
     @property
     def rules_dir(self) -> Path:

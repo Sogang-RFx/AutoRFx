@@ -8,6 +8,7 @@ import { useParams } from "next/navigation";
 import { EmptyState, ErrorState, Panel, Skeleton } from "@/components/ui/primitives";
 import type { EvaluationResponse } from "@/lib/rfq/contract";
 import { rfqApi } from "@/lib/rfq/provider";
+import { useResource } from "@/lib/rfq/use-resource";
 
 type ScoredResult = Extract<EvaluationResponse["data"], { status: "scored" }>;
 
@@ -71,8 +72,6 @@ function Scored({ result }: { result: ScoredResult }) {
     </div>
   );
 }
-import { useSession } from "@/lib/rfq/session";
-import { useResource } from "@/lib/rfq/use-resource";
 
 const PLANNED = [
   { name: "부서 분류", how: "정답지의 주관 부서와 비교한 정밀도·재현율" },
@@ -85,11 +84,7 @@ const PLANNED = [
 export default function EvaluationPage() {
   const { id } = useParams<{ id: string }>();
   const rfqId = decodeURIComponent(id);
-  const session = useSession();
-  const ctx = { team: session.team };
-  const evaluation = useResource(session.ready ? `eval:${rfqId}:${ctx.team ?? "none"}` : null, (s) =>
-    rfqApi.evaluation(rfqId, ctx, s),
-  );
+  const evaluation = useResource(`eval:${rfqId}`, (s) => rfqApi.evaluation(rfqId, s));
 
   return (
     <div className="mx-auto flex max-w-4xl flex-col gap-4 p-3 md:p-6">

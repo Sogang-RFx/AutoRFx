@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from autorfx.access import hidden_keys
 from autorfx.analysis.citation import verify
 from autorfx.analysis.providers import (
     AnalysisProvider,
@@ -21,8 +20,9 @@ from autorfx.analysis.providers import (
     RuleOnlyProvider,
     TransientProviderError,
 )
-from autorfx.models import Clause, Finding, Group, VerifiedFinding
-from autorfx.retrieval.index import SearchIndex
+from autorfx.auth import Scope
+from autorfx.models import Clause, Finding, VerifiedFinding
+from autorfx.retrieval.index import ScopedSearchIndex
 
 MAX_EVIDENCE = 6
 MAX_QUESTION = 500
@@ -69,27 +69,39 @@ def _check(
     return verify(finding, clauses, allowed=allowed, check_numbers=check_numbers)
 
 
-def answer_question(
-    question: str,
-    *,
-    index: SearchIndex,
-    clauses: Sequence[Clause],
-    group: Group,
-    provider: AnalysisProvider,
-) -> dict:
-    """The ``data`` object of ``contract/chat.schema.json``."""
+def _checked(question: str) -> str:
     question = question.strip()
     if not question:
         raise ValueError("질문을 입력해 주세요.")
     if len(question) > MAX_QUESTION:
         raise ValueError(f"질문은 {MAX_QUESTION}자 이내로 입력해 주세요.")
+    return question
+
+
+def no_evidence(question: str, *, provider: AnalysisProvider) -> dict:
+    """The reply when nothing may be searched for this account: nothing is retrieved and nothing suggested."""
+    _checked(question)
+    mode = "generative" if provider.uses_llm else "extractive"
+    return _reply("no_evidence", mode, None, MESSAGES["no_evidence"], [])
+
+
+def answer_question(
+    question: str,
+    *,
+    index: ScopedSearchIndex,
+    clauses: Sequence[Clause],
+    scope: Scope,
+    provider: AnalysisProvider,
+) -> dict:
+    """The ``data`` object of ``contract/chat.schema.json``."""
+    question = _checked(question)
     mode = "generative" if provider.uses_llm else "extractive"
     # Decided before anything is retrieved (INV-4): the rules that hide a clause also name the question.
-    if group != "cost_visible" and index.is_cost_question(question):
-        return _reply("restricted", mode, None, MESSAGES["restricted"], index.suggestions(group))
-    result = index.search(question, group=group)
+    if not scope.cost_visible and index.is_cost_question(question):
+        return _reply("restricted", mode, None, MESSAGES["restricted"], index.suggestions())
+    result = index.search(question)
     if not result.passed:
-        return _reply("no_evidence", mode, None, MESSAGES["no_evidence"], index.suggestions(group))
+        return _reply("no_evidence", mode, None, MESSAGES["no_evidence"], index.suggestions())
 
     # A partial match is said to be one: the words the visible text never uses are named.
     partial = (
@@ -97,13 +109,14 @@ def answer_question(
         if result.missing
         else ""
     )
-    visible = [c for c in clauses if group == "cost_visible" or not c.is_cost_sensitive]
+    visible = [c for c in clauses if scope.cost_visible or not c.is_cost_sensitive]
+    visible_keys = {s.locus.key() for c in visible for s in c.sentences}
     evidence = [
         EvidenceSentence(number=number, text=hit.sentence.text, locus=hit.sentence.locus)
         for number, hit in enumerate(result.hits[:MAX_EVIDENCE], start=1)
     ]
-    # Fail closed: evidence comes from the reduced index, so this can only trip on a defect.
-    if group != "cost_visible" and hidden_keys(clauses) & {e.locus.key() for e in evidence}:
+    # Fail closed: every evidence sentence must belong to the visible clauses (INV-4, auth-rbac §4).
+    if any(e.locus.key() not in visible_keys for e in evidence):
         return _reply("no_evidence", mode, None, MESSAGES["no_evidence"], [])
 
     if provider.uses_llm:
@@ -116,9 +129,7 @@ def answer_question(
             if not reply.answered:
                 # The model judged the evidence not to answer. A "no information" sentence would pass the
                 # citation check, and quoting the sentences instead would contradict the judgement (RAG-03).
-                return _reply(
-                    "no_evidence", "generative", None, MESSAGES["no_evidence"], index.suggestions(group)
-                )
+                return _reply("no_evidence", "generative", None, MESSAGES["no_evidence"], index.suggestions())
             answer = _check(reply, evidence, visible, check_numbers=True)
             if answer is not None and answer.citation_status == "verified":
                 return _reply("answered", "generative", answer, MESSAGES["generative"] + partial, [])
@@ -127,6 +138,6 @@ def answer_question(
         RuleOnlyProvider().answer(question, evidence, None), evidence, visible, check_numbers=False
     )
     if extract is None or extract.citation_status != "verified":
-        return _reply("no_evidence", "extractive", None, MESSAGES["no_evidence"], index.suggestions(group))
+        return _reply("no_evidence", "extractive", None, MESSAGES["no_evidence"], index.suggestions())
     message = MESSAGES["fallback" if provider.uses_llm else "extractive"]
     return _reply("answered", "extractive", extract, message + partial, [])

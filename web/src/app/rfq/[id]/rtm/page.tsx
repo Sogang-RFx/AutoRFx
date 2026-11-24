@@ -1,85 +1,80 @@
 "use client";
 /**
  * RTM table (TASKS S013, SPEC §14, US2): lead and reference departments, file,
- * filters, sort, exports (server Excel in http mode, CSV, per-department brief).
+ * filters, sort, exports (server Excel, CSV, per-department brief) for the account's scope.
  * Each row links to its clause in the workspace.
  */
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMemo, useState } from "react";
-import { useTeamGroup } from "@/components/shell/app-shell";
 import { IconDownload, IconLock, IconWarn } from "@/components/ui/icons";
-import { Button, EmptyState, ErrorState, Panel, PriorityChip, RedFlagChip, Skeleton, cx, formatLocus } from "@/components/ui/primitives";
-import type { Department, Priority, RtmRow, VisibleClause } from "@/lib/rfq/contract";
+import { Button, EmptyState, ErrorState, FormMessage, Panel, PriorityChip, RedFlagChip, Skeleton, cx, formatLocus } from "@/components/ui/primitives";
+import type { Priority, RtmRow, VisibleClause } from "@/lib/rfq/contract";
 import { departmentBrief, download, exportName, exportNote, rtmCsv } from "@/lib/rfq/export";
 import { fileName, fileTag, usePackageFiles } from "@/lib/rfq/package-context";
 import { describeError, rfqApi } from "@/lib/rfq/provider";
-import { useSession } from "@/lib/rfq/session";
+import { LOCKED_CLAUSE, departmentOptions, inDepartment, scopeLine, scopeName } from "@/lib/rfq/scope";
+import { useViewer } from "@/lib/rfq/session";
+import { useMeta } from "@/lib/rfq/use-meta";
 import { useResource } from "@/lib/rfq/use-resource";
 
 const PRIORITY_ORDER: Record<Priority, number> = { must: 0, should: 1, optional: 2, info: 3 };
 type SortKey = "section" | "priority";
 
-function inDepartment(r: Extract<RtmRow, { kind: "clause" }>, dept: Department | undefined): boolean {
-  if (!dept) return true;
-  return dept.receives_all || r.primary_department === dept.id || r.reference_departments.includes(dept.id);
-}
-
 export default function RtmPage() {
   const { id } = useParams<{ id: string }>();
   const rfqId = decodeURIComponent(id);
-  const session = useSession();
-  const { departments, engines } = useTeamGroup();
+  const viewer = useViewer();
+  const { departments, departmentLabel: deptLabel, engines } = useMeta();
   const files = usePackageFiles();
-  const ctx = { team: session.team };
   const [department, setDepartment] = useState<string>("");
   const [onlyRedFlags, setOnlyRedFlags] = useState(false);
   const [sort, setSort] = useState<SortKey>("section");
   const [exportError, setExportError] = useState<string | null>(null);
+  const [isExporting, setIsExporting] = useState(false);
 
-  const deptLabel = (d: string) => departments.find((x) => x.id === d)?.label ?? d;
   const labels = { dept: deptLabel, file: (f: string) => fileName(files, f) };
-  const rtm = useResource(session.ready ? `rtm:${rfqId}:${ctx.team ?? "none"}` : null, (s) =>
-    rfqApi.rtm(rfqId, ctx, s),
-  );
+  const rtm = useResource(`rtm:${rfqId}`, (s) => rfqApi.rtm(rfqId, s));
+  const all = useMemo(() => (rtm.status === "ok" ? rtm.data.data.rows : []), [rtm]);
+  const dept = departments.find((d) => d.id === department) ?? null;
+  const note = exportNote(engines, scopeName(viewer));
 
   const rows = useMemo(() => {
-    const all = rtm.status === "ok" ? rtm.data.data.rows : [];
-    const dept = departments.find((d) => d.id === department);
-    const filtered = all.filter((r) => {
-      // Masked rows stay under every department: the filter must not reveal them.
-      if (r.kind === "masked") return !onlyRedFlags;
-      if (!inDepartment(r, dept)) return false;
-      return !onlyRedFlags || r.red_flag !== null;
-    });
+    const filtered = all.filter((r) => inDepartment(r, dept) && (!onlyRedFlags || (r.kind === "clause" && r.red_flag !== null)));
     if (sort === "section") return filtered;
     const rank = (r: RtmRow) => (r.kind === "clause" ? PRIORITY_ORDER[r.priority] : 9);
     return [...filtered].sort((a, b) => rank(a) - rank(b));
-  }, [rtm, department, departments, onlyRedFlags, sort]);
+  }, [all, dept, onlyRedFlags, sort]);
 
-  const xlsxUrl = (() => {
-    try {
-      return rfqApi.rtmXlsxUrl(rfqId, ctx);
-    } catch {
-      return null;
-    }
-  })();
-
-  async function exportBrief() {
+  /** Runs one export; a refusal (401, 403) is told here instead of opening the server's answer. */
+  async function runExport(make: () => Promise<void>) {
     setExportError(null);
+    setIsExporting(true);
     try {
-      const res = await rfqApi.clauses(rfqId, ctx, department || null);
-      const visible = res.data.clauses.filter((c): c is VisibleClause => c.kind === "clause");
-      const masked = res.data.clauses.filter((c) => c.kind === "masked").map((c) => c.clause_id);
-      const name = department ? deptLabel(department) : "전체 부서";
-      download(
-        exportName(`AutoRFx_정리본_${name}`, "md"),
-        departmentBrief(name, visible, masked, labels, exportNote(engines)),
-        "text/markdown;charset=utf-8",
-      );
+      await make();
     } catch (e) {
       setExportError(describeError(e));
+    } finally {
+      setIsExporting(false);
     }
+  }
+
+  async function exportXlsx() {
+    const file = await rfqApi.rtmXlsx(rfqId);
+    download(exportName("AutoRFx_RTM", "xlsx"), file, file.type);
+  }
+
+  async function exportBrief() {
+    const res = await rfqApi.clauses(rfqId);
+    const items = res.data.clauses.filter((c) => inDepartment(c, dept));
+    const visible = items.filter((c): c is VisibleClause => c.kind === "clause");
+    const masked = items.filter((c) => c.kind === "masked").map((c) => c.clause_id);
+    const name = dept ? dept.label : "전체 부서";
+    download(
+      exportName(`AutoRFx_정리본_${name}`, "md"),
+      departmentBrief(name, visible, masked, labels, note),
+      "text/markdown;charset=utf-8",
+    );
   }
 
   const selectClass = "min-h-8 rounded-control border border-line-control bg-surface px-1.5 text-label text-ink";
@@ -92,36 +87,43 @@ export default function RtmPage() {
           <p className="text-body text-ink-muted">
             조항마다 파일, 주관·참조 부서, 요건 강도, 독소조항, 원문 위치를 한 줄로 봅니다.
           </p>
+          {rtm.status === "ok" && (
+            <p className="text-label font-semibold text-ink tabular" data-testid="scope-line">
+              {scopeLine(viewer, all)}
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
-          {xlsxUrl && (
-            <a
-              href={xlsxUrl}
-              data-testid="export-rtm-xlsx"
-              className="inline-flex min-h-9 items-center justify-center gap-2 rounded-control border border-line-control bg-surface px-3 text-dense font-medium text-ink transition-soft hover:bg-canvas"
-            >
-              <IconDownload size={14} /> RTM 내려받기 (Excel)
-            </a>
-          )}
+          <Button
+            disabled={rtm.status !== "ok" || isExporting}
+            onClick={() => runExport(exportXlsx)}
+            data-testid="export-rtm-xlsx"
+          >
+            <IconDownload size={14} /> RTM 내려받기 (Excel)
+          </Button>
           <Button
             disabled={rtm.status !== "ok"}
             data-testid="export-rtm"
             onClick={() =>
               download(
                 exportName("AutoRFx_RTM", "csv"),
-                rtmCsv(rows, labels, exportNote(engines)),
+                rtmCsv(rows, labels, note),
                 "text/csv;charset=utf-8",
               )
             }
           >
             <IconDownload size={14} /> CSV
           </Button>
-          <Button disabled={rtm.status !== "ok"} onClick={exportBrief} data-testid="export-brief">
-            <IconDownload size={14} /> {department ? `${deptLabel(department)} ` : ""}정리본 (Markdown)
+          <Button
+            disabled={rtm.status !== "ok" || isExporting}
+            onClick={() => runExport(exportBrief)}
+            data-testid="export-brief"
+          >
+            <IconDownload size={14} /> {dept ? `${dept.label} ` : ""}정리본 (Markdown)
           </Button>
         </div>
       </div>
-      {exportError && <ErrorState message={exportError} />}
+      {exportError && <FormMessage tone="error">내려받지 못했습니다. {exportError}</FormMessage>}
 
       <Panel
         title="추적표"
@@ -130,10 +132,10 @@ export default function RtmPage() {
         actions={
           <div className="flex flex-wrap items-center gap-2 text-label">
             <label className="flex items-center gap-1 text-ink-muted">
-              부서
+              보기: 부서
               <select value={department} onChange={(e) => setDepartment(e.target.value)} className={selectClass}>
                 <option value="">전체</option>
-                {departments.map((d) => (
+                {departmentOptions(all, departments).map((d) => (
                   <option key={d.id} value={d.id}>
                     {d.label}
                   </option>
@@ -200,7 +202,7 @@ function Row({ row, rfqId, deptLabel, tag }: RowProps) {
         {number}
         <td colSpan={6} className="px-3">
           <span className="inline-flex items-center gap-1.5">
-            <IconLock size={14} /> 이 팀에는 표시되지 않음
+            <IconLock size={14} className="shrink-0" /> {LOCKED_CLAUSE}
           </span>
         </td>
       </tr>
@@ -211,7 +213,7 @@ function Row({ row, rfqId, deptLabel, tag }: RowProps) {
   return (
     <tr className="border-b border-line align-top transition-soft hover:bg-canvas" data-testid="rtm-row">
       {number}
-      <td className="px-3 py-2.5 text-ink">{row.title || <span className="text-ink-muted">(제목 없음)</span>}</td>
+      <td className="px-3 py-2.5 text-ink">{row.title || <span className="text-ink-muted">(표시할 제목 없음)</span>}</td>
       <td className="px-3 py-2.5 font-semibold text-ink">{deptLabel(row.primary_department)}</td>
       <td className="px-3 py-2.5 text-ink-muted">{row.reference_departments.map(deptLabel).join(", ") || "–"}</td>
       <td className="px-3 py-2.5">

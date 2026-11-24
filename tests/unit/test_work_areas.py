@@ -69,3 +69,17 @@ def test_the_rule_file_is_required(tmp_path: Path) -> None:
             (tmp_path / f.name).write_text(f.read_text(encoding="utf-8"), encoding="utf-8")
     with pytest.raises(RulesError, match="work_areas"):
         load_ruleset(tmp_path)
+
+
+def test_the_catalog_has_ten_areas_with_their_own_ids() -> None:
+    """Ported from the removed department settings tests: the areas themselves stay."""
+    assert len({a.id for a in RULES.areas}) == len(RULES.areas) == 10
+
+
+def test_fine_grained_topics_of_one_area_map_to_that_area() -> None:
+    assert canonical_area(RULES, "breakdown") == canonical_area(RULES, "quote") == "pricing"
+
+
+def test_a_manufacturing_sentence_is_a_production_clause() -> None:
+    """US10: "Anlage N" names an attachment (above), a real manufacturing sentence is production."""
+    assert "production" in matching_areas(RULES, "Der Lieferant beschreibt den Fertigungsprozess.")

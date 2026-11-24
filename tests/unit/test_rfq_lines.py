@@ -14,11 +14,8 @@ from pathlib import Path
 
 import pymupdf
 import pytest
-from fastapi.testclient import TestClient
 
-from autorfx.analysis import RuleOnlyProvider
-from autorfx.api import create_app
-from autorfx.config import Settings
+from auth_helpers import Accounts, running_app, settings_in
 from autorfx.models import Locus, PackageManifest, Table
 from autorfx.precost import lines as lines_mod
 from autorfx.precost.lines import find_grid, pdf_grids, read_grids, rfq_lines, signature, table_grids
@@ -598,70 +595,61 @@ VISIBLE, RESTRICTED = "sales", "development"
 
 
 @pytest.fixture(scope="module")
-def api(tmp_path_factory: pytest.TempPathFactory, ruleset: Ruleset) -> Iterator[tuple[TestClient, str]]:
+def api(tmp_path_factory: pytest.TempPathFactory, ruleset: Ruleset) -> Iterator[tuple[Accounts, str]]:
     root = tmp_path_factory.mktemp("sheets")
     pdf = _unknown_sheet(root)
-    settings = Settings(_env_file=None, data_dir=root / "data")
-    with TestClient(create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())) as client:
-        response = client.post("/rfqs", files=[("files", ("u.pdf", pdf.read_bytes(), "application/pdf"))])
-        assert response.status_code == 200, response.text
-        client.app.state.autorfx.wait()
-        yield client, response.json()["data"]["id"]
+    with running_app(settings_in(root), ruleset, names=(VISIBLE, RESTRICTED)) as accounts:
+        yield accounts, accounts.upload([pdf])
 
 
-def test_assigning_columns_reads_the_table_and_suggests_its_words(api: tuple[TestClient, str]) -> None:
-    client, rfq_id = api
-    setup = client.get(f"/rfqs/{rfq_id}/precost-setup", params={"team": VISIBLE}).json()
+def test_assigning_columns_reads_the_table_and_suggests_its_words(api: tuple[Accounts, str]) -> None:
+    accounts, rfq_id = api
+    client = accounts[VISIBLE]
+    setup = client.get(f"/rfqs/{rfq_id}/precost-setup").json()
     assert_valid("precost-setup", setup)
     (table,) = setup["data"]["lines"]["tables"]
     assert table["how"] == "none"
 
     body = {"table": table["id"], "header_row": 0, "columns": {"no": 0, "description": 1, "quantity": 2}}
-    denied = client.post(f"/rfqs/{rfq_id}/price-sheet/columns", params={"team": RESTRICTED}, json=body)
+    denied = accounts[RESTRICTED].post(f"/rfqs/{rfq_id}/price-sheet/columns", json=body)
     assert denied.status_code == 403
-    assigned = client.post(f"/rfqs/{rfq_id}/price-sheet/columns", params={"team": VISIBLE}, json=body)
+    assigned = client.post(f"/rfqs/{rfq_id}/price-sheet/columns", json=body)
     assert assigned.status_code == 200, assigned.text
     assert_valid("sheet-columns", assigned.json())
     assert [r["name"] for r in assigned.json()["data"]["lines"]["items"]] == ["Schraube M8", "Mutter M8"]
 
-    words = client.get("/price-sheet/words", params={"team": VISIBLE}).json()
+    words = client.get("/price-sheet/words").json()
     assert_valid("sheet-words", words)
     found = {(c["role"], c["text"]) for c in words["data"]["candidates"]}
     assert found == {("no", "lfd"), ("description", "artikeltext"), ("quantity", "bedarf 2027")}
 
     decided = client.post(
         "/price-sheet/words",
-        params={"team": VISIBLE},
         json={"role": "description", "text": "artikeltext", "action": "approve"},
     )
     assert_valid("sheet-words", decided.json())
     assert {"role": "description", "text": "artikeltext"} in decided.json()["data"]["approved"]
 
 
-def test_a_wrong_assignment_is_refused(api: tuple[TestClient, str]) -> None:
-    client, rfq_id = api
-    table = client.get(f"/rfqs/{rfq_id}/precost-setup", params={"team": VISIBLE}).json()["data"]["lines"][
-        "tables"
-    ][0]
+def test_a_wrong_assignment_is_refused(api: tuple[Accounts, str]) -> None:
+    accounts, rfq_id = api
+    client = accounts[VISIBLE]
+    table = client.get(f"/rfqs/{rfq_id}/precost-setup").json()["data"]["lines"]["tables"][0]
     body = {"table": table["id"], "header_row": 0, "columns": {"description": 1}}
-    response = client.post(f"/rfqs/{rfq_id}/price-sheet/columns", params={"team": VISIBLE}, json=body)
+    response = client.post(f"/rfqs/{rfq_id}/price-sheet/columns", json=body)
     assert response.status_code == 400
     assert "수량" in response.json()["error"]["message"]
     missing = {**body, "table": "d01:p9:t9", "columns": {"description": 1, "quantity": 2}}
-    assert (
-        client.post(f"/rfqs/{rfq_id}/price-sheet/columns", params={"team": VISIBLE}, json=missing).status_code
-        == 404
-    )
+    assert client.post(f"/rfqs/{rfq_id}/price-sheet/columns", json=missing).status_code == 404
 
 
 def test_assign_columns_passes_approved_words_into_find_grid(
-    api: tuple[TestClient, str], monkeypatch: pytest.MonkeyPatch
+    api: tuple[Accounts, str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    client, rfq_id = api
-    store = client.app.state.autorfx.price_sheets
-    table = client.get(f"/rfqs/{rfq_id}/precost-setup", params={"team": VISIBLE}).json()["data"]["lines"][
-        "tables"
-    ][0]
+    accounts, rfq_id = api
+    client = accounts[VISIBLE]
+    store = accounts.state.price_sheets
+    table = client.get(f"/rfqs/{rfq_id}/precost-setup").json()["data"]["lines"]["tables"][0]
     seen: dict = {}
     import autorfx.api.routes as routes
 
@@ -673,10 +661,7 @@ def test_assign_columns_passes_approved_words_into_find_grid(
 
     monkeypatch.setattr(routes, "find_grid", wrap)
     body = {"table": table["id"], "header_row": 0, "columns": {"no": 0, "description": 1, "quantity": 2}}
-    assert (
-        client.post(f"/rfqs/{rfq_id}/price-sheet/columns", params={"team": VISIBLE}, json=body).status_code
-        == 200
-    )
+    assert client.post(f"/rfqs/{rfq_id}/price-sheet/columns", json=body).status_code == 200
     assert "words" in seen and seen["words"] == store.approved
 
 

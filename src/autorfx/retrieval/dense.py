@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -173,12 +174,32 @@ class DenseIndex:
         rows = corpus_rows(clauses)
         self._sentences = [row[0] for row in rows]
         self._clause_ids = [row[1] for row in rows]
+        self._cost_sensitive = [row[3] for row in rows]
         self._vectors = encoder.encode([row[2] for row in rows]) if rows else np.zeros((0, 1), np.float32)
         everything = np.arange(len(rows))
         self._rows: dict[Group, np.ndarray] = {
             "cost_visible": everything,
             "cost_restricted": np.array([i for i, row in enumerate(rows) if not row[3]], dtype=int),
         }
+
+    def subset(self, clause_ids: AbstractSet[str]) -> DenseIndex:
+        """A view of only ``clause_ids``, reusing the already-computed vectors without calling the encoder."""
+        keep = [i for i, cid in enumerate(self._clause_ids) if cid in clause_ids]
+        sub = DenseIndex.__new__(DenseIndex)
+        sub.encoder = self.encoder
+        sub.min_score = self.min_score
+        sub._sentences = [self._sentences[i] for i in keep]
+        sub._clause_ids = [self._clause_ids[i] for i in keep]
+        sub._cost_sensitive = [self._cost_sensitive[i] for i in keep]
+        width = self._vectors.shape[1] if self._vectors.ndim == 2 else 1
+        sub._vectors = self._vectors[keep] if keep else np.zeros((0, width), np.float32)
+        sub._rows = {
+            "cost_visible": np.arange(len(keep)),
+            "cost_restricted": np.array(
+                [i for i, sensitive in enumerate(sub._cost_sensitive) if not sensitive], dtype=int
+            ),
+        }
+        return sub
 
     @property
     def model(self) -> str:

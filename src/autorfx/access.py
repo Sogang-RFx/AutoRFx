@@ -1,28 +1,30 @@
-"""Access control on data (RBAC-01..03, INV-4, INV-8).
+"""Access control on data (RBAC-01..03, INV-4, INV-8; docs/auth-rbac.md §2, §4).
 
-Cost-sensitive clauses are removed before a response is built, never on the
-screen. A restricted team (and any unknown team) receives, for such a clause,
-only its identity: no text, no summary, no title, no page. The same holds for
-sentences, RTM rows, consistency issues and the source PDF, whose hidden text
-is truly redacted, not covered.
+:func:`visible_clauses` is the only place that decides which clauses an account sees: the ones routed to
+its departments, without cost clauses when it may not see cost. Every response is built from that answer,
+before it exists; nothing is filtered afterwards or on the screen. A clause that is not visible is a locked
+row with its identity only: no text, no summary, no title, no page and no reason. The same holds for
+sentences, RTM rows, consistency issues, file names and the source PDF (:mod:`autorfx.scoped_pdf`).
 
-Order matters: mask first, then filter by department. Masked rows are returned
-under every department, so the filter cannot reveal which department a hidden
-clause belongs to.
+The department filter of the clause list narrows the visible rows. Locked rows stay under every filter,
+so it cannot reveal which department a locked clause belongs to.
 """
 
 from __future__ import annotations
 
 import hashlib
+import hmac
 import re
 import shutil
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from pathlib import Path
 
 import pymupdf
 
+from autorfx.auth.policy import Scope
 from autorfx.chunker import matches_cost_pattern, mentions_cost
+from autorfx.consistency.checks import MAX_EVIDENCE
 from autorfx.ingest.convert import save_deterministic
 from autorfx.models import (
     Clause,
@@ -30,6 +32,7 @@ from autorfx.models import (
     ConsistencyIssue,
     FileRecord,
     Group,
+    PackageManifest,
     ParsedFile,
     ParsedSentence,
 )
@@ -46,12 +49,12 @@ FLAGS = pymupdf.TEXTFLAGS_TEXT & ~pymupdf.TEXT_PRESERVE_LIGATURES
 
 
 class AccessDenied(PermissionError):
-    """The team may not see this. The message is shown to the user."""
+    """The account may not see this. The message is shown to the user."""
 
 
 def assert_cost_visible(group: Group) -> None:
     if group != "cost_visible":
-        raise AccessDenied("이 팀은 금액 관련 정보를 볼 수 없습니다.")
+        raise AccessDenied("이 계정은 금액 관련 정보를 볼 수 없습니다.")
 
 
 def hidden_keys(clauses: Sequence[Clause]) -> frozenset[Key]:
@@ -59,45 +62,98 @@ def hidden_keys(clauses: Sequence[Clause]) -> frozenset[Key]:
     return frozenset(s.locus.key() for c in clauses if c.is_cost_sensitive for s in c.sentences)
 
 
-def _opaque(value: str) -> str:
-    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:10]
+# ── the decision ────────────────────────────────────────────────────────────
+def _is_routed_to(analysis: ClauseAnalysis, areas: Collection[str], ruleset: Ruleset) -> bool:
+    """Whether a clause belongs to any of these departments: lead, reference, or one that receives all."""
+    routed = (analysis.primary_department, *analysis.reference_departments)
+    rules = (ruleset.department(area) for area in areas)
+    return any(rule is not None and (rule.receives_all or rule.id in routed) for rule in rules)
 
 
-def _masked(clause: Clause) -> dict:
+def _decide(
+    clauses: Sequence[Clause], analyses: Sequence[ClauseAnalysis], scope: Scope, ruleset: Ruleset
+) -> list[bool]:
+    """Per clause, whether the scope sees it.
+
+    Fail closed: a clause nobody judged is not visible, and neither is one whose finding cites a position
+    outside the visible clauses. Hiding a clause can do that to another one, so this runs until nothing
+    changes. The full scope sees every judged clause: there is nothing outside it to cite.
+    """
+    by_id = {a.clause_id: a for a in analyses}
+    judged = [by_id.get(c.clause_id) for c in clauses]
+    if scope.is_full:
+        return [analysis is not None for analysis in judged]
+    shown = [
+        analysis is not None
+        and (scope.cost_visible or not clause.is_cost_sensitive)
+        and (scope.areas is None or _is_routed_to(analysis, scope.areas, ruleset))
+        for clause, analysis in zip(clauses, judged, strict=True)
+    ]
+    while True:
+        keys = visible_keys([c for c, is_shown in zip(clauses, shown, strict=True) if is_shown])
+        kept = [
+            is_shown
+            and analysis is not None
+            and all(locus.key() in keys for locus in analysis.summary.finding.citations)
+            for is_shown, analysis in zip(shown, judged, strict=True)
+        ]
+        if kept == shown:
+            return kept
+        shown = kept
+
+
+def visible_clauses(
+    clauses: Sequence[Clause], analyses: Sequence[ClauseAnalysis], scope: Scope, ruleset: Ruleset
+) -> tuple[Clause, ...]:
+    """The clauses this scope may see, in document order: the one decision behind every response."""
+    shown = _decide(clauses, analyses, scope, ruleset)
+    return tuple(clause for clause, is_shown in zip(clauses, shown, strict=True) if is_shown)
+
+
+def visible_keys(visible: Sequence[Clause]) -> frozenset[Key]:
+    """Positions of every sentence of these clauses: the allowlist."""
+    return frozenset(s.locus.key() for c in visible for s in c.sentences)
+
+
+def _rows(
+    clauses: Sequence[Clause], analyses: Sequence[ClauseAnalysis], scope: Scope, ruleset: Ruleset
+) -> Iterator[tuple[Clause, ClauseAnalysis, bool]]:
+    """Every judged clause in document order, with its analysis and whether the scope sees it."""
+    by_id = {a.clause_id: a for a in analyses}
+    for clause, is_shown in zip(clauses, _decide(clauses, analyses, scope, ruleset), strict=True):
+        analysis = by_id.get(clause.clause_id)
+        if analysis is not None:
+            yield clause, analysis, is_shown
+
+
+# ── locked rows ─────────────────────────────────────────────────────────────
+def _opaque(value: str, secret: bytes) -> str:
+    """Stable across responses, and not recomputable from a guessed name without the store's key."""
+    return hmac.new(secret, value.encode("utf-8"), hashlib.sha256).hexdigest()[:16]
+
+
+def _masked(clause: Clause, secret: bytes) -> dict:
     """The identity of a hidden clause. A clause number ("4.2") says nothing, so it stays.
 
     Only a numbered clause keeps its number: the id of a sheet is its name and the id of other
     kinds may come from text too ("Target price EUR 7.77" as a sheet name), so those get an
-    opaque id that is stable across responses (INV-8).
+    opaque id (INV-8).
     """
-    if clause.kind == "clause":
-        return {
-            "kind": "masked",
-            "clause_id": clause.clause_id,
-            "source_doc": clause.source_doc,
-            "section_id": clause.section_id,
-        }
-    section = f"hidden-{_opaque(clause.clause_id)}"
+    section = clause.section_id if clause.kind == "clause" else f"hidden-{_opaque(clause.clause_id, secret)}"
     return {
         "kind": "masked",
-        "clause_id": f"{clause.source_doc}:{section}",
+        "clause_id": clause.clause_id if clause.kind == "clause" else f"{clause.source_doc}:{section}",
         "source_doc": clause.source_doc,
         "section_id": section,
     }
 
 
-def masked_issue_id(issue_id: str) -> str:
+def _masked_issue(issue: ConsistencyIssue, secret: bytes) -> dict:
     """Issue ids name the entity or quote the document ("c-target_price", "n-ek-kr"); hidden ones don't."""
-    return f"hidden-{_opaque(issue_id)}"
+    return {"kind": "masked", "id": f"hidden-{_opaque(issue.id, secret)}"}
 
 
-def _is_hidden(clause: Clause, analysis: ClauseAnalysis, group: Group, hidden: frozenset[Key]) -> bool:
-    if group == "cost_visible":
-        return False
-    # Fail closed: a visible clause whose finding cites hidden text is hidden too.
-    return clause.is_cost_sensitive or any(c.key() in hidden for c in analysis.summary.finding.citations)
-
-
+# ── clauses and RTM ─────────────────────────────────────────────────────────
 def _excerpt(clause: Clause, analysis: ClauseAnalysis) -> list[dict]:
     cited = {c.key() for c in analysis.summary.finding.citations}
     chosen = [s for s in clause.sentences if s.locus.key() in cited]
@@ -111,45 +167,48 @@ def _excerpt(clause: Clause, analysis: ClauseAnalysis) -> list[dict]:
     return [{"locus": s.locus.model_dump(mode="json"), "text": s.text} for s in chosen]
 
 
-def _matches(analysis: ClauseAnalysis, areas: Sequence[str] | None, ruleset: Ruleset) -> bool:
-    """Whether a clause belongs to any of the rule departments; ``None`` is no filter."""
-    if areas is None:
-        return True
-    routed = (analysis.primary_department, *analysis.reference_departments)
-    for area in areas:
-        rule = ruleset.department(area)
-        if rule is not None and (rule.receives_all or area in routed):
-            return True
-    return False
+def _states(clause: Clause, title: str) -> bool:
+    """Whether the clause's own text contains these words."""
+    words = r"\s+".join(re.escape(word) for word in title.split())
+    return bool(words) and re.search(rf"(?<!\w){words}(?!\w)", clause.text, re.IGNORECASE) is not None
+
+
+def _title(clause: Clause, scope: Scope, ruleset: Ruleset) -> str:
+    """The title a scope may see.
+
+    A clause can inherit the heading above it, which may belong to another department or state a price
+    ("4.2 Target price EUR 1.20" above 4.2.1). Outside the full scope only words of the clause itself are
+    a title, and without cost visibility never words that name cost.
+    """
+    title = clause.title
+    if scope.is_full:
+        return title
+    if not scope.cost_visible and mentions_cost(title, ruleset):
+        return ""
+    return title if clause.own_title or _states(clause, title) else ""
 
 
 def clause_items(
     clauses: Sequence[Clause],
     analyses: Sequence[ClauseAnalysis],
     *,
-    group: Group,
-    department: str | None,
+    scope: Scope,
     ruleset: Ruleset,
-    areas: Sequence[str] | None = None,
+    secret: bytes,
+    department: str | None = None,
 ) -> list[dict]:
-    """Contract ``ClauseItem`` dicts in document order: masked first, then filtered by department.
+    """Contract ``ClauseItem`` dicts in document order.
 
-    ``areas`` filters by several rule departments at once (a company department, SPEC US10);
-    without it the filter is ``department`` alone.
+    ``department`` is a view filter on the visible rows; locked rows do not depend on it. The work-area
+    keywords only take part in that filter, never in what is visible.
     """
-    wanted = tuple(areas) if areas is not None else ((department,) if department else None)
-    hidden = hidden_keys(clauses)
-    by_id = {a.clause_id: a for a in analyses}
     items: list[dict] = []
-    for clause in clauses:
-        analysis = by_id.get(clause.clause_id)
-        if analysis is None:
-            continue
-        if _is_hidden(clause, analysis, group, hidden):
-            items.append(_masked(clause))
+    for clause, analysis, is_shown in _rows(clauses, analyses, scope, ruleset):
+        if not is_shown:
+            items.append(_masked(clause, secret))
             continue
         work_areas = matching_areas(ruleset.work_areas, clause.text)
-        if not _matches(analysis, wanted, ruleset) and not any(a in work_areas for a in wanted or ()):
+        if department and not (department in work_areas or _is_routed_to(analysis, (department,), ruleset)):
             continue
         flag = analysis.red_flag
         items.append(
@@ -159,7 +218,7 @@ def clause_items(
                 "source_doc": clause.source_doc,
                 "section_id": clause.section_id,
                 "section_path": list(clause.section_path),
-                "title": _title(clause, group, ruleset),
+                "title": _title(clause, scope, ruleset),
                 "page_number": clause.page_number,
                 "lang": clause.lang,
                 "work_areas": work_areas,
@@ -177,18 +236,18 @@ def clause_items(
 
 
 def rtm_rows(
-    clauses: Sequence[Clause], analyses: Sequence[ClauseAnalysis], *, group: Group, ruleset: Ruleset
+    clauses: Sequence[Clause],
+    analyses: Sequence[ClauseAnalysis],
+    *,
+    scope: Scope,
+    ruleset: Ruleset,
+    secret: bytes,
 ) -> list[dict]:
-    """Contract ``RtmRow`` dicts, one per clause, masked for restricted teams."""
-    hidden = hidden_keys(clauses)
-    by_id = {a.clause_id: a for a in analyses}
+    """Contract ``RtmRow`` dicts, one per clause; a clause outside the scope is a locked row."""
     rows: list[dict] = []
-    for clause in clauses:
-        analysis = by_id.get(clause.clause_id)
-        if analysis is None:
-            continue
-        if _is_hidden(clause, analysis, group, hidden):
-            rows.append(_masked(clause))
+    for clause, analysis, is_shown in _rows(clauses, analyses, scope, ruleset):
+        if not is_shown:
+            rows.append(_masked(clause, secret))
             continue
         citations = analysis.summary.finding.citations
         position = citations[0] if citations else clause.sentences[0].locus
@@ -199,7 +258,7 @@ def rtm_rows(
                 "clause_id": clause.clause_id,
                 "source_doc": clause.source_doc,
                 "section_id": clause.section_id,
-                "title": _title(clause, group, ruleset),
+                "title": _title(clause, scope, ruleset),
                 "primary_department": analysis.primary_department,
                 "reference_departments": list(analysis.reference_departments),
                 "priority": analysis.priority,
@@ -213,80 +272,51 @@ def rtm_rows(
     return rows
 
 
+# ── sentences ───────────────────────────────────────────────────────────────
 def sentences_for(
-    parsed: ParsedFile, clauses: Sequence[Clause], *, group: Group, page_number: int
+    parsed: ParsedFile, visible: Sequence[Clause], *, scope: Scope, page_number: int
 ) -> list[dict]:
     """Contract ``Sentence`` dicts of one page.
 
-    A restricted team gets only sentences of clauses it may see: an allowlist, not a blocklist.
-    A heading that belongs to no clause ("4.2 Target price EUR 1.20" directly above 4.2.1) is
-    therefore left out too, although no rule marked it.
+    Outside the full scope only sentences of the visible clauses: an allowlist, not a blocklist. A heading
+    that belongs to no clause ("4.2 Target price EUR 1.20" directly above 4.2.1) is therefore left out
+    too, although no rule marked it.
     """
     if not 1 <= page_number <= parsed.page_count:
         raise ValueError(f"{page_number}쪽은 없습니다. 이 파일은 {parsed.page_count}쪽입니다.")
-    allowed = (
-        None
-        if group == "cost_visible"
-        else frozenset(s.locus.key() for c in clauses if not c.is_cost_sensitive for s in c.sentences)
-    )
+    allowed = visible_keys(visible)
     return [
         s.public().model_dump(mode="json")
         for s in parsed.sentences
-        if s.locus.page_number == page_number and (allowed is None or s.locus.key() in allowed)
+        if s.locus.page_number == page_number and (scope.is_full or s.locus.key() in allowed)
     ]
 
 
-def visible_keys(clauses: Sequence[Clause]) -> frozenset[Key]:
-    """Positions of every sentence of a clause a restricted team may see: the allowlist."""
-    return frozenset(s.locus.key() for c in clauses if not c.is_cost_sensitive for s in c.sentences)
-
-
-def _issue_secret(issue: ConsistencyIssue, visible: frozenset[Key]) -> bool:
+# ── consistency and evaluation ──────────────────────────────────────────────
+def _is_issue_shown(issue: ConsistencyIssue, scope: Scope, keys: frozenset[Key]) -> bool:
     """Allowlist: an issue is shown only when every piece of its evidence lies in a visible clause.
 
-    Evidence in no clause at all (a heading above its sub-clauses) is not known to be harmless.
+    Evidence in no clause at all (a heading above its sub-clauses) is not known to be harmless. The title
+    and detail name every value but only ``MAX_EVIDENCE`` sentences are kept, so at that count a value
+    of a hidden clause may be among the unnamed rest.
     """
-    return issue.is_cost_sensitive or any(e.locus.key() not in visible for e in issue.evidence)
+    if scope.is_full:
+        return True
+    if issue.is_cost_sensitive and not scope.cost_visible:
+        return False
+    return 0 < len(issue.evidence) < MAX_EVIDENCE and all(e.locus.key() in keys for e in issue.evidence)
 
 
-def _title(clause: Clause, group: Group, ruleset: Ruleset) -> str:
-    """The title a group may see. A visible clause can inherit a heading that states a price
-    ("4.2 Target price EUR 1.20" above 4.2.1): such a title is not sent to a restricted team."""
-    if group == "cost_visible" or not mentions_cost(clause.title, ruleset):
-        return clause.title
-    return ""
-
-
-def withheld_ids(
-    clauses: Sequence[Clause],
-    analyses: Sequence[ClauseAnalysis],
-    issues: Sequence[ConsistencyIssue],
-    *,
-    group: Group,
-) -> frozenset[str]:
-    """Clause and issue ids this group sees only as masked rows; for reports built elsewhere."""
-    if group == "cost_visible":
-        return frozenset()
-    hidden = hidden_keys(clauses)
-    by_id = {a.clause_id: a for a in analyses}
-    masked = {
-        c.clause_id
-        for c in clauses
-        if c.clause_id in by_id and _is_hidden(c, by_id[c.clause_id], group, hidden)
-    }
-    visible = visible_keys(clauses)
-    return frozenset(masked | {i.id for i in issues if _issue_secret(i, visible)})
-
-
-def issue_items(issues: Sequence[ConsistencyIssue], *, group: Group, clauses: Sequence[Clause]) -> list[dict]:
-    """Contract ``IssueItem`` dicts; an issue with cost-sensitive evidence shows only that it exists."""
-    visible = visible_keys(clauses)
-    items: list[dict] = []
-    for issue in issues:
-        if group != "cost_visible" and _issue_secret(issue, visible):
-            items.append({"kind": "masked", "id": masked_issue_id(issue.id)})
-            continue
-        items.append(
+def issue_items(
+    issues: Sequence[ConsistencyIssue], *, scope: Scope, visible: Sequence[Clause], secret: bytes
+) -> list[dict]:
+    """Contract ``IssueItem`` dicts. An issue outside the scope shows only that it exists; those come last,
+    so that their place does not say what they are about."""
+    keys = visible_keys(visible)
+    shown = [i for i in issues if _is_issue_shown(i, scope, keys)]
+    locked = [i for i in issues if not _is_issue_shown(i, scope, keys)]
+    return [
+        *(
             {
                 "kind": "issue",
                 "id": issue.id,
@@ -300,8 +330,70 @@ def issue_items(issues: Sequence[ConsistencyIssue], *, group: Group, clauses: Se
                 "evidence": [e.model_dump(mode="json") for e in issue.evidence],
                 "citation_status": issue.citation_status,
             }
-        )
-    return items
+            for issue in shown
+        ),
+        *sorted((_masked_issue(issue, secret) for issue in locked), key=lambda row: row["id"]),
+    ]
+
+
+def withheld_ids(
+    clauses: Sequence[Clause],
+    analyses: Sequence[ClauseAnalysis],
+    issues: Sequence[ConsistencyIssue],
+    *,
+    scope: Scope,
+    ruleset: Ruleset,
+) -> frozenset[str]:
+    """Clause and issue ids this scope does not see; for reports built elsewhere."""
+    if scope.is_full:
+        return frozenset()
+    visible = visible_clauses(clauses, analyses, scope, ruleset)
+    keys = visible_keys(visible)
+    known = {c.clause_id for c in clauses} | {a.clause_id for a in analyses} | {i.id for i in issues}
+    shown = {c.clause_id for c in visible} | {i.id for i in issues if _is_issue_shown(i, scope, keys)}
+    return frozenset(known - shown)
+
+
+# ── names ───────────────────────────────────────────────────────────────────
+def anonymous_name(rfq_id: str) -> str:
+    """The name of a package for an account that may not see its file names."""
+    return f"RFQ {rfq_id[-6:]}"
+
+
+def _package_name(manifest: PackageManifest, shown: Collection[str]) -> str:
+    """The package is named after one file ("<stem> 외 2개"), which need not be the first of the sorted
+    list. Its name is shown only when that file and the first one are visible (fail closed)."""
+    named = [
+        f.id
+        for f in manifest.files
+        if manifest.name == Path(f.name).stem or manifest.name.startswith(f"{Path(f.name).stem} 외 ")
+    ]
+    if named and all(file_id in shown for file_id in (manifest.files[0].id, *named)):
+        return manifest.name
+    return anonymous_name(manifest.id)
+
+
+def package_view(manifest: PackageManifest, visible: Sequence[Clause], *, scope: Scope) -> PackageManifest:
+    """The package as this scope may see it: a file without a visible clause has no name, no warning and
+    no clause count."""
+    if scope.is_full:
+        return manifest
+    shown = {c.source_doc for c in visible}
+    files = tuple(
+        f
+        if f.id in shown
+        else f.model_copy(update={"name": f"파일 {f.id}", "warnings": (), "clause_count": 0})
+        for f in manifest.files
+    )
+    return manifest.model_copy(update={"name": _package_name(manifest, shown), "files": files})
+
+
+def scope_label(scope: Scope, ruleset: Ruleset) -> str:
+    """Whose view a file that leaves the system is (the RTM workbook)."""
+    if scope.areas is None:
+        return "전체 조항"
+    labels = [d.label for d in ruleset.departments if d.id in scope.areas]
+    return f"{', '.join(labels) or '없음'} 담당 조항"
 
 
 # ── source PDF ──────────────────────────────────────────────────────────────
@@ -310,8 +402,10 @@ def _tokens(text: str) -> Counter[str]:
     return Counter(t.casefold() for t in TOKEN.findall(text) if any(ch.isdigit() for ch in t) or len(t) >= 7)
 
 
-def _assert_removed(canonical: Path, target: Path, hidden: Sequence[ParsedSentence]) -> None:
-    """Re-open the masked file and fail unless every occurrence of a hidden sentence's tokens is gone.
+def page_with_remains(
+    before: pymupdf.Document, after: pymupdf.Document, hidden: Sequence[ParsedSentence]
+) -> int | None:
+    """The first page on which an occurrence of a hidden sentence's tokens is left, or None.
 
     A token may also stand elsewhere on the page (a header, a sheet name, a visible sentence), so
     occurrences are counted: what remains may not exceed what the page held outside the hidden text.
@@ -319,13 +413,21 @@ def _assert_removed(canonical: Path, target: Path, hidden: Sequence[ParsedSenten
     secret: dict[int, Counter[str]] = defaultdict(Counter)
     for sentence in hidden:
         secret[sentence.locus.page_number] += _tokens(sentence.text)
+    for page_number, tokens in secret.items():
+        had = _tokens(before[page_number - 1].get_text("text", flags=FLAGS))
+        left = _tokens(after[page_number - 1].get_text("text", flags=FLAGS))
+        if any(left[token] > max(0, had[token] - count) for token, count in tokens.items()):
+            return page_number
+    return None
+
+
+def _assert_removed(canonical: Path, target: Path, hidden: Sequence[ParsedSentence]) -> None:
+    """Re-open the masked file and fail unless every occurrence of a hidden sentence's tokens is gone."""
     with pymupdf.open(str(canonical)) as before, pymupdf.open(str(target)) as after:
-        for page_number, tokens in secret.items():
-            had = _tokens(before[page_number - 1].get_text("text", flags=FLAGS))
-            left = _tokens(after[page_number - 1].get_text("text", flags=FLAGS))
-            if any(left[token] > max(0, had[token] - count) for token, count in tokens.items()):
-                target.unlink(missing_ok=True)
-                raise AccessDenied(f"가림 처리에 실패했습니다 ({page_number}쪽). 원문을 제공하지 않습니다.")
+        page_number = page_with_remains(before, after, hidden)
+    if page_number is not None:
+        target.unlink(missing_ok=True)
+        raise AccessDenied(f"가림 처리에 실패했습니다 ({page_number}쪽). 원문을 제공하지 않습니다.")
 
 
 def _has_cost_text(text: str, ruleset: Ruleset) -> bool:
@@ -425,13 +527,3 @@ def build_masked_pdf(
         save_deterministic(doc, target)
     _assert_removed(canonical, target, hidden)
     return target
-
-
-def source_pdf(workspace: Workspace, file: FileRecord, *, group: Group) -> Path:
-    """The PDF a team may see. A restricted team never gets the canonical file, masked or nothing."""
-    if group == "cost_visible":
-        return workspace.canonical_pdf(file.id)
-    masked = workspace.masked_pdf(file.id)
-    if not masked.is_file():
-        raise AccessDenied("가림 처리된 원문이 아직 준비되지 않았습니다.")
-    return masked

@@ -1,91 +1,94 @@
 /**
- * Real-backend flow (SPEC US7, §13.2) with files the user supplies in
- * RFQ_E2E_FILES (paths separated by ":"). Nothing about any RFQ is written in
- * this file: every expectation comes at run time from the backend's answers
- * for the uploaded package. A check whose precondition the package does not
- * have (no cost clauses, no cross-file issue, ...) is skipped with a reason.
+ * Real-backend flow (SPEC US7, §13.2, docs/auth-rbac.md) with files in RFQ_E2E_FILES (paths separated
+ * by ":") and accounts in RFQ_E2E_ACCOUNTS. Nothing about any RFQ or account is written in this file:
+ * every expectation comes at run time from the backend's answers. A check whose precondition the
+ * package or the accounts do not have is skipped with a reason.
  *
- * Flow: upload → clauses for a cost-visible and a restricted team (no cost
- * text reaches the restricted team) → a citation opens its file and sentence
- * → consistency → chat → pre-cost decision as the backend computed it, and
- * 403 for a restricted team.
+ * Flow: the gate stands in front of everything → wrong password → upload → each role sees its own scope
+ * and no text outside it → a citation opens its file and sentence → consistency → chat → pre-cost as the
+ * backend computed it, 403 otherwise → logout reaches the other tab → accounts screen.
  */
-import { existsSync } from "node:fs";
-import path from "node:path";
-import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { expect, test } from "@playwright/test";
 import type {
   ChatResponse,
-  ClauseItem,
-  ClausesResponse,
   ConsistencyResponse,
   DocumentResponse,
-  MetaResponse,
   PrecostResponse,
   PrecostSetupResponse,
-  Team,
 } from "../../src/lib/rfq/contract";
+import {
+  ACCOUNTS,
+  API,
+  FILES,
+  apiJson,
+  castAccounts,
+  checkFiles,
+  clausesOf,
+  fillLogin,
+  leakMarkers,
+  newApi,
+  openAs,
+  signOut,
+  type Actor,
+  type Cast,
+} from "./helpers";
 
-const API = process.env.RFQ_E2E_API ?? "http://127.0.0.1:8011";
-const FILES = (process.env.RFQ_E2E_FILES ?? "")
-  .split(":")
-  .map((f) => f.trim())
-  .filter(Boolean)
-  .map((f) => path.resolve(f));
 /** Generic questions; which of them the package answers is decided at run time. */
 const QUESTIONS = ["인도조건", "납기", "포장", "보증 기간", "결제 조건"];
 const COST_QUESTION = "목표가는 얼마인가?";
 
+let cast: Cast;
 let rfqId = "";
-let visible: Team | undefined;
-let restricted: Team | undefined;
+const at = (p: string) => `/rfq/${encodeURIComponent(rfqId)}/${p}`;
 
-async function apiJson<T>(request: APIRequestContext, p: string): Promise<T> {
-  const res = await request.get(`${API}${p}`);
-  expect(res.status(), p).toBe(200);
-  return (await res.json()) as T;
-}
-
-async function clausesFor(request: APIRequestContext, team: string): Promise<ClauseItem[]> {
-  return (await apiJson<ClausesResponse>(request, `/rfqs/${rfqId}/clauses?team=${team}`)).data.clauses;
-}
-
-const excerptTexts = (items: ClauseItem[]) => items.flatMap((c) => (c.kind === "clause" ? c.excerpt.map((e) => e.text) : []));
-
-/**
- * Long distinctive sentences of the clauses a restricted team must not see,
- * taken from the cost-visible team's own response. Sentences that also stand
- * in a clause the restricted team may see are not secrets and are left out.
- */
-async function leakMarkers(request: APIRequestContext): Promise<string[]> {
-  const seen = await clausesFor(request, restricted!.id);
-  const hidden = new Set(seen.filter((c) => c.kind === "masked").map((c) => c.clause_id));
-  const allowed = excerptTexts(seen);
-  return excerptTexts((await clausesFor(request, visible!.id)).filter((c) => hidden.has(c.clause_id))).filter(
-    (t) => t.length >= 24 && !allowed.some((a) => a.includes(t)),
-  );
-}
-
-const go = (page: Page, p: string, team: string) => page.goto(`/rfq/${encodeURIComponent(rfqId)}/${p}?team=${team}`);
-
-test.describe.serial("real backend with user-supplied files", () => {
+test.describe.serial("real backend with user-supplied files and accounts", () => {
   test.skip(FILES.length === 0, "RFQ_E2E_FILES가 없어 건너뜁니다. 테스트할 파일 경로를 ':'로 이어 주세요.");
+  test.skip(
+    Object.keys(ACCOUNTS).length === 0,
+    "RFQ_E2E_ACCOUNTS에서 계정을 읽지 못해 건너뜁니다. ACCOUNTS.local.md나 JSON 파일의 경로를 주세요.",
+  );
 
-  test.beforeAll(async ({ request }) => {
-    for (const f of FILES) {
-      if (!existsSync(f)) throw new Error(`RFQ_E2E_FILES의 파일이 없습니다: ${f}`);
-      if (f.split(path.sep).some((part) => part.toLowerCase().startsWith("eval"))) {
-        throw new Error("평가용 세트(eval*)는 테스트에 쓰지 않습니다.");
-      }
-    }
-    const meta = await apiJson<MetaResponse>(request, "/meta");
-    visible = meta.data.teams.find((t) => t.group === "cost_visible");
-    restricted = meta.data.teams.find((t) => t.group === "cost_restricted");
-    expect(visible, "a cost-visible team in data/rules").toBeTruthy();
-    expect(restricted, "a cost-restricted team in data/rules").toBeTruthy();
+  test.beforeAll(async () => {
+    checkFiles();
+    cast = await castAccounts();
   });
 
-  test("upload and analyse the package", async ({ page }) => {
+  test("the gate comes first: no request but the session check, and no data", async ({ page }) => {
+    const paths: string[] = [];
+    page.on("request", (r) => {
+      if (r.url().startsWith(API)) paths.push(new URL(r.url()).pathname);
+    });
     await page.goto("/");
+    await expect(page.getByTestId("login-form")).toBeVisible();
+    await expect(page.getByTestId("rfq-list")).toHaveCount(0);
+    await expect(page.getByLabel("아이디")).toBeFocused();
+    expect([...new Set(paths)]).toEqual(["/auth/me"]);
+
+    const api = await newApi();
+    for (const p of ["/meta", "/rfqs", "/admin/users"]) expect((await api.get(`${API}${p}`)).status(), p).toBe(401);
+    expect((await api.get(`${API}/rfqs?team=sales`)).status()).toBe(401);
+  });
+
+  test("a wrong password and an unknown id read the same", async ({ page }) => {
+    await page.goto("/");
+    const told: string[] = [];
+    for (const username of [cast.restricted.username, "nobody-here"]) {
+      await fillLogin(page, username, "not-the-password");
+      await expect(page.getByTestId("form-error")).toContainText("맞지 않습니다");
+      told.push(await page.getByTestId("form-error").innerText());
+      await expect(page.getByLabel("비밀번호")).toBeFocused();
+    }
+    expect(told[0]).toBe(told[1]);
+    await fillLogin(page, cast.restricted.username, cast.restricted.password);
+    await expect(page.getByTestId("account-menu")).toContainText(cast.restricted.viewer.display_name);
+  });
+
+  test("upload and analyse the package as an account that may upload", async ({ page }) => {
+    await openAs(page, cast.restricted, "/");
+    await expect(page.getByTestId("no-upload")).toBeVisible();
+    await expect(page.getByTestId("file-input")).toHaveCount(0);
+
+    await openAs(page, cast.full ?? cast.admin, "/");
     await page.getByTestId("file-input").setInputFiles(FILES);
     await expect(page.getByTestId("file-name")).toHaveCount(FILES.length);
     await page.getByTestId("start-upload").click();
@@ -101,65 +104,52 @@ test.describe.serial("real backend with user-supplied files", () => {
     await expect(page.getByTestId("package-files").locator("li")).toHaveCount(FILES.length);
   });
 
-  test("clauses: cost-visible team sees everything; restricted team gets masked rows and no cost text", async ({
-    page,
-    request,
-  }) => {
-    await go(page, "clauses", visible!.id);
+  test("each role sees its scope and no text outside it", async ({ page }) => {
+    await openAs(page, cast.admin, at("clauses"));
     await expect(page.getByTestId("clause-row").first()).toBeVisible();
     await expect(page.getByTestId("masked-row")).toHaveCount(0);
     await expect(page.getByTestId("engine-badge")).toBeVisible();
+    await expect(page.getByTestId("masked-pdf-note")).toHaveCount(0);
 
-    const masked = (await clausesFor(request, restricted!.id)).filter((c) => c.kind === "masked").length;
-    test.skip(masked === 0, "이 패키지에는 금액 조항이 없어 가림 검사를 건너뜁니다.");
-    const markers = await leakMarkers(request);
-
-    await go(page, "clauses", restricted!.id);
-    await expect(page.getByTestId("masked-row")).toHaveCount(masked);
-    await expect(page.getByTestId("masked-pdf-note")).toBeVisible();
-    const text = await page.locator("main").innerText();
-    for (const m of markers) expect(text, "restricted screen leaks cost text").not.toContain(m);
-
-    for (const p of ["clauses", "rtm", "consistency"]) {
-      const body = await (await request.get(`${API}/rfqs/${rfqId}/${p}?team=${restricted!.id}`)).text();
-      for (const m of markers) expect(body, `${p} leaks cost text`).not.toContain(m);
-    }
-  });
-
-  test("company departments: a new department is restricted and filters by its areas (US10)", async ({
-    page,
-    request,
-  }) => {
-    const label = "e2e 설비팀";
-    await page.goto("/settings/departments");
-    await page.getByTestId("org-add").click();
-    await page.getByTestId("org-label-0").fill(label);
-    await page.getByTestId("org-area-0-production").check({ force: true });
-    await page.getByTestId("org-save").click();
-    await expect(page.getByTestId("org-ok")).toBeVisible();
-
-    try {
-      const meta = await apiJson<MetaResponse>(request, "/meta");
-      const mine = meta.data.teams.find((t) => t.label === label);
-      expect(mine?.group, "cost visibility is off by default").toBe("cost_restricted");
-      const masked = (await clausesFor(request, mine!.id)).filter((c) => c.kind === "masked").length;
-
-      await go(page, "clauses", mine!.id);
-      await expect(page.getByTestId("team-select")).toHaveValue(mine!.id);
+    const others = [cast.full, cast.costMember, cast.restricted].filter((a): a is Actor => a !== undefined);
+    for (const actor of others) {
+      const items = await clausesOf(actor, rfqId);
+      const masked = items.filter((c) => c.kind === "masked").length;
+      const markers = await leakMarkers(cast, actor, rfqId);
+      await openAs(page, actor, at("clauses"));
+      await expect(page.getByTestId("scope-line")).toContainText(`조항 ${items.length - masked}`);
       await expect(page.getByTestId("masked-row")).toHaveCount(masked);
-      await page.getByRole("group", { name: "부서 필터" }).getByRole("button", { name: label }).click();
-      await expect(page.getByTestId("role-filter")).toBeVisible();
-      await expect(page.getByRole("link", { name: "사전원가" })).toHaveCount(0);
-    } finally {
-      await page.goto("/settings/departments");
-      await page.getByTestId("org-reset").click();
-      await expect(page.getByTestId("org-empty")).toBeVisible();
+      await expect(page.getByTestId("masked-pdf-note")).toHaveCount(
+        actor.viewer.full_scope && actor.viewer.group === "cost_visible" ? 0 : 1,
+      );
+      const text = await page.locator("main").innerText();
+      for (const m of markers) expect(text, `${actor.username}: screen`).not.toContain(m);
+      for (const p of ["clauses", "rtm", "consistency"]) {
+        const body = await (await actor.api.get(`${API}/rfqs/${rfqId}/${p}?team=sales`)).text();
+        for (const m of markers) expect(body, `${actor.username}: ${p}`).not.toContain(m);
+      }
     }
   });
 
-  test("a citation opens the right file, page and sentence", async ({ page, request }) => {
-    const doc = await apiJson<DocumentResponse>(request, `/rfqs/${rfqId}`);
-    const cited = (await clausesFor(request, restricted!.id)).filter(
+  test("the department control only changes the view, and lock rows stay", async ({ page }) => {
+    await openAs(page, cast.restricted, at("clauses"));
+    const masked = (await clausesOf(cast.restricted, rfqId)).filter((c) => c.kind === "masked").length;
+    const filter = page.getByRole("group", { name: "보기: 부서" });
+    test.skip((await filter.count()) === 0, "이 계정이 볼 수 있는 조항이 없습니다.");
+    await filter.getByRole("button").nth(1).click();
+    await expect(page.getByTestId("role-filter")).toBeVisible();
+    await expect(page.getByTestId("masked-row")).toHaveCount(masked);
+  });
+
+  test("the Excel file downloads with the session", async ({ page }) => {
+    await openAs(page, cast.restricted, at("rtm"));
+    const [file] = await Promise.all([page.waitForEvent("download"), page.getByTestId("export-rtm-xlsx").click()]);
+    expect(file.suggestedFilename()).toMatch(/^AutoRFx_RTM_.*\.xlsx$/);
+  });
+
+  test("a citation opens the right file, page and sentence", async ({ page }) => {
+    const doc = await apiJson<DocumentResponse>(cast.restricted, `/rfqs/${rfqId}`);
+    const cited = (await clausesOf(cast.restricted, rfqId)).filter(
       (c) => c.kind === "clause" && c.summary.finding.citations.length > 0,
     );
     test.skip(cited.length === 0, "인용이 붙은 조항이 없습니다.");
@@ -167,24 +157,27 @@ test.describe.serial("real backend with user-supplied files", () => {
     const first = doc.data.files[0]?.id;
     const target = cited.find((c) => c.source_doc !== first) ?? cited[0];
 
-    await go(page, "clauses", restricted!.id);
+    await openAs(page, cast.restricted, at("clauses"));
     await page.locator(`[data-clause-id="${target.clause_id}"]`).click();
-    await expect(page.getByTestId("file-select")).toHaveValue(target.source_doc);
+    if (doc.data.files.length > 1) await expect(page.getByTestId("file-select")).toHaveValue(target.source_doc);
     await expect(page.getByTestId("source-mark").first()).toBeVisible();
     await expect(page.getByTestId("clause-origin").first()).toBeVisible();
   });
 
-  test("consistency: counts match the backend; a cross-file issue opens its second file", async ({ page, request }) => {
-    const res = await apiJson<ConsistencyResponse>(request, `/rfqs/${rfqId}/consistency?team=${restricted!.id}`);
-    await go(page, "consistency", restricted!.id);
-    await expect(page.getByTestId("checked-summary")).toContainText(`파일 ${res.data.checked.files}개`);
-    await expect(page.getByTestId("issue-masked")).toHaveCount(res.data.issues.filter((i) => i.kind === "masked").length);
+  test("consistency: counts match the backend; a cross-file issue opens its second file", async ({ page }) => {
+    const actor = cast.restricted;
+    const mine = await apiJson<ConsistencyResponse>(actor, `/rfqs/${rfqId}/consistency`);
+    await openAs(page, actor, at("consistency"));
+    await expect(page.getByTestId("checked-summary")).toContainText(`파일 ${mine.data.checked.files}개`);
+    await expect(page.getByTestId("issue-masked")).toHaveCount(mine.data.issues.filter((i) => i.kind === "masked").length);
 
-    const cross = res.data.issues.find(
+    const all = await apiJson<ConsistencyResponse>(cast.admin, `/rfqs/${rfqId}/consistency`);
+    const cross = all.data.issues.find(
       (i) => i.kind === "issue" && new Set(i.evidence.map((e) => e.locus.source_doc)).size > 1,
     );
     test.skip(cross?.kind !== "issue", "파일 사이에 걸친 정합성 이슈가 없습니다.");
     if (cross?.kind !== "issue") return;
+    await openAs(page, cast.admin, at("consistency"));
     await page.locator(`[data-issue-id="${cross.id}"]`).click();
     const second = cross.evidence.find((e) => e.locus.source_doc !== cross.evidence[0].locus.source_doc)!;
     await page.getByTestId("evidence-card").nth(cross.evidence.indexOf(second)).getByRole("button", { name: /원문 열기/ }).click();
@@ -192,35 +185,37 @@ test.describe.serial("real backend with user-supplied files", () => {
     await expect(page.getByTestId("source-mark").first()).toBeVisible();
   });
 
-  test("chat: the screen shows what the backend answered, for both teams", async ({ page, request }) => {
-    const ask = async (team: string, question: string) =>
-      (await (await request.post(`${API}/rfqs/${rfqId}/chat`, { data: { team, question } })).json()) as ChatResponse;
+  test("chat: the screen shows what the backend answered, and another account starts empty", async ({ page }) => {
+    const ask = async (actor: Actor, question: string) =>
+      (await (await actor.api.post(`${API}/rfqs/${rfqId}/chat`, { data: { question } })).json()) as ChatResponse;
 
     let question: string | undefined;
     for (const q of QUESTIONS) {
-      if ((await ask(visible!.id, q)).data.status === "answered") {
+      if ((await ask(cast.admin, q)).data.status === "answered") {
         question = q;
         break;
       }
     }
     test.skip(!question, "준비한 일반 질문 중 이 패키지가 답하는 것이 없습니다.");
 
-    await go(page, "chat", visible!.id);
+    await openAs(page, cast.admin, at("chat"));
     await page.getByTestId("chat-input").fill(question!);
     await page.keyboard.press("Enter");
     await expect(page.getByTestId("chat-answered")).toBeVisible();
     await expect(page.getByTestId("source-mark").first()).toBeVisible();
 
-    const expected = (await ask(restricted!.id, COST_QUESTION)).data.status;
-    await go(page, "chat", restricted!.id);
+    const expected = (await ask(cast.restricted, COST_QUESTION)).data.status;
+    await openAs(page, cast.restricted, at("chat"));
+    await expect(page.getByTestId("chat-answered")).toHaveCount(0);
     await page.getByTestId("chat-input").fill(COST_QUESTION);
     await page.keyboard.press("Enter");
     await expect(page.getByTestId(`chat-${expected}`)).toBeVisible();
   });
 
-  test("pre-cost: the screen shows the backend's result; 403 for a restricted team", async ({ page, request }) => {
-    await go(page, "precost", visible!.id);
+  test("pre-cost: the screen shows the backend's result; 403 for an account without cost", async ({ page }) => {
+    await openAs(page, cast.admin, at("precost"));
     await expect(page.getByTestId("rfq-type")).toBeVisible();
+    await expect(page.getByTestId("precost-scope-note")).toContainText("RFQ 전체");
     // Inputs chosen by the test, not taken from any RFQ.
     // A value the RFQ states sits in the summary until "수정" opens it; a missing one is an input already.
     const open = async (id: string, input: string) => {
@@ -247,8 +242,8 @@ test.describe.serial("real backend with user-supplied files", () => {
       expect(res.status()).toBe(200);
       return ((await res.json()) as PrecostResponse).data;
     };
-    const setup = await request.get(`${API}/rfqs/${rfqId}/precost-setup?team=${visible!.id}`);
-    const note = ((await setup.json()) as PrecostSetupResponse).data.assumption_note;
+    const setup = await apiJson<PrecostSetupResponse>(cast.admin, `/rfqs/${rfqId}/precost-setup`);
+    const note = setup.data.assumption_note;
     expect(note).not.toBe("");
     const assertShown = async (d: PrecostResponse["data"]) => {
       // The tile drops trailing zeros (1.2100 → 1.21); S1 quotes are below 1 000, so no grouping commas.
@@ -267,10 +262,81 @@ test.describe.serial("real backend with user-supplied files", () => {
       await assertShown(await decide());
     }
 
-    expect((await request.get(`${API}/rfqs/${rfqId}/precost-setup?team=${restricted!.id}`)).status()).toBe(403);
-    expect((await request.get(`${API}/company?team=${restricted!.id}`)).status()).toBe(403);
-    await go(page, "precost", restricted!.id);
-    await expect(page.getByText("이 팀에는 원가 정보가 제공되지 않습니다")).toBeVisible();
+    for (const p of [`/rfqs/${rfqId}/precost-setup`, "/company"]) {
+      expect((await cast.restricted.api.get(`${API}${p}`)).status(), p).toBe(403);
+      expect((await cast.restricted.api.get(`${API}${p}?team=sales`)).status(), p).toBe(403);
+    }
+    await openAs(page, cast.restricted, at("precost"));
+    await expect(page.getByTestId("forbidden")).toBeVisible();
     await expect(page.getByRole("link", { name: "사전원가" })).toHaveCount(0);
+  });
+
+  test("company settings: cost-visible accounts read, only an administrator saves", async ({ page }) => {
+    test.skip(!cast.costMember, "금액을 보는 부서 계정이 없습니다.");
+    await openAs(page, cast.costMember!, "/settings/company");
+    await expect(page.getByTestId("company-read-only")).toBeVisible();
+    await expect(page.getByTestId("company-save")).toHaveCount(0);
+    await openAs(page, cast.admin, "/settings/company");
+    await expect(page.getByTestId("company-save")).toBeVisible();
+  });
+
+  test("logout in tab A clears tab B", async ({ page, context }) => {
+    await openAs(page, cast.admin, at("clauses"));
+    const other = await context.newPage();
+    await other.goto(at("rtm"));
+    await expect(other.getByTestId("rtm-table")).toBeVisible();
+    await signOut(page);
+    await expect(other.getByTestId("login-form")).toBeVisible();
+    await expect(other.getByTestId("rtm-table")).toHaveCount(0);
+    await other.close();
+  });
+
+  test("accounts: an administrator creates, changes and deletes one; others are refused", async ({ page, browser }) => {
+    const username = `e2e-${Date.now().toString(36)}`;
+    const temporary = `temp-${Date.now()}`;
+    await openAs(page, cast.restricted, "/admin");
+    await expect(page.getByTestId("forbidden")).toBeVisible();
+    await expect(page.getByTestId("admin-link")).toHaveCount(0);
+
+    await openAs(page, cast.admin, "/admin");
+    await expect(page.getByTestId("users-table")).toContainText(cast.admin.username);
+    const form = page.getByTestId("create-user");
+    await form.getByLabel("아이디").fill(username);
+    await form.getByLabel("이름").fill("e2e 임시");
+    await form.getByLabel("부서").selectOption(cast.restricted.viewer.department!);
+    await form.getByLabel("임시 비밀번호").fill(temporary);
+    await form.getByRole("button", { name: "계정 만들기" }).click();
+    const row = page.locator(`[data-testid=user-row][data-username="${username}"]`);
+    await expect(row).toContainText("임시 비밀번호");
+
+    try {
+      // The new account has to change its password before anything else.
+      const context = await browser.newContext();
+      const fresh = await context.newPage();
+      await fresh.goto("/");
+      await fillLogin(fresh, username, temporary);
+      await expect(fresh.getByTestId("password-form")).toBeVisible();
+      await expect(fresh.getByTestId("rfq-list")).toHaveCount(0);
+      await fresh.getByLabel("현재 비밀번호").fill(temporary);
+      await fresh.getByLabel("새 비밀번호", { exact: true }).fill(`${temporary}-new`);
+      await fresh.getByLabel("새 비밀번호 확인").fill(`${temporary}-new`);
+      await fresh.getByRole("button", { name: "비밀번호 바꾸기" }).click();
+      await expect(fresh.getByTestId("account-menu")).toBeVisible();
+
+      await page.reload();
+      await row.getByRole("button", { name: /계정 관리/ }).click();
+      await page.getByTestId("account-panel").getByRole("button", { name: "사용 중지" }).click();
+      await expect(row).toContainText("사용 중지");
+      await fresh.reload();
+      await expect(fresh.getByTestId("login-form")).toBeVisible();
+      await context.close();
+    } finally {
+      const panel = page.getByTestId("account-panel");
+      if (!(await panel.isVisible())) await row.getByRole("button", { name: /계정 관리/ }).click();
+      await panel.getByRole("button", { name: "삭제" }).click();
+      await page.getByTestId("delete-confirm").getByRole("button", { name: "삭제" }).click();
+      await expect(row).toHaveCount(0);
+    }
+    await expect(page.getByTestId("audit-table")).toContainText(username);
   });
 });

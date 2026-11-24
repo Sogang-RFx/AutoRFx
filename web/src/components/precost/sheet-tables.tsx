@@ -128,13 +128,11 @@ function problem(roles: Roles): string | null {
 function ColumnAssigner({
   table,
   rfqId,
-  team,
   onRead,
   onCancel,
 }: {
   table: SheetTable;
   rfqId: string;
-  team: string | null;
   onRead: (lines: RfqLines) => void;
   onCancel: () => void;
 }) {
@@ -173,7 +171,7 @@ function ColumnAssigner({
     setBusy(true);
     setError(null);
     try {
-      const res = await rfqApi.assignSheetColumns(rfqId, { table: table.id, header_row: header, columns }, { team });
+      const res = await rfqApi.assignSheetColumns(rfqId, { table: table.id, header_row: header, columns });
       onRead(res.data.lines);
     } catch (e) {
       setError(describeError(e));
@@ -259,12 +257,10 @@ function ColumnAssigner({
 export function SheetTables({
   tables,
   rfqId,
-  team,
   onRead,
 }: {
   tables: SheetTable[];
   rfqId: string;
-  team: string | null;
   /** New lines after a table was assigned; the caller refills the line items. */
   onRead: (lines: RfqLines) => void;
 }) {
@@ -291,7 +287,7 @@ export function SheetTables({
         )}
       </div>
       {open === t.id && t.how !== "continued" && (
-        <ColumnAssigner table={t} rfqId={rfqId} team={team} onCancel={() => setOpen(null)}
+        <ColumnAssigner table={t} rfqId={rfqId} onCancel={() => setOpen(null)}
           onRead={(lines) => {
             setOpen(null);
             onRead(lines);

@@ -4,13 +4,12 @@
  * conflicts between files, missing attachments, broken references and notation
  * differences. Left: issues grouped by category. Right: the evidence side by
  * side on the paper surface, and the source viewer opened at the chosen file.
- * Issues whose evidence is cost-sensitive are masked for restricted teams.
+ * Issues whose evidence the account may not see in full are lock rows.
  */
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useMemo, useState } from "react";
 import type { KeyboardEvent, ReactNode } from "react";
-import { useTeamGroup } from "@/components/shell/app-shell";
 import { SourceViewer } from "@/components/source-viewer/source-viewer";
 import { IconArrowRight, IconLock } from "@/components/ui/icons";
 import {
@@ -27,7 +26,9 @@ import {
 import type { IssueCategory, IssueEvidence, IssueItem, Locus, VisibleIssue } from "@/lib/rfq/contract";
 import { fileName, fileTag, usePackageFiles } from "@/lib/rfq/package-context";
 import { rfqApi } from "@/lib/rfq/provider";
-import { useSession } from "@/lib/rfq/session";
+import { LOCKED_ISSUE, isCostVisible } from "@/lib/rfq/scope";
+import { useViewer } from "@/lib/rfq/session";
+import { useMeta } from "@/lib/rfq/use-meta";
 import { useResource } from "@/lib/rfq/use-resource";
 
 const CATEGORY_LABEL: Record<IssueCategory, string> = {
@@ -61,18 +62,14 @@ function SeverityMark({ severity }: { severity: VisibleIssue["severity"] }) {
 
 export default function ConsistencyPage() {
   const { id } = useParams<{ id: string }>();
-  const session = useSession();
-  return <Consistency key={session.team ?? "none"} rfqId={decodeURIComponent(id)} />;
+  const viewer = useViewer();
+  return <Consistency key={viewer.user_id} rfqId={decodeURIComponent(id)} />;
 }
 
 function Consistency({ rfqId }: { rfqId: string }) {
-  const session = useSession();
-  const { restricted: isRestricted, ready: teamReady, departments } = useTeamGroup();
-  const restricted = teamReady && isRestricted;
-  const ctx = useMemo(() => ({ team: session.team }), [session.team]);
-  const res = useResource(session.ready ? `consistency:${rfqId}:${ctx.team ?? "none"}` : null, (s) =>
-    rfqApi.consistency(rfqId, ctx, s),
-  );
+  const viewer = useViewer();
+  const { departmentLabel } = useMeta();
+  const res = useResource(`consistency:${rfqId}`, (s) => rfqApi.consistency(rfqId, s));
   const issues = useMemo(() => (res.status === "ok" ? res.data.data.issues : []), [res]);
   const [selected, setSelected] = useState<string | null>(null);
   const [target, setTarget] = useState<Locus | null>(null);
@@ -86,7 +83,6 @@ function Consistency({ rfqId }: { rfqId: string }) {
   }, [issues]);
   const flat: IssueItem[] = [...ordered.groups.flatMap((g) => g.items), ...ordered.masked];
   const current = flat.find((i) => i.id === selected) ?? null;
-  const deptLabel = (d: string) => departments.find((x) => x.id === d)?.label ?? d;
 
   function select(issueId: string) {
     setSelected(issueId);
@@ -169,7 +165,7 @@ function Consistency({ rfqId }: { rfqId: string }) {
           {ordered.masked.length > 0 && (
             <section aria-labelledby="cat-masked">
               <h3 id="cat-masked" className="bg-canvas px-4 py-1.5 text-label font-semibold text-ink-muted tabular">
-                가려진 이슈 {ordered.masked.length}
+                자물쇠 이슈 {ordered.masked.length}
               </h3>
               <ul>
                 {ordered.masked.map((m) => (
@@ -185,7 +181,7 @@ function Consistency({ rfqId }: { rfqId: string }) {
                         selected === m.id ? "bg-canvas" : "hover:bg-canvas",
                       )}
                     >
-                      <IconLock size={14} /> 금액 근거가 있는 이슈 · 이 팀에는 표시되지 않음
+                      <IconLock size={14} className="shrink-0" /> {LOCKED_ISSUE}
                     </button>
                   </li>
                 ))}
@@ -199,15 +195,13 @@ function Consistency({ rfqId }: { rfqId: string }) {
         <IssueDetail
           issue={current}
           rfqId={rfqId}
-          restricted={restricted}
-          deptLabel={deptLabel}
+          restricted={!isCostVisible(viewer)}
+          deptLabel={departmentLabel}
           target={target}
           onOpen={setTarget}
         />
         <SourceViewer
           rfqId={rfqId}
-          ctx={ctx}
-          restricted={restricted}
           target={target}
           className="min-h-[60dvh] lg:min-h-[420px] lg:flex-1"
         />
@@ -263,10 +257,10 @@ function IssueDetail({ issue, rfqId, restricted, deptLabel, target, onOpen }: De
   }
   if (issue.kind === "masked") {
     return (
-      <Panel title="가려진 이슈" labelId="issue-detail-title">
+      <Panel title="자물쇠 이슈" labelId="issue-detail-title">
         <div className="flex items-start gap-2 p-4 text-dense text-ink-muted" data-testid="issue-masked-detail">
           <IconLock size={16} className="mt-0.5 shrink-0" />
-          <p>근거에 금액 조항이 들어 있는 이슈입니다. 이 팀의 권한으로는 내용과 근거를 볼 수 없습니다.</p>
+          <p>{LOCKED_ISSUE}. 이 계정의 범위로는 내용과 근거를 볼 수 없습니다.</p>
         </div>
       </Panel>
     );

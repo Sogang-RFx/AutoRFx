@@ -4,28 +4,24 @@
  * dictionary (data/rules/price_sheet.yaml) could not read, the header words become
  * candidates here. Nothing changes until a candidate is approved: an approved word is then
  * used for every table, like a word of the rules file. The domain team moves approved
- * words into price_sheet.yaml when it reviews the rules. Cost-visible teams only, like the
+ * words into price_sheet.yaml when it reviews the rules. Cost-visible accounts only, like the
  * pre-cost screens that produce the candidates.
  */
-import Link from "next/link";
 import { useState } from "react";
-import { useTeamGroup } from "@/components/shell/app-shell";
 import { ROLE_LABEL } from "@/components/precost/sheet-tables";
-import { IconLock } from "@/components/ui/icons";
+import { PageHeader } from "@/components/shell/page-header";
 import { Button, EmptyState, ErrorState, ForbiddenState, Panel, Skeleton } from "@/components/ui/primitives";
 import type { SheetWordRequest, SheetWordsResponse } from "@/lib/rfq/contract";
 import { describeError, rfqApi } from "@/lib/rfq/provider";
-import { useSession } from "@/lib/rfq/session";
+import { isCostVisible } from "@/lib/rfq/scope";
+import { useViewer } from "@/lib/rfq/session";
 import { useResource } from "@/lib/rfq/use-resource";
 
 type Words = SheetWordsResponse["data"];
 
 export default function PriceSheetWordsPage() {
-  const session = useSession();
-  const { restricted, ready } = useTeamGroup();
-  const loaded = useResource(ready && !restricted ? `sheet-words:${session.team}` : null, (s) =>
-    rfqApi.sheetWords({ team: session.team }, s),
-  );
+  const canSee = isCostVisible(useViewer());
+  const loaded = useResource(canSee ? "sheet-words" : null, (s) => rfqApi.sheetWords(s));
   const [words, setWords] = useState<Words | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,7 +31,7 @@ export default function PriceSheetWordsPage() {
     setBusy(true);
     setError(null);
     try {
-      setWords((await rfqApi.decideSheetWord(body, { team: session.team })).data);
+      setWords((await rfqApi.decideSheetWord(body)).data);
     } catch (e) {
       setError(describeError(e));
     } finally {
@@ -43,28 +39,14 @@ export default function PriceSheetWordsPage() {
     }
   };
 
-  const header = (
-    <header className="flex flex-wrap items-baseline gap-x-4 gap-y-2">
-      <Link href="/" className="font-serif text-heading font-semibold text-ink">
-        AutoRFx
-      </Link>
-      <h1 className="text-heading font-semibold text-ink">가격표 사전</h1>
-      <button type="button" onClick={() => history.back()} className="ml-auto text-label text-ink-muted hover:text-ink">
-        ← 돌아가기
-      </button>
-    </header>
-  );
+  const header = <PageHeader title="가격표 사전" />;
 
-  if (ready && restricted) {
+  if (!canSee) {
     return (
       <main className="mx-auto flex min-h-dvh max-w-4xl flex-col gap-6 px-4 py-8 md:px-8">
         {header}
         <Panel title="가격표 사전" labelId="sheet-words-title">
-          <EmptyState title="이 팀에는 원가 정보가 제공되지 않습니다">
-            <p className="flex items-center gap-1.5">
-              <IconLock size={14} /> 금액 열람이 허용된 팀을 고르면 볼 수 있습니다.
-            </p>
-          </EmptyState>
+          <ForbiddenState message="이 계정에는 원가 정보가 제공되지 않습니다. 금액 열람 부서의 계정만 볼 수 있습니다." />
         </Panel>
       </main>
     );
@@ -78,7 +60,7 @@ export default function PriceSheetWordsPage() {
         다음에도 그대로 읽힙니다. 후보를 <span className="font-semibold text-ink">승인</span>하면 다른 양식의 표에서도 그 단어로
         열을 찾습니다. 잘못 지정한 단어는 거절하세요.
       </p>
-      {!ready || loaded.status === "loading" ? <Skeleton lines={4} /> : null}
+      {loaded.status === "loading" && <Skeleton lines={4} />}
       {loaded.status === "error" &&
         (loaded.forbidden ? <ForbiddenState message={loaded.error} /> : <ErrorState message={loaded.error} />)}
       {error && <ErrorState message={error} />}

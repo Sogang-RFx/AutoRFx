@@ -9,6 +9,8 @@
 
 /** Endpoint groups, used to say which part of the screen a failure belongs to. */
 export type RoutePart =
+  | "auth"
+  | "admin"
   | "document"
   | "analysis"
   | "source"

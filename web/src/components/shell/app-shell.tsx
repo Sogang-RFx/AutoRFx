@@ -1,18 +1,18 @@
 "use client";
 /**
- * App shell (TASKS S009, SPEC §14): top bar with RFQ package name, team switch,
- * engine indicator and presentation mode; 56px icon navigation rail.
+ * App shell (TASKS S009, SPEC §14): top bar with RFQ package name, engine indicator,
+ * account and presentation mode; 56px icon navigation rail.
  * Provides the package's file list to every screen.
  */
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { ReactNode } from "react";
-import type { Department, Engines, Team } from "@/lib/rfq/contract";
-import { departmentFilters, type DeptFilter } from "@/lib/rfq/departments";
 import { PackageProvider } from "@/lib/rfq/package-context";
 import { rfqApi } from "@/lib/rfq/provider";
-import { useSession } from "@/lib/rfq/session";
+import { isCostVisible } from "@/lib/rfq/scope";
+import { useSession, useViewer } from "@/lib/rfq/session";
 import { untilReady } from "@/lib/rfq/until-ready";
+import { useMeta } from "@/lib/rfq/use-meta";
 import { useResource } from "@/lib/rfq/use-resource";
 import {
   IconCalc,
@@ -20,54 +20,23 @@ import {
   IconCompare,
   IconDoc,
   IconGauge,
-  IconGear,
   IconPresent,
   IconTable,
   IconTimeline,
 } from "../ui/icons";
 import { EngineBadge, cx } from "../ui/primitives";
+import { AccountBar } from "./account-bar";
 
 type NavItem = { href: string; label: string; icon: ReactNode; costOnly?: boolean };
-
-/** Current team and whether it is in the cost-restricted group (RBAC-03: unknown → restricted). */
-export function useTeamGroup(): {
-  team: Team | null;
-  restricted: boolean;
-  teams: Team[];
-  departments: Department[];
-  filters: DeptFilter[];
-  engines: Engines | null;
-  ready: boolean;
-  error: string | null;
-} {
-  const session = useSession();
-  const meta = useResource(session.ready ? "meta" : null, (s) => rfqApi.meta(s));
-  const data = meta.status === "ok" ? meta.data.data : null;
-  const teams = data?.teams ?? [];
-  const departments = data?.departments ?? [];
-  const found = teams.find((t) => t.id === session.team) ?? null;
-  // Fails closed: restricted until team info proves otherwise.
-  return {
-    team: found,
-    restricted: found?.group !== "cost_visible",
-    teams,
-    departments,
-    filters: departmentFilters(teams, departments),
-    engines: data?.engines ?? null,
-    ready: meta.status === "ok",
-    error: meta.status === "error" ? meta.error : null,
-  };
-}
 
 export function AppShell({ rfqId, children }: { rfqId: string; children: ReactNode }) {
   const pathname = usePathname();
   const session = useSession();
-  const { restricted, teams, engines } = useTeamGroup();
+  const viewer = useViewer();
+  const { engines } = useMeta();
   // Right after upload the analysis is still running and the backend answers 409 not_ready;
   // the shell stays mounted across screens, so it must wait rather than keep that error.
-  const doc = useResource(session.ready ? `doc:${rfqId}` : null, (s) =>
-    untilReady(() => rfqApi.document(rfqId, s), s),
-  );
+  const doc = useResource(`doc:${rfqId}`, (s) => untilReady(() => rfqApi.document(rfqId, s), s));
   const info = doc.status === "ok" ? doc.data.data : null;
 
   const base = `/rfq/${encodeURIComponent(rfqId)}`;
@@ -80,7 +49,7 @@ export function AppShell({ rfqId, children }: { rfqId: string; children: ReactNo
     { href: `${base}/chat`, label: "챗봇", icon: <IconChat size={20} /> },
     { href: `${base}/evaluation`, label: "평가", icon: <IconGauge size={20} /> },
   ];
-  const visibleNav = nav.filter((n) => !(n.costOnly && restricted));
+  const visibleNav = nav.filter((n) => !n.costOnly || isCostVisible(viewer));
   const docName = info ? info.name : doc.status === "error" ? "문서 정보를 불러오지 못함" : "…";
 
   return (
@@ -102,49 +71,15 @@ export function AppShell({ rfqId, children }: { rfqId: string; children: ReactNo
             </p>
             {info && (
               <p className="truncate text-label text-ink-muted tabular" data-testid="package-summary">
-                파일 {info.files.length}개 · {info.page_count}페이지 · 패키지 SHA-256 {info.sha256.slice(0, 12)}…
+                파일 {info.files.length}개 · {info.page_count}페이지
+                {/* The digest covers every file, so it is shown to the full scope only. */}
+                {viewer.full_scope && ` · 패키지 SHA-256 ${info.sha256.slice(0, 12)}…`}
               </p>
             )}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             {engines && <EngineBadge engines={engines} />}
-            <label className="flex items-center gap-1.5 text-label text-ink-muted">
-              <span>팀</span>
-              <select
-                data-testid="team-select"
-                value={session.team ?? ""}
-                onChange={(e) => session.setTeam(e.target.value || null)}
-                className="min-h-8 max-w-44 rounded-control border border-line-control bg-surface px-2 text-dense text-ink"
-              >
-                <option value="">선택 안 함 (금액 제한)</option>
-                {teams.map((t) => (
-                  <option key={t.id} value={t.id}>
-                    {t.label}
-                    {t.group === "cost_visible" ? " · 금액 열람" : ""}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <Link
-              href="/settings/departments"
-              data-testid="org-settings-link"
-              className="inline-flex min-h-8 items-center rounded-control border border-line-control px-2 text-label font-medium text-ink transition-soft hover:bg-canvas"
-            >
-              부서 설정
-            </Link>
-            {!restricted && (
-              <Link
-                href="/settings/company"
-                data-testid="company-settings-link"
-                aria-label="사전원가 기본 설정"
-                title="사전원가 기본 설정 (단가표 · 회사 프로필 · 비율)"
-                className="inline-flex min-h-8 items-center gap-1 rounded-control border border-line-control px-2 text-label font-medium text-ink transition-soft hover:bg-canvas"
-              >
-                <IconGear size={14} />
-                기본 설정
-              </Link>
-            )}
             <button
               type="button"
               aria-pressed={session.present}
@@ -157,6 +92,7 @@ export function AppShell({ rfqId, children }: { rfqId: string; children: ReactNo
               <IconPresent size={14} />
               발표 모드
             </button>
+            <AccountBar />
           </div>
         </header>
 

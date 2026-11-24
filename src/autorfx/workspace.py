@@ -8,7 +8,8 @@ a source file (INV-1)::
       manifest.json                    PackageManifest
       original/<file name>             byte-identical copies of the received files, read-only
       canonical/<file_id>.pdf          canonical PDF; every page number refers to it
-      canonical/<file_id>.masked.pdf   cost-sensitive text removed, for restricted teams
+      canonical/<file_id>.masked.pdf   cost-sensitive text removed
+      scoped/<key>.pdf                 what one scope may see of a file, drawn when asked for
       layout/<file_id>.json            FileLayout (DOC, DOCX, XLSX; not for PDF originals)
       parsed/<file_id>.json            ParsedFile
       clauses.json                     Clause[]
@@ -84,6 +85,10 @@ class Workspace:
     @property
     def canonical_dir(self) -> Path:
         return self.root / "canonical"
+
+    @property
+    def scoped_dir(self) -> Path:
+        return self.root / "scoped"
 
     @property
     def layout_dir(self) -> Path:

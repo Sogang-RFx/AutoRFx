@@ -7,7 +7,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from autorfx.analysis import RuleOnlyProvider
+from auth_helpers import scope_for, visible_of
+from autorfx.analysis import RuleOnlyProvider, analyze
 from autorfx.pipeline import _dense
 from autorfx.retrieval import SearchIndex, answer_question, compare
 from autorfx.retrieval.dense import CachedEncoder, DenseIndex, load_encoder
@@ -57,7 +58,7 @@ def test_unrelated_question_stays_unanswered(index: SearchIndex):
 
 
 def test_restricted_group_never_sees_cost_sentences(index: SearchIndex):
-    """INV-4: the hidden clause is not even scored for a restricted team."""
+    """INV-4: the hidden clause is not even scored for a restricted team (unscoped index, tools only)."""
     visible = index.search("가격은 얼마인가요?", group="cost_visible", mode="dense")
     assert "d01:2.2" in clause_ids(visible)
     for mode in ("dense", "hybrid"):
@@ -69,12 +70,46 @@ def test_restricted_group_never_sees_cost_sentences(index: SearchIndex):
     assert all(hit.clause_id != "d01:2.2" for hit in raw)
 
 
-def test_chat_answers_a_paraphrase_with_a_verified_citation(index: SearchIndex):
+def test_a_scoped_index_scores_only_its_own_rows(ruleset: Ruleset):
+    """INV-4, auth-rbac §4: with a gate that lets everything through, the dense and the hybrid search of a
+    scope return its own sentences and no others; the corpus is not embedded again."""
+    encoder = TopicEncoder()
+    index = SearchIndex(CLAUSES, ruleset, dense=DenseIndex(CLAUSES, encoder, min_score=-1.0))
+    embedded = encoder.calls
+    scoped = index.scoped(frozenset({DEADLINE.clause_id, QUALITY.clause_id}))
+    assert encoder.calls == embedded, "the stored vectors are reused"
+    assert scoped.dense is not None
+    for mode in ("dense", "hybrid", None):
+        found = scoped.search("price EUR packaging", mode=mode)
+        assert clause_ids(found) == {DEADLINE.clause_id, QUALITY.clause_id}, mode
+    assert clause_ids(index.search("price EUR", group="cost_visible", mode="dense")) == {
+        c.clause_id for c in CLAUSES
+    }, "the whole index is unchanged"
+    assert not index.scoped(frozenset()).search("price EUR", mode="dense").hits
+
+
+def test_a_subset_gives_the_same_ranking_as_an_index_of_those_clauses_alone(ruleset: Ruleset):
+    """INV-4: ``DenseIndex.subset`` equals an index built from the subset, so nothing of the rest is felt."""
+    ids = frozenset({DEADLINE.clause_id, PACKAGING.clause_id})
+    whole = SearchIndex(CLAUSES, ruleset, dense=DenseIndex(CLAUSES, TopicEncoder(), min_score=0.5))
+    alone = SearchIndex(
+        [DEADLINE, PACKAGING],
+        ruleset,
+        dense=DenseIndex([DEADLINE, PACKAGING], TopicEncoder(), min_score=0.5),
+    )
+    for question in ("견적서를 언제까지 내야 하나요?", "부품을 어떤 상자에 담아서 보내야 하나요?", "price"):
+        assert whole.scoped(ids).search(question) == alone.scoped(ids).search(question), question
+
+
+def test_chat_answers_a_paraphrase_with_a_verified_citation(index: SearchIndex, ruleset: Ruleset):
+    scope = scope_for("logistics", ruleset)
+    visible = visible_of(CLAUSES, analyze(CLAUSES, ruleset, RuleOnlyProvider()), scope, ruleset)
+    assert "d01:3.2" in {c.clause_id for c in visible}
     data = answer_question(
         "부품을 어떤 상자에 담아서 보내야 하나요?",
-        index=index,
-        clauses=CLAUSES,
-        group="cost_restricted",
+        index=index.scoped(frozenset(c.clause_id for c in visible)),
+        clauses=visible,
+        scope=scope,
         provider=RuleOnlyProvider(),
     )
     assert_valid("chat", {"data": data, "provenance": {"chat": "real"}})

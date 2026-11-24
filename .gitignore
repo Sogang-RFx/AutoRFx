@@ -69,3 +69,6 @@ htmlcov/
 vectorstore/
 *.sqlite3
 .DS_Store
+
+# Test account passwords written by `autorfx users seed`. The repository is public.
+/ACCOUNTS.local.md

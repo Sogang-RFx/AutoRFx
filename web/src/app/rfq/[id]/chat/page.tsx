@@ -2,17 +2,17 @@
 /**
  * RFQ chatbot (TASKS S016, SPEC §14, US6). Answers come from the backend and
  * quote the source; with no evidence it does not answer. Citations open the
- * source viewer. The conversation resets on team change.
+ * source viewer. The conversation resets when the account changes.
  */
 import { useParams } from "next/navigation";
-import { useMemo, useState } from "react";
-import { useTeamGroup } from "@/components/shell/app-shell";
+import { useState } from "react";
 import { SourceViewer } from "@/components/source-viewer/source-viewer";
 import { IconArrowRight, IconLock } from "@/components/ui/icons";
 import { Button, CitationChip, ErrorState, ProvenanceBadge, cx, locusKey, sameLocus } from "@/components/ui/primitives";
 import type { ChatResponse, Locus } from "@/lib/rfq/contract";
 import { describeError, rfqApi } from "@/lib/rfq/provider";
-import { useSession } from "@/lib/rfq/session";
+import { scopeName, seesWholeSource } from "@/lib/rfq/scope";
+import { useViewer } from "@/lib/rfq/session";
 
 type Turn = { question: string; response: ChatResponse | null; error: string | null };
 
@@ -27,15 +27,12 @@ const MODE_NOTE: Record<ChatResponse["data"]["mode"], string> = {
 
 export default function ChatPage() {
   const { id } = useParams<{ id: string }>();
-  const session = useSession();
-  return <Chat key={session.team ?? "none"} rfqId={decodeURIComponent(id)} />;
+  const viewer = useViewer();
+  return <Chat key={viewer.user_id} rfqId={decodeURIComponent(id)} />;
 }
 
 function Chat({ rfqId }: { rfqId: string }) {
-  const session = useSession();
-  const { restricted: isRestricted, ready: teamReady } = useTeamGroup();
-  const restricted = teamReady && isRestricted;
-  const ctx = useMemo(() => ({ team: session.team }), [session.team]);
+  const viewer = useViewer();
   const [turns, setTurns] = useState<Turn[]>([]);
   const [draft, setDraft] = useState("");
   const [target, setTarget] = useState<Locus | null>(null);
@@ -54,7 +51,7 @@ function Chat({ rfqId }: { rfqId: string }) {
     setIsBusy(true);
     setTurns((t) => [...t, { question: q, response: null, error: null }]);
     try {
-      const res = await rfqApi.chat(rfqId, q, ctx);
+      const res = await rfqApi.chat(rfqId, q);
       setTurns((t) => t.map((x, i) => (i === t.length - 1 ? { ...x, response: res } : x)));
       const first = res.data.answer?.finding.citations[0];
       if (first) setTarget(first);
@@ -76,9 +73,9 @@ function Chat({ rfqId }: { rfqId: string }) {
             RFQ에 묻기
           </h1>
           <ProvenanceBadge provenance={headerProvenance} />
-          {restricted && (
+          {!seesWholeSource(viewer) && (
             <span className="ml-auto inline-flex items-center gap-1 text-label text-ink-muted">
-              <IconLock size={12} /> 금액 조항 제외
+              <IconLock size={12} /> {scopeName(viewer)} 안에서만 답합니다
             </span>
           )}
         </header>
@@ -134,14 +131,7 @@ function Chat({ rfqId }: { rfqId: string }) {
           </Button>
         </form>
       </section>
-      <SourceViewer
-        key={ctx.team ?? "none"}
-        rfqId={rfqId}
-        ctx={ctx}
-        restricted={restricted}
-        target={target}
-        className="min-h-[70dvh] lg:min-h-0"
-      />
+      <SourceViewer rfqId={rfqId} target={target} className="min-h-[70dvh] lg:min-h-0" />
     </div>
   );
 }

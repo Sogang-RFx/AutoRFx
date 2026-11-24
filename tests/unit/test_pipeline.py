@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from auth_helpers import cost_restricted_scope, scope_for
 from autorfx import scoring
 from autorfx.analysis import RuleOnlyProvider
 from autorfx.config import Settings
@@ -209,7 +210,7 @@ def test_scoring_compares_labels_and_lists_the_misses(processed, tmp_path: Path)
     assert errors[("consistency", "m-annex-4")] == ("이슈 있음", "찾지 못함")
 
 
-def test_a_restricted_team_sees_no_misses_about_hidden_clauses(processed, tmp_path: Path):
+def test_a_restricted_scope_sees_no_misses_about_hidden_clauses(processed, tmp_path: Path, ruleset: Ruleset):
     """INV-8 (review M1): the error list names the judged department of each clause, so the rows of
     hidden clauses are left out for a restricted team; the metrics still count them."""
     from autorfx import access
@@ -222,9 +223,13 @@ def test_a_restricted_team_sees_no_misses_about_hidden_clauses(processed, tmp_pa
     write_key(tmp_path / "keys", data.manifest.sha256, clauses=clauses)
     key = scoring.find_key(data.manifest, tmp_path / "keys")
     withheld = access.withheld_ids(
-        data.clauses, data.analyses, data.consistency.issues, group="cost_restricted"
+        data.clauses,
+        data.analyses,
+        data.consistency.issues,
+        scope=cost_restricted_scope(ruleset),
+        ruleset=ruleset,
     )
-    assert "d01:2.2" in withheld
+    assert "d01:2.2" in withheld and "d01:2.3" not in withheld and "c-incoterm" not in withheld
     restricted = scoring.evaluate(
         data.manifest, data.analyses, data.consistency.issues, key, now_ms=5, withheld=withheld
     )
@@ -234,6 +239,55 @@ def test_a_restricted_team_sees_no_misses_about_hidden_clauses(processed, tmp_pa
     assert "01_rfq.pdf §2.2" in {e["ref"] for e in visible["errors"]}
     assert "costing" not in json.dumps(restricted, ensure_ascii=False)
     assert restricted["metrics"] == visible["metrics"]
+
+
+def test_a_department_withholds_what_lies_outside_it(processed, ruleset: Ruleset):
+    """auth-rbac §4: for a department every clause and issue outside its scope is withheld; the full
+    scope withholds nothing."""
+    from autorfx import access
+
+    _, data = processed
+
+    def withheld(name: str) -> frozenset[str]:
+        return access.withheld_ids(
+            data.clauses,
+            data.analyses,
+            data.consistency.issues,
+            scope=scope_for(name, ruleset),
+            ruleset=ruleset,
+        )
+
+    everything = {c.clause_id for c in data.clauses} | {"c-incoterm"}
+    assert withheld("sales") == withheld("admin") == frozenset()
+    assert withheld("legal") == everything - {"d01:2.3"}
+    assert withheld("logistics") == {"d01:0", "d01:1.1", "d01:2.2"}
+
+
+def test_the_pipeline_writes_nothing_for_a_single_scope(processed, tmp_path: Path, ruleset: Ruleset):
+    """auth-rbac §4/§5: the stored artifacts stay as they were: masked copies are still made, and scoped
+    PDFs exist only once an account asks for one."""
+    from autorfx import access, pipeline
+
+    workspace, data = processed
+    assert callable(access.build_masked_pdf) and callable(access.hidden_keys)
+    assert access.hidden_keys(data.clauses), "the cost clause is still named by position"
+    assert not (workspace.root / "scoped").exists()
+    assert {p.name for p in workspace.root.iterdir()} == {
+        "original",
+        "canonical",
+        "layout",
+        "parsed",
+        *ARTIFACTS,
+        "manifest.json",
+        "run.json",
+    }
+    assert sorted(p.name for p in workspace.canonical_dir.iterdir()) == [
+        "d01.masked.pdf",
+        "d01.pdf",
+        "d02.masked.pdf",
+        "d02.pdf",
+    ]
+    assert pipeline.PIPELINE_VERSION == "2026-11-24.1", "frozen: saved analyses stay valid"
 
 
 def test_key_of_another_package_is_not_used(processed, tmp_path: Path):
