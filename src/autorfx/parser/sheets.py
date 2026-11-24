@@ -42,6 +42,7 @@ def _table(file_id: str, sheet: str, rows: list[tuple[SheetRow, Locus]]) -> Tabl
         rows=tuple(grid[body]),
         row_loci=tuple(locus for _, locus in rows[body]),
         cell_anchors=tuple(anchors[body]),
+        header_anchors=tuple(anchors[0]) if has_header else (),
     )
 
 

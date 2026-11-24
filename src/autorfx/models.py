@@ -160,6 +160,8 @@ class Table(Model):
     rows: tuple[tuple[str, ...], ...]
     row_loci: tuple[Locus, ...]
     cell_anchors: tuple[tuple[str | None, ...], ...] = ()
+    header_anchors: tuple[str | None, ...] = ()
+    """Sheet addresses of the header cells, parallel to ``header`` (empty columns left out)."""
 
 
 class SectionInfo(Model):

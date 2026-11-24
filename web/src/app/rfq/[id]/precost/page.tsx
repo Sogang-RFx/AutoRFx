@@ -223,7 +223,8 @@ function linesFromRfq(rows: RfqLine[], year: string, processes: string[]): LineR
     key: newKey(),
     item: r.part ? `${r.name} (${r.part})` : r.name,
     target: "",
-    volumes: [{ key: newKey(), year, quantity: String(r.quantity) }],
+    // An order form leaves the quantity to the buyer: the user enters it (no number is made up).
+    volumes: [{ key: newKey(), year, quantity: r.quantity === null ? "" : String(r.quantity) }],
     items: [{ key: newKey(), label: "매입가", category: "purchased", quantity: "1", unit: "개", unit_price: "", price_id: null }],
     processes,
     included: true,
@@ -699,7 +700,7 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
             </div>
           )}
           {byLine && sheet.length > 0 && (
-            <SheetPicker key={[...chosenLists].join("|")} sheet={sheet} total={sheetAll.length} limit={sheetLines.limit}
+            <SheetPicker key={[...chosenLists].join("|")} sheet={sheetAll} limit={sheetLines.limit}
               apply={(rows) =>
                 // Lines added by hand are kept: the sheet reading missed them.
                 setLines((list) => [...linesFromRfq(rows, sheetYear, processValues), ...list.filter((l) => l.group === MANUAL)])
@@ -1108,12 +1109,21 @@ function ItemsEditor({
   );
 }
 
-/** Which price-sheet groups to price: the lines are filled from the RFQ, the user only adds prices. */
-function SheetPicker({ sheet, total, limit, apply }: { sheet: RfqLine[]; total: number; limit: number; apply: (rows: RfqLine[]) => void }) {
+/**
+ * Which price-sheet groups to price: the lines are filled from the RFQ, the user only adds prices.
+ * ``sheet`` is every item of the chosen lists; at most ``limit`` are filled at a time, so a long
+ * sheet (thousands of parts) is priced a few groups at a time.
+ */
+function SheetPicker({ sheet, limit, apply }: { sheet: RfqLine[]; limit: number; apply: (rows: RfqLine[]) => void }) {
   const groups = [...new Set(sheet.map((r) => r.group ?? "기타"))];
-  const [chosen, setChosen] = useState<Set<string>>(() => new Set(groups));
+  const unsized = sheet.filter((r) => r.quantity === null).length;
+  // A long sheet starts with nothing chosen: the user picks the groups to fill.
+  const [chosen, setChosen] = useState<Set<string>>(() => new Set(sheet.length > limit ? [] : groups));
   const picked = sheet.filter((r) => chosen.has(r.group ?? "기타"));
-  const pages = [...new Set(sheet.map((r) => r.page))];
+  const pages = [...new Set(sheet.map((r) => r.page))].sort((a, b) => a - b);
+  const files = new Set(sheet.map((r) => r.source_doc)).size;
+  // Pages count per file: lists of two files (a PDF and an attached workbook) have no one page range.
+  const where = files > 1 ? `파일 ${files}개` : `${pages[0]}${pages.length > 1 ? `–${pages[pages.length - 1]}` : ""}쪽`;
   const toggle = (g: string, on: boolean) =>
     setChosen((prev) => {
       const next = new Set(prev);
@@ -1124,9 +1134,11 @@ function SheetPicker({ sheet, total, limit, apply }: { sheet: RfqLine[]; total: 
   return (
     <div className="flex flex-col gap-2 rounded-control border border-line p-3" data-testid="sheet-picker">
       <p className="text-label text-ink-muted">
-        <span className="font-semibold text-ink">RFQ 가격표에서 품목 {sheet.length}개를 찾았습니다</span> ({pages[0]}
-        {pages.length > 1 ? `–${pages[pages.length - 1]}` : ""}쪽). 품목 이름과 수량은 RFQ에 적힌 그대로이고, 매입가만 넣으면 됩니다. 빠진 품목은 아래에서 직접 추가하세요(다시 채워도 유지됩니다).
-        {total > limit && ` 품목이 많아 앞의 ${limit}개만 불러왔습니다(전체 ${total}개).`}
+        <span className="font-semibold text-ink">RFQ 가격표에서 품목 {sheet.length}개를 찾았습니다</span> ({where}). 품목 이름과 수량은 RFQ에 적힌 그대로이고, 매입가만 넣으면 됩니다. 빠진 품목은 아래에서 직접 추가하세요(다시 채워도 유지됩니다).
+        {unsized > 0 &&
+          ` 이 중 ${unsized}개는 RFQ에 수량이 비어 있습니다(주문서에서 발주처가 적는 칸). 입찰할 품목의 물량을 직접 넣으세요.`}
+        {sheet.length > limit &&
+          ` 품목이 많아 한 번에 ${limit}개까지 채웁니다. 처음에는 앞의 ${limit}개를 채웠으니, 아래에서 분류를 골라 나눠 계산하세요.`}
       </p>
       {groups.length > 1 && (
         <div className="flex flex-wrap gap-x-4 gap-y-1.5" aria-label="가격표 분류">
@@ -1139,8 +1151,8 @@ function SheetPicker({ sheet, total, limit, apply }: { sheet: RfqLine[]; total: 
         </div>
       )}
       <div>
-        <Button variant="ghost" data-testid="sheet-apply" disabled={picked.length === 0} onClick={() => apply(picked)}>
-          선택한 {picked.length}개로 품목 다시 채우기
+        <Button variant="ghost" data-testid="sheet-apply" disabled={picked.length === 0} onClick={() => apply(picked.slice(0, limit))}>
+          {picked.length > limit ? `선택한 ${picked.length}개 중 앞의 ${limit}개로 품목 다시 채우기` : `선택한 ${picked.length}개로 품목 다시 채우기`}
         </Button>
       </div>
     </div>

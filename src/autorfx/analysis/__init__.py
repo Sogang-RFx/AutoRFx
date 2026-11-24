@@ -16,6 +16,7 @@ from autorfx.analysis.providers import (
     MemoryCache,
     RuleOnlyProvider,
     ScriptedProvider,
+    SheetMap,
     SqliteCache,
     TransientProviderError,
 )
@@ -35,6 +36,7 @@ __all__ = [
     "OpenAIProvider",
     "RuleOnlyProvider",
     "ScriptedProvider",
+    "SheetMap",
     "SqliteCache",
     "TransientProviderError",
     "analyze",

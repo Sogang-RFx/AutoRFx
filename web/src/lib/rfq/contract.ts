@@ -438,7 +438,8 @@ export const RfqLine = z.object({
   no: z.string(),
   part: z.string().nullable(),
   name: z.string(),
-  quantity: z.number().int().positive(),
+  /** Null on an order form whose quantity column is left for the buyer: the user enters it. */
+  quantity: z.number().int().positive().nullable(),
   yearly: z.boolean(),
   group: z.string().nullable(),
   source_doc: z.string(),
@@ -508,11 +509,11 @@ export type SheetList = z.infer<typeof SheetList>;
 
 /** Items of every list (``total`` of them, at most 600 sent); the screen fills at most ``limit``. */
 export const RfqLines = z.object({
-  items: z.array(RfqLine).max(600),
+  items: z.array(RfqLine).max(3000),
   total: z.number().int().nonnegative(),
   limit: z.number().int().positive(),
   tables: z.array(SheetTable).max(40),
-  lists: z.array(SheetList).max(20),
+  lists: z.array(SheetList).max(40),
 });
 export type RfqLines = z.infer<typeof RfqLines>;
 
@@ -871,12 +872,36 @@ export const UploadResponse = envelope(
 export type UploadResponse = z.infer<typeof UploadResponse>;
 
 /** Assign the columns of one table by hand; the same header is read this way from now on. */
+/** Header rows a table may have above its items (LAYOUT_SCAN in lines.py): a sheet may start with notes. */
+export const MAX_HEADER_ROW = 39;
+
 export const SheetColumnsRequest = z.object({
   table: z.string().min(1).max(120),
-  header_row: z.number().int().min(0).max(5),
+  header_row: z.number().int().min(0).max(MAX_HEADER_ROW),
   columns: z.partialRecord(ColumnRole, z.number().int().nonnegative()),
 });
 export type SheetColumnsRequest = z.infer<typeof SheetColumnsRequest>;
+
+/** Ask the AI where the items of one table are. Only that table's first rows are sent. */
+export const SheetSuggestRequest = z.object({ table: z.string().min(1).max(120) });
+export type SheetSuggestRequest = z.infer<typeof SheetSuggestRequest>;
+
+/**
+ * An AI suggestion for a table's columns: positions only. The server read the table with it once
+ * (``lines`` items, the first names in ``preview``); nothing is stored until the user accepts it.
+ */
+export const SheetSuggestResponse = envelope(
+  z.object({
+    header_row: z.number().int().min(0).max(MAX_HEADER_ROW),
+    columns: z.partialRecord(ColumnRole, z.number().int().nonnegative()),
+    reason: z.string(),
+    lines: z.number().int().positive(),
+    preview: z.array(z.string()).max(5),
+    rows: z.array(z.array(z.string())),
+    engine: z.string(),
+  }),
+);
+export type SheetSuggestResponse = z.infer<typeof SheetSuggestResponse>;
 
 export const SheetColumnsResponse = envelope(z.object({ lines: RfqLines }));
 export type SheetColumnsResponse = z.infer<typeof SheetColumnsResponse>;
@@ -928,6 +953,8 @@ export const CONTRACT_SCHEMAS = {
   "org-departments-request": OrgDepartmentsRequest,
   "sheet-columns-request": SheetColumnsRequest,
   "sheet-columns": SheetColumnsResponse,
+  "sheet-suggest-request": SheetSuggestRequest,
+  "sheet-suggest": SheetSuggestResponse,
   "sheet-words": SheetWordsResponse,
   "sheet-word-request": SheetWordRequest,
   "upload-request": UploadRequest,

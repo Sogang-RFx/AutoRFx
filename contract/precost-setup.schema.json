@@ -1243,7 +1243,7 @@
           "type": "object",
           "properties": {
             "items": {
-              "maxItems": 600,
+              "maxItems": 3000,
               "type": "array",
               "items": {
                 "type": "object",
@@ -1261,9 +1261,16 @@
                     "type": "string"
                   },
                   "quantity": {
-                    "type": "integer",
-                    "exclusiveMinimum": 0,
-                    "maximum": 9007199254740991
+                    "anyOf": [
+                      {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
                   },
                   "yearly": {
                     "type": "boolean"
@@ -1400,7 +1407,7 @@
               }
             },
             "lists": {
-              "maxItems": 20,
+              "maxItems": 40,
               "type": "array",
               "items": {
                 "type": "object",
