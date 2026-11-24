@@ -312,7 +312,7 @@ def prepare(
         "cost_inputs": cost_inputs,
         "suggested_items": suggested_items(cost_inputs, company, today),
         "assumption_note": ruleset.cost_model.assumption_note,
-        "lines": lines or {"items": [], "total": 0, "limit": MAX_LINES, "tables": []},
+        "lines": lines or {"items": [], "total": 0, "limit": MAX_LINES, "tables": [], "lists": []},
     }
 
 

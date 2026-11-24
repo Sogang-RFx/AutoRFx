@@ -35,12 +35,24 @@ from autorfx.models import PackageManifest, ParsedFile, Table
 from autorfx.rules import COLUMN_ROLES, PriceSheetRules
 
 MAX_LINES = 200
+"""Lines the screen fills at most, from the lists the user picked."""
+MAX_ITEMS = 600
+"""Lines sent for every list together; the user picks the lists."""
+MAX_LISTS = 20
 MAX_TABLES = 40
 """Tables listed for the user to check or assign; a long RFQ has many small tables."""
 SAMPLE_ROWS = 8
 HEADER_SCAN = 6
 """Rows at the top of a table that may be its header (titles and notes come first)."""
 CELL_CHARS = 80
+HEADER_CHARS = 120
+"""A header cell longer than this is a sentence, not a column name."""
+CAPTION = re.compile(
+    r"^\s*(?:annex|appendix|attachment|exhibit|schedule|lot|anlage|anhang|별첨|첨부|부록)\b", re.IGNORECASE
+)
+"""A caption that names a part of the RFQ ("Annex 2")."""
+SUBCAPTION = re.compile(r"^\s*(?:table|tabelle|form|price|bid|표|양식)\b", re.IGNORECASE)
+"""A caption that names the table itself ("TABLE 1: Offer to Supply Goods")."""
 PART = re.compile(r"^(?=.*\d)[A-Z0-9][A-Z0-9./-]{3,}$")
 INTEGER = re.compile(r"^\s*[$€£]?\s*\d[\d,.]*\s*$")
 
@@ -54,8 +66,12 @@ class Grid:
     title: str
     rows: tuple[tuple[str, ...], ...]
     pages: tuple[int, ...]
-    spans: tuple[bool, ...] = ()
-    """Per row: True when one cell spans the row (a group heading of a ruled table)."""
+    spans: tuple[int | None, ...] = ()
+    """Per row: the column of the one cell that spans the row (a heading or a note), else None."""
+    boxes: tuple[tuple[int, float, float, float, float], ...] = ()
+    """Where the table is printed: (page, x, y, w, h), as fractions of the page."""
+    caption: str = ""
+    """Text printed just above the table ("Annex 2", "TABLE 1: Offer to Supply Goods")."""
 
 
 @dataclass
@@ -94,7 +110,9 @@ def _cell_text(words: Sequence[tuple], rect: Sequence[float]) -> str:
     return _join([w for w in words if x0 <= (w[0] + w[2]) / 2 <= x1 and y0 <= (w[1] + w[3]) / 2 <= y1])
 
 
-def _spill(words: Sequence[tuple], columns: Sequence[tuple[float, float]], top: float, bottom: float) -> list:
+def _spill(
+    words: Sequence[tuple], columns: Sequence[tuple[float, float]], top: float, bottom: float
+) -> tuple[list[tuple[str, ...]], tuple[float, float, float, float] | None]:
     """Rows above the first ruled table of a page, read by the columns of the previous page's table.
 
     A sheet that breaks over a page sometimes loses its ruling lines at the top of the next page.
@@ -127,7 +145,7 @@ def _spill(words: Sequence[tuple], columns: Sequence[tuple[float, float]], top: 
         if sum(1 for t in texts if t) >= 2 and any(INTEGER.match(t) for t in texts if t):
             anchors.append((k, parts))
     if not anchors:
-        return []
+        return [], None
     cells = [[list(p) for p in parts] for _, parts in anchors]
     for k, ws in lines.items():
         if any(k == a for a, _ in anchors):
@@ -140,7 +158,45 @@ def _spill(words: Sequence[tuple], columns: Sequence[tuple[float, float]], top: 
             # A wrapped description continues a text cell; a subtotal line must not fill a number cell.
             if part and (not own or any(c.isalpha() for c in own)):
                 cells[nearest][i].extend(part)
-    return [tuple(_join(c) for c in row) for row in cells]
+    used = [w for row in cells for c in row for w in c]
+    box = (
+        min(w[0] for w in used),
+        min(w[1] for w in used),
+        max(w[2] for w in used),
+        max(w[3] for w in used),
+    )
+    return [tuple(_join(c) for c in row) for row in cells], box
+
+
+def _caption(page: pymupdf.Page, bbox: Sequence[float]) -> str:
+    """Titles printed above a table: the nearest lines that read like a caption ("Annex 2")."""
+    x0, top, x1, _ = bbox
+    above = []
+    for block in page.get_text("blocks"):
+        bx0, _, bx1, by1, text = block[:5]
+        if top - 300 < by1 <= top + 2 and bx1 > x0 and bx0 < x1:
+            first = normalize(text.split("\n", 1)[0])
+            if first:
+                above.append((by1, first))
+    above.sort(reverse=True)
+    named = next((text for _, text in above if CAPTION.match(text)), None)
+    sub = next((text for _, text in above if SUBCAPTION.match(text)), None)
+    found = [t for t in (named, sub) if t]
+    if found:
+        return " · ".join(found)[:120]
+    return above[0][1][:80] if above and len(above[0][1]) <= 80 else ""
+
+
+def _box(page: pymupdf.Page, number: int, bbox: Sequence[float]) -> tuple[int, float, float, float, float]:
+    w, h = page.rect.width or 1, page.rect.height or 1
+    x0, y0, x1, y1 = (max(0.0, v) for v in bbox)
+    return (
+        number,
+        round(x0 / w, 4),
+        round(y0 / h, 4),
+        round(min(x1 - x0, w) / w, 4),
+        round(min(y1 - y0, h) / h, 4),
+    )
 
 
 def _header_line(words: Sequence[tuple], compiled: Mapping[str, tuple]) -> bool:
@@ -181,8 +237,8 @@ def _pdf_grids(
                 tables = page.find_tables(strategy="text").tables
             if last:
                 bottom = tables[0].bbox[1] if tables else page.rect.height
-                spilled = _spill(words, last, page.rect.height * 0.06, bottom)
-                if spilled:
+                spilled, box = _spill(words, last, page.rect.height * 0.06, bottom)
+                if spilled and box:
                     grids.append(
                         Grid(
                             id=f"{doc}:p{page.number + 1}:t0",
@@ -190,18 +246,20 @@ def _pdf_grids(
                             title=f"{page.number + 1}쪽 위 (앞 쪽 표에 이어짐)",
                             rows=tuple(spilled),
                             pages=tuple(page.number + 1 for _ in spilled),
+                            boxes=(_box(page, page.number + 1, box),),
                         )
                     )
             last = None
             for n, table in enumerate(tables, start=1):
                 rows: list[tuple[str, ...]] = []
-                spans: list[bool] = []
+                spans: list[int | None] = []
                 for row in table.rows:
                     cells = [_cell_text(words, c) if c else "" for c in row.cells]
                     if not any(cells):
                         continue
                     rows.append(tuple(cells))
-                    spans.append(sum(1 for c in row.cells if c is not None) == 1 and len(row.cells) > 1)
+                    present = [i for i, c in enumerate(row.cells) if c is not None]
+                    spans.append(present[0] if len(present) == 1 and len(row.cells) > 1 else None)
                 widest = max(table.rows, key=lambda r: sum(1 for c in r.cells if c))
                 if all(widest.cells):
                     last = [(c[0], c[2]) for c in widest.cells]
@@ -214,6 +272,8 @@ def _pdf_grids(
                             rows=tuple(rows),
                             pages=tuple(page.number + 1 for _ in rows),
                             spans=tuple(spans),
+                            boxes=(_box(page, page.number + 1, table.bbox),),
+                            caption=_caption(page, table.bbox),
                         )
                     )
     return tuple(grids)
@@ -243,6 +303,7 @@ def table_grids(doc: str, tables: Iterable[Table]) -> tuple[Grid, ...]:
                     id=f"{doc}:s{n}",
                     source_doc=doc,
                     title=f"시트 {table.title}",
+                    caption=table.title,
                     rows=tuple(tuple(normalize(c) for c in r) for r in rows),
                     pages=tuple(table.page_number for _ in rows),
                 )
@@ -256,7 +317,7 @@ def _hits(text: str, patterns: Iterable[tuple[re.Pattern[str], int]]) -> int:
     return max((weight for pattern, weight in patterns if pattern.search(text)), default=0)
 
 
-PREFERENCE = ("description", "quantity", "part", "no", "price", "total", "unit", "months")
+PREFERENCE = ("description", "quantity", "part", "no", "spec", "price", "total", "unit", "months")
 """Between equally long keywords ("Item" may be a number or a name), the earlier role wins."""
 
 
@@ -270,7 +331,7 @@ def header_roles(cells: Sequence[str], compiled: Mapping[str, tuple]) -> dict[st
     pairs = []
     for index, cell in enumerate(cells):
         text = normalize(cell)
-        if text and len(text) <= 80:
+        if text and len(text) <= HEADER_CHARS:
             pairs += [(_hits(text, compiled[role]), role, index) for role in COLUMN_ROLES]
     pairs.sort(key=lambda p: (-p[0], PREFERENCE.index(p[1]), p[2]))
     found: dict[str, int] = {}
@@ -282,6 +343,28 @@ def header_roles(cells: Sequence[str], compiled: Mapping[str, tuple]) -> dict[st
 
 def _readable(columns: Mapping[str, int]) -> bool:
     return "quantity" in columns and ("description" in columns or "part" in columns)
+
+
+def _check_number(grid: Grid, header: int, columns: dict[str, int]) -> dict[str, int]:
+    """An item-number column holds numbers. A column of names under "Items" is the item name.
+
+    "Items to be Supplied | Quantity | Description/Specifications": "Items" matched the number
+    words, but its cells are names, so it becomes the description (and a description column
+    already found becomes the specification).
+    """
+    index = columns.get("no")
+    if index is None:
+        return columns
+    cells = [_cell(row, index) for row in grid.rows[header + 1 :]]
+    filled = [c for c in cells if c]
+    if not filled or sum(1 for c in filled if any(ch.isdigit() for ch in c)) * 2 >= len(filled):
+        return columns
+    fixed = {role: i for role, i in columns.items() if role != "no"}
+    if "description" not in fixed:
+        fixed["description"] = index
+    elif "spec" not in fixed:
+        fixed["spec"], fixed["description"] = fixed["description"], index
+    return fixed
 
 
 def _cell(row: Sequence[str], index: int | None) -> str:
@@ -307,10 +390,16 @@ def _read_rows(reading: Reading, start: int, state: dict, compiled: Mapping[str,
         filled = [c for c in row if c]
         text = normalize(" ".join(filled))
         heading = _group(text, compiled)
-        spans = grid.spans[index] if grid.spans else False
+        span = grid.spans[index] if grid.spans else None
         if _hits(text, compiled["total_row"]) and not INTEGER.match(_cell(row, columns.get("no")) or "x"):
             continue  # "Category 1 – Brakes Subtotal: $"
-        if heading or (spans and len(filled) == 1 and not INTEGER.match(filled[0])):
+        if span is not None and span > 0 and len(filled) == 1 and not heading:
+            # A merged cell under the description ("Input current: 16A"): more of the item above.
+            if state["last"] is not None and state["last_at"] and state["last_at"][0] == grid.id:
+                state["last"]["name"] = normalize(f"{state['last']['name']}; {text}")[:200]
+                state["last_at"] = (grid.id, index)
+            continue
+        if heading or (span == 0 and len(filled) == 1 and not INTEGER.match(filled[0])):
             state["group"] = heading or text[:80]
             state["run"] += 1
             continue
@@ -319,6 +408,7 @@ def _read_rows(reading: Reading, start: int, state: dict, compiled: Mapping[str,
             count = parse_number(_cell(row, months), "en")
             amount = amount * count if count is not None else None
         name = _cell(row, columns.get("description"))
+        spec = _cell(row, columns.get("spec"))
         part = _cell(row, columns.get("part")) or None
         if (
             amount is None
@@ -339,6 +429,8 @@ def _read_rows(reading: Reading, start: int, state: dict, compiled: Mapping[str,
         name = normalize(name or part or "")
         if len(name) < 2 or not any(c.isalpha() for c in name):
             continue
+        if spec and spec.lower() != name.lower():
+            name = normalize(f"{name} – {spec}")
         state["count"] += 1
         line = {
             "no": _cell(row, columns.get("no")) or str(state["count"]),
@@ -381,7 +473,10 @@ def read_grids(
                 reading.header, reading.columns, reading.how = index, roles, "rules"
                 break
         if reading.header is not None:
-            state.update(header=grid.rows[reading.header], columns=reading.columns, last=None)
+            if reading.how == "rules":
+                reading.columns = _check_number(grid, reading.header, reading.columns)
+            head = grid.rows[reading.header]
+            state.update(header=head, columns=reading.columns, last=None)
             if reading.header > 0 and (heading := _group(normalize(" ".join(grid.rows[0])), compiled)):
                 state["group"], state["run"] = heading, state["run"] + 1
             _read_rows(reading, reading.header + 1, state, compiled)
@@ -444,6 +539,87 @@ def file_grids(
     return found
 
 
+def _lists(readings: Sequence[Reading]) -> list[dict]:
+    """Readings that make one sheet: a header and the pages it goes on over.
+
+    A new list starts at a header whose columns hold other things, in another file, or more
+    than a page after the last one. A header repeated on every page of the same sheet stays
+    one list, even when its wording changes ("Part Number", "MFG. Part Number").
+    """
+    lists: list[dict] = []
+    current: dict | None = None
+    for reading in readings:
+        grid = reading.grid
+        if reading.how == "none":
+            current = None
+            continue
+        head = (
+            grid.rows[reading.header]
+            if reading.header is not None
+            else (current["header"] if current else ())
+        )
+        joined = (
+            current is not None
+            and current["source_doc"] == grid.source_doc
+            and grid.pages[0] - current["pages"][-1] <= 1
+            and (
+                reading.how == "continued"
+                or (len(head) == len(current["header"]) and reading.columns == current["columns"])
+            )
+        )
+        if not joined:
+            current = {
+                "id": grid.id,
+                "source_doc": grid.source_doc,
+                "caption": grid.caption or grid.title,
+                "header": tuple(head),
+                "columns": dict(reading.columns),
+                "how": reading.how,
+                "pages": [],
+                "boxes": [],
+                "tables": [],
+            }
+            lists.append(current)
+        for page in grid.pages:
+            if page not in current["pages"]:
+                current["pages"].append(page)
+        current["boxes"].extend(grid.boxes)
+        current["tables"].append(grid.id)
+        for line in reading.lines:
+            line["list"] = current["id"]
+    return lists
+
+
+def _words(name: str) -> frozenset[str]:
+    return frozenset(w for w in re.findall(r"[^\W\d_]{3,}", name.lower()))
+
+
+def _same_item(a: dict, b: dict) -> bool:
+    """The same thing listed twice: the same quantity and most words of the shorter name."""
+    if a["quantity"] != b["quantity"]:
+        return False
+    wa, wb = _words(a["name"]), _words(b["name"])
+    return bool(wa and wb) and len(wa & wb) * 2 >= min(len(wa), len(wb))
+
+
+def _overlaps(lists: Sequence[dict], items: Sequence[dict]) -> dict[str, list[dict]]:
+    """Per list: the other lists that repeat at least half of its items (a spec sheet and its bid form)."""
+    by_list: dict[str, list[dict]] = {}
+    for item in items:
+        by_list.setdefault(item["list"], []).append(item)
+    found: dict[str, list[dict]] = {lst["id"]: [] for lst in lists}
+    for a in lists:
+        mine = by_list.get(a["id"], [])
+        for b in lists:
+            theirs = by_list.get(b["id"], [])
+            if a is b or not mine or not theirs:
+                continue
+            count = sum(1 for x in mine if any(_same_item(x, y) for y in theirs))
+            if count * 2 >= min(len(mine), len(theirs)):
+                found[a["id"]].append({"list": b["id"], "items": count})
+    return found
+
+
 def rfq_lines(
     manifest: PackageManifest,
     parsed: Mapping[str, ParsedFile],
@@ -455,19 +631,27 @@ def rfq_lines(
 ) -> dict:
     """The ``lines`` object of the pre-cost setup: price-sheet rows of every file, and the tables seen.
 
-    ``words`` are header words a user approved per role; ``layouts`` maps a header signature to the
-    columns a user assigned.
+    Rows come grouped in lists (one sheet each, over its pages). An RFQ may print the same items
+    twice, as a specification and again as the bid form; the user picks the lists to price, and the
+    lists with price columns are suggested. ``words`` are header words a user approved per role;
+    ``layouts`` maps a header signature to the columns a user assigned.
     """
     compiled = rules.compiled({role: tuple(ws) for role, ws in (words or {}).items()})
     readings: list[Reading] = []
     for grids in file_grids(manifest, parsed, canonical, rules):
         readings.extend(read_grids(grids, compiled, layouts or {}))
+    lists = _lists(readings)[:MAX_LISTS]
+    shown = {lst["id"] for lst in lists}
     rows = [line for reading in readings for line in reading.lines]
-    # A revised sheet (an addendum) lists a group again: its last listing replaces the earlier ones.
-    last_run = {row["group"]: row["run"] for row in rows if row["group"]}
+    # A revised sheet (an addendum) lists a group again: its last listing replaces the earlier ones,
+    # and a list left empty by that is shown as replaced.
+    last = {row["group"]: row for row in rows if row["group"]}
+    replaced: dict[str, str] = {}
     latest: dict[tuple, dict] = {}
     for row in rows:
-        if row["group"] and row["run"] != last_run[row["group"]]:
+        if row["group"] and row["run"] != last[row["group"]]["run"]:
+            if last[row["group"]]["list"] != row["list"]:
+                replaced[row["list"]] = last[row["group"]]["list"]
             continue
         key = (
             (row["group"], row["no"])
@@ -476,13 +660,44 @@ def rfq_lines(
         )
         latest.pop(key, None)
         latest[key] = {k: v for k, v in row.items() if k != "run"}
-    found = list(latest.values())
+    found = [item for item in latest.values() if item["list"] in shown]
+    overlaps = _overlaps(lists, found)
+    counts: dict[str, int] = {}
+    for item in found:
+        counts[item["list"]] = counts.get(item["list"], 0) + 1
+    priced = {lst["id"] for lst in lists if {"price", "total"} & set(lst["columns"])}
+    suggested = {
+        lst["id"]
+        for lst in lists
+        if counts.get(lst["id"])
+        and (lst["id"] in priced or not priced or not any(o["list"] in priced for o in overlaps[lst["id"]]))
+    }
     tables = [r for r in readings if r.lines or _looks_like_table(r.grid)]
     return {
-        "items": found[:MAX_LINES],
+        "items": found[:MAX_ITEMS],
         "total": len(found),
         "limit": MAX_LINES,
         "tables": [_summary(r) for r in tables[:MAX_TABLES]],
+        "lists": [
+            {
+                "id": lst["id"],
+                "source_doc": lst["source_doc"],
+                "caption": lst["caption"][:120],
+                "pages": lst["pages"],
+                "header": [c[:CELL_CHARS] for c in lst["header"]],
+                "columns": lst["columns"],
+                "how": lst["how"],
+                "lines": counts.get(lst["id"], 0),
+                "has_price": lst["id"] in priced,
+                "suggested": lst["id"] in suggested,
+                "replaced_by": replaced.get(lst["id"]) if not counts.get(lst["id"]) else None,
+                "boxes": [
+                    {"page": b[0], "x": b[1], "y": b[2], "w": b[3], "h": b[4]} for b in lst["boxes"][:60]
+                ],
+                "overlaps": overlaps[lst["id"]],
+            }
+            for lst in lists
+        ],
     }
 
 
@@ -499,4 +714,4 @@ def find_grid(
     )
 
 
-__all__ = ["MAX_LINES", "Grid", "find_grid", "header_roles", "rfq_lines", "signature"]
+__all__ = ["MAX_ITEMS", "MAX_LINES", "Grid", "find_grid", "header_roles", "rfq_lines", "signature"]

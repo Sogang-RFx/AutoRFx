@@ -431,11 +431,13 @@ export const RfqLine = z.object({
   page: z.number().int().positive(),
   /** The table (SheetTable.id) the row was read from. */
   table: z.string(),
+  /** The list (SheetList.id) the row belongs to. */
+  list: z.string(),
 });
 export type RfqLine = z.infer<typeof RfqLine>;
 
 /** What a column of a price sheet holds. Same list as COLUMN_ROLES in rules.py. */
-export const ColumnRole = z.enum(["no", "part", "description", "quantity", "unit", "months", "price", "total"]);
+export const ColumnRole = z.enum(["no", "part", "description", "spec", "quantity", "unit", "months", "price", "total"]);
 export type ColumnRole = z.infer<typeof ColumnRole>;
 
 /**
@@ -456,11 +458,47 @@ export const SheetTable = z.object({
 });
 export type SheetTable = z.infer<typeof SheetTable>;
 
+/** Where a list is printed: a page and a box on it, as fractions of the page. */
+export const SheetBox = z.object({
+  page: z.number().int().positive(),
+  x: z.number().min(0).max(1),
+  y: z.number().min(0).max(1),
+  w: z.number().min(0).max(1),
+  h: z.number().min(0).max(1),
+});
+export type SheetBox = z.infer<typeof SheetBox>;
+
+/**
+ * One item list of the RFQ: a sheet with one header, over its pages. An RFQ may print the same
+ * items twice (a specification and the bid form); the user picks the lists to price, and
+ * ``suggested`` ones (with price columns, or not repeating one) are picked at first.
+ * ``overlaps`` names the other lists that repeat at least half of this one's items.
+ * ``replaced_by`` is set when a revised sheet (an addendum) replaced every item of this list.
+ */
+export const SheetList = z.object({
+  id: z.string(),
+  source_doc: z.string(),
+  caption: z.string(),
+  pages: z.array(z.number().int().positive()).min(1),
+  header: z.array(z.string()),
+  columns: z.partialRecord(ColumnRole, z.number().int().nonnegative()),
+  how: z.enum(["rules", "layout", "continued"]),
+  lines: z.number().int().nonnegative(),
+  has_price: z.boolean(),
+  suggested: z.boolean(),
+  replaced_by: z.string().nullable(),
+  boxes: z.array(SheetBox).max(60),
+  overlaps: z.array(z.object({ list: z.string(), items: z.number().int().nonnegative() })),
+});
+export type SheetList = z.infer<typeof SheetList>;
+
+/** Items of every list (``total`` of them, at most 600 sent); the screen fills at most ``limit``. */
 export const RfqLines = z.object({
-  items: z.array(RfqLine),
+  items: z.array(RfqLine).max(600),
   total: z.number().int().nonnegative(),
   limit: z.number().int().positive(),
   tables: z.array(SheetTable).max(40),
+  lists: z.array(SheetList).max(20),
 });
 export type RfqLines = z.infer<typeof RfqLines>;
 

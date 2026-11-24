@@ -178,6 +178,117 @@ def test_a_revised_sheet_replaces_the_earlier_listing_of_a_group(
         ("Brakes", 40, 2),
         ("Filters", 180, 1),
     ]
+    # The same layout on the next page is one list, with the revision applied inside it.
+    (only,) = found["lists"]
+    assert (only["pages"], only["lines"], only["replaced_by"]) == ([1, 2], 2, None)
+
+
+def _annexes(path: Path) -> Path:
+    """An RFQ that lists the goods twice: a specification (Annex 1) and the bid form (Annex 2)."""
+
+    def table(page: pymupdf.Page, rows: Sequence[Sequence[str | None]], widths: Sequence[float]) -> None:
+        y = 80.0
+        for row in rows:
+            x = 40.0
+            if row[0] is None:  # a note merged across the specification column and the ones after it
+                x += sum(widths[:2])
+                page.draw_rect(pymupdf.Rect(x, y, 40 + sum(widths), y + 18), color=(0, 0, 0), width=0.6)
+                page.insert_text((x + 3, y + 12), str(row[1]), fontsize=8)
+            else:
+                for text, width in zip(row, widths, strict=True):
+                    page.draw_rect(pymupdf.Rect(x, y, x + width, y + 18), color=(0, 0, 0), width=0.6)
+                    page.insert_text((x + 3, y + 12), str(text), fontsize=8)
+                    x += width
+            y += 18
+
+    doc = pymupdf.open()
+    page = doc.new_page(width=792, height=612)
+    page.insert_text((40, 60), "Annex 1", fontsize=10)
+    table(
+        page,
+        [
+            ("Items to be Supplied", "Quantity", "Description/Specifications", "Latest Delivery Date"),
+            ("Car washing", "1", "Car washing machine 250bar", "30 days"),
+            (None, "Input current: 16A"),
+            ("Compressor", "7", "Two piston compressor 70lt", "30 days"),
+        ],
+        (120, 60, 300, 120),
+    )
+    page = doc.new_page(width=792, height=612)
+    page.insert_text((40, 60), "Annex 2", fontsize=10)
+    table(
+        page,
+        [
+            (
+                "Item No.",
+                "Description of Goods",
+                "Size, model and technical specifications",
+                "Quantity",
+                "Unit Price",
+                "Total Price",
+            ),
+            ("1", "Car washing", "Car washing machine 250bar", "1", "", ""),
+            ("2", "Compressor", "Two piston compressor 70lt", "7", "", ""),
+        ],
+        (50, 120, 250, 60, 80, 80),
+    )
+    doc.save(str(path))
+    return path
+
+
+def test_a_specification_and_its_bid_form_are_two_lists_and_the_bid_form_is_suggested(
+    tmp_path: Path, rules: PriceSheetRules
+) -> None:
+    manifest = PackageManifest.model_construct(files=[type("F", (), {"id": "d01", "kind": "pdf"})()])
+    found = rfq_lines(manifest, {}, {"d01": _annexes(tmp_path / "a.pdf")}, rules)
+    spec, form = found["lists"]
+    assert (spec["caption"], spec["pages"], spec["lines"], spec["has_price"], spec["suggested"]) == (
+        "Annex 1",
+        [1],
+        2,
+        False,
+        False,
+    )
+    assert (form["caption"], form["pages"], form["lines"], form["has_price"], form["suggested"]) == (
+        "Annex 2",
+        [2],
+        2,
+        True,
+        True,
+    )
+    # Both lists are sent; nothing is merged, the overlap is only named.
+    assert spec["overlaps"] == [{"list": form["id"], "items": 2}]
+    assert form["overlaps"] == [{"list": spec["id"], "items": 2}]
+    by_list = {lst["id"]: [r for r in found["items"] if r["list"] == lst["id"]] for lst in found["lists"]}
+    # "Items to be Supplied" holds names, not numbers; a merged note belongs to the item above.
+    assert [(r["name"], r["quantity"]) for r in by_list[spec["id"]]] == [
+        ("Car washing – Car washing machine 250bar; Input current: 16A", 1),
+        ("Compressor – Two piston compressor 70lt", 7),
+    ]
+    assert [(r["no"], r["name"]) for r in by_list[form["id"]]] == [
+        ("1", "Car washing – Car washing machine 250bar"),
+        ("2", "Compressor – Two piston compressor 70lt"),
+    ]
+    assert form["boxes"][0]["page"] == 2 and 0 < form["boxes"][0]["w"] <= 1
+
+
+def test_a_sheet_whose_header_wording_changes_on_the_next_page_stays_one_list(
+    tmp_path: Path, rules: PriceSheetRules
+) -> None:
+    first = [HEADER, ("1", "FL-500-S", "FILTER OIL", "$", "180", "$")]
+    reworded = (
+        "ITEM #",
+        "MFG. PART NUMBER",
+        "DESCRIPTION",
+        "UNIT PRICE",
+        "YEARLY QUANTITY",
+        "EXTENDED PRICE",
+    )
+    second = [reworded, ("2", "FA-1883", "FILTER AIR", "$", "40", "$")]
+    manifest = PackageManifest.model_construct(files=[type("F", (), {"id": "d01", "kind": "pdf"})()])
+    found = rfq_lines(manifest, {}, {"d01": _pdf(tmp_path / "a.pdf", [[first], [second]], WIDE)}, rules)
+    (only,) = found["lists"]
+    assert (only["pages"], only["lines"], only["suggested"]) == ([1, 2], 2, True)
 
 
 def _sheet_table(header: tuple[str, ...], rows: list[tuple[str, ...]]) -> Table:
