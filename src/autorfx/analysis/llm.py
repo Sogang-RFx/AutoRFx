@@ -31,6 +31,9 @@ from autorfx.analysis.usage import Usage
 from autorfx.rules import Ruleset
 
 PROMPT_VERSION = "2026-11-18.1"
+# Part of every cached translation's key. Changing the translation prompt (OpenAIProvider.translate) or
+# SYSTEM means raising it, or translations of the old prompt are served as new ones.
+TRANSLATION_PROMPT_VERSION = "2026-11-24.1"
 T = TypeVar("T", bound=BaseModel)
 R = TypeVar("R")
 StructuredCall = Callable[[str, str, type[T]], T]

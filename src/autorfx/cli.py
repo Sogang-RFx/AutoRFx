@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from autorfx.analysis import RuleOnlyProvider, make_provider
+from autorfx.analysis import RuleOnlyProvider, SqliteCache, make_provider
 from autorfx.config import get_settings
 from autorfx.guard import GuardError, assert_not_held_out
 from autorfx.ingest import list_samples
@@ -58,15 +58,22 @@ def _analyze(args: argparse.Namespace) -> int:
     if found is None:
         return 2
     sources, name, is_sample = found
-    workspace = run_pipeline(
-        sources,
-        name=name,
-        settings=settings,
-        ruleset=ruleset,
-        provider=make_provider(settings, ruleset),
-        is_sample=is_sample,
-        now_ms=int(time.time() * 1000),
-    )
+    # Without a key nothing is translated, so no cache file is created.
+    translations = SqliteCache(settings.cache_dir / "translation.sqlite") if settings.llm_connected else None
+    try:
+        workspace = run_pipeline(
+            sources,
+            name=name,
+            settings=settings,
+            ruleset=ruleset,
+            provider=make_provider(settings, ruleset),
+            is_sample=is_sample,
+            now_ms=int(time.time() * 1000),
+            translation_cache=translations,
+        )
+    finally:
+        if translations is not None:
+            translations.close()
     data = load_rfq(workspace, ruleset)
     flagged = sum(analysis.red_flag is not None for analysis in data.analyses)
     llm = "연결" if data.engines["llm_connected"] else "미연결"

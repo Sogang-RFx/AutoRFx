@@ -11,14 +11,17 @@ from pydantic import ValidationError
 from autorfx.analysis import (
     Answer,
     ClauseInput,
+    MemoryCache,
     OpenAIProvider,
     RuleOnlyProvider,
     ScriptedProvider,
+    SqliteCache,
     TransientProviderError,
     analyze,
     engine_ids,
     make_provider,
 )
+from autorfx.analysis import translation as translation_module
 from autorfx.analysis.llm import openai_translation_call, translation_options, usage_from_metadata
 from autorfx.analysis.translation import (
     WITHHELD,
@@ -28,6 +31,7 @@ from autorfx.analysis.translation import (
     batches,
     clean,
     translate_clause,
+    translation_key,
 )
 from autorfx.analysis.usage import Usage, UsageMeter
 from autorfx.config import Settings
@@ -547,3 +551,203 @@ def test_analyze_meters_every_clause_including_failed_ones(ruleset: Ruleset):
     assert meter.total() == USED.plus(USED).plus(USED)  # 1.1 ok, 1.4 failed (error usage), 1.5 withheld
     analyze([PLAIN], ruleset, RuleOnlyProvider(), meter=meter)
     assert meter.total().calls == 3
+
+
+# ── translation cache (TRANS-01, CITE-02) ───────────────────────────────────
+CACHED = make_clause("7.1", ["7.1 Delivery is FCA supplier plant.", "Samples are due 8 weeks before SOP."])
+CACHED_KO = ["인도는 FCA 공급사 공장이다.", "샘플은 SOP 8주 전까지이다."]
+
+
+def texts_of(clause: Clause) -> list[str]:
+    return [s.text for s in clause.sentences]
+
+
+def cached_provider(clause: Clause = CACHED, texts: list[str] | None = None, **kwargs):  # type: ignore[no-untyped-def]
+    queue = [dict(enumerate(texts or CACHED_KO, 1))]
+    return ScriptedProvider(translations={clause.clause_id: queue}, **kwargs)
+
+
+def test_second_run_costs_no_call_and_gives_the_same_translation():
+    """TRANS-01: a batch translated once is read from the cache; a hit adds no usage."""
+    cache = MemoryCache()
+    first_provider = cached_provider(usage=USED)
+    first = translate_clause(CACHED, first_provider, cache=cache)
+    second_provider = cached_provider(usage=USED)
+    second = translate_clause(CACHED, second_provider, cache=cache)
+    assert len(first_provider.translate_calls) == 1
+    assert second_provider.translate_calls == []
+    assert second.sentences == first.sentences == tuple(CACHED_KO)
+    assert second.status == "translated"
+    assert second.usage == Usage()
+    assert first.usage == USED
+
+
+CHANGED = {
+    "model": ({}, "other-model", ""),
+    "terms": ({}, "scripted", "v2"),
+    "sentence": ({"sentences": [texts_of(CACHED)[0], "Samples are due 9 weeks."]}, "scripted", ""),
+    "order": ({"sentences": texts_of(CACHED)[::-1]}, "scripted", ""),
+    "lang": ({"lang": "de"}, "scripted", ""),
+}
+
+
+@pytest.mark.parametrize("name", list(CHANGED))
+def test_a_changed_input_asks_again(name: str):
+    """TRANS-01: model, language, terms digest and the sentences (with their order) are part of the key."""
+    overrides, provider_id, terms = CHANGED[name]
+    cache = MemoryCache()
+    translate_clause(CACHED, cached_provider(), cache=cache)
+    clause = make_clause(
+        "7.1", overrides.get("sentences", texts_of(CACHED)), lang=overrides.get("lang", "en")
+    )
+    provider = cached_provider(clause, provider_id=provider_id)
+    translate_clause(clause, provider, cache=cache, terms_digest=terms)
+    assert len(provider.translate_calls) == 1
+
+
+def test_prompt_version_is_part_of_the_key(monkeypatch: pytest.MonkeyPatch):
+    """TRANS-01: raising the prompt version drops every cached translation."""
+    args = (texts_of(CACHED), "en", "scripted", "")
+    before = translation_key(*args)
+    monkeypatch.setattr(translation_module, "TRANSLATION_PROMPT_VERSION", "next")
+    assert translation_key(*args) != before
+
+
+def test_the_ruleset_digest_is_not_part_of_the_key(ruleset: Ruleset):
+    """TRANS-01: a rule change must not repeat paid translations."""
+    cache = MemoryCache()
+    analyze([PLAIN], ruleset, cached_provider(PLAIN, ["인도조건은 FCA이다."]), translation_cache=cache)
+    changed = ruleset.model_copy(update={"digest": "another"})
+    second = cached_provider(PLAIN, ["인도조건은 FCA이다."])
+    results = analyze([PLAIN], changed, second, translation_cache=cache)
+    assert second.translate_calls == []
+    assert results[0].translation_status == "translated"
+
+
+def test_a_batch_with_a_missing_number_is_not_stored():
+    """TRANS-03: only a batch whose every sentence has a text is cached."""
+    cache = MemoryCache()
+    partial = ScriptedProvider(translations={"d01:7.1": [{1: CACHED_KO[0]}, {}]})
+    assert translate_clause(CACHED, partial, cache=cache).status == "partial"
+    again = cached_provider()
+    translate_clause(CACHED, again, cache=cache)
+    assert len(again.translate_calls) == 1
+
+
+def test_a_number_filled_by_the_retry_is_stored():
+    """TRANS-03: after the one retry the batch is complete and is stored."""
+    cache = MemoryCache()
+    provider = ScriptedProvider(translations={"d01:7.1": [{1: CACHED_KO[0]}, {2: CACHED_KO[1]}]})
+    translate_clause(CACHED, provider, cache=cache)
+    again = cached_provider()
+    result = translate_clause(CACHED, again, cache=cache)
+    assert again.translate_calls == []
+    assert result.sentences == tuple(CACHED_KO)
+
+
+def test_cached_text_gets_the_number_check_again():
+    """CITE-02: a stored text is checked against its source sentence on every read."""
+    cache = MemoryCache()
+    bad = [CACHED_KO[0], "샘플은 99주 전까지이다."]
+    translate_clause(CACHED, cached_provider(texts=bad), cache=cache)
+    again = cached_provider()
+    result = translate_clause(CACHED, again, cache=cache)
+    assert again.translate_calls == []
+    assert result.sentences == (bad[0], None)
+    assert result.status == "partial"
+    assert "extra_numbers=1" in result.note
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "{not json",
+        "{}",
+        '"text"',
+        "[]",
+        '["only one"]',
+        '["a", "b", "c"]',
+        '["a", ""]',
+        '["a", "  "]',
+        '["a", 2]',
+    ],
+)
+def test_a_broken_cache_value_is_ignored_and_overwritten(value: str):
+    """TRANS-01: anything but a JSON list of exactly the batch's non-blank strings is asked again."""
+    cache = MemoryCache()
+    cache.put(translation_key(texts_of(CACHED), "en", "scripted", ""), value)
+    provider = cached_provider()
+    result = translate_clause(CACHED, provider, cache=cache)
+    assert len(provider.translate_calls) == 1
+    assert result.sentences == tuple(CACHED_KO)
+    again = cached_provider()
+    translate_clause(CACHED, again, cache=cache)
+    assert again.translate_calls == []
+
+
+def test_the_same_sentences_in_another_clause_hit():
+    """TRANS-01: the key holds sentences only, so another clause with the same batch hits."""
+    cache = MemoryCache()
+    translate_clause(CACHED, cached_provider(), cache=cache)
+    other = make_clause("8.2", texts_of(CACHED))
+    provider = ScriptedProvider(translations={"d01:8.2": ["unused"]})
+    result = translate_clause(other, provider, cache=cache)
+    assert provider.translate_calls == []
+    assert result.sentences == tuple(CACHED_KO)
+
+
+def test_a_batch_that_moved_in_its_clause_hits():
+    """TRANS-01: clause-relative numbers are not in the key; texts map back to the batch's own numbers."""
+    sentences = [f"Sentence {i + 1} has {i + 1} units." for i in range(25)]
+    korean = [f"번역 {i + 1}은 {i + 1}개이다." for i in range(25)]
+    cache = MemoryCache()
+    queue = [dict(enumerate(korean[:20], 1)), dict(enumerate(korean[20:], 21))]
+    translate_clause(
+        make_clause("9.9", sentences), ScriptedProvider(translations={"d01:9.9": queue}), cache=cache
+    )
+    # The second batch (sentences 21..25) is a clause of its own here: its numbers are 1..5.
+    tail = make_clause("9.10", sentences[20:])
+    again = ScriptedProvider(translations={"d01:9.10": ["unused"]})
+    result = translate_clause(tail, again, cache=cache)
+    assert again.translate_calls == []
+    assert result.sentences == tuple(korean[20:])
+
+
+def test_nothing_is_cached_when_the_provider_does_not_translate():
+    """TRANS-03: without a translation id nothing is read or written."""
+    cache = MemoryCache()
+    provider = cached_provider()
+    provider.translation_id = None
+    translate_clause(CACHED, provider, cache=cache)
+    assert cache.get(translation_key(texts_of(CACHED), "en", "scripted", "")) is None
+
+
+def test_four_threads_with_a_shared_cache_give_the_same_result(ruleset: Ruleset):
+    """TRANS-01: analysing with a shared cache and 4 workers matches a run without the cache."""
+    clauses = (PLAIN, CACHED, make_clause("7.3", ["7.3 Packaging is returnable."]))
+    texts = {
+        "d01:1.1": [{1: "인도조건은 FCA이다."}],
+        "d01:7.1": [dict(enumerate(CACHED_KO, 1))],
+        "d01:7.3": [{1: "포장은 반환용이다."}],
+    }
+    plain = analyze(clauses, ruleset, ScriptedProvider(translations=texts))
+    cache = MemoryCache()
+    got = analyze(
+        clauses, ruleset, ScriptedProvider(translations=texts), translation_cache=cache, max_concurrency=4
+    )
+    assert [r.translation_sentences for r in got] == [r.translation_sentences for r in plain]
+    third = ScriptedProvider(translations=texts)
+    hit = analyze(clauses, ruleset, third, translation_cache=cache, max_concurrency=4)
+    assert third.translate_calls == []
+    assert [r.translation_sentences for r in hit] == [r.translation_sentences for r in plain]
+
+
+def test_sqlite_cache_round_trips_translations(tmp_path):  # type: ignore[no-untyped-def]
+    """TRANS-01: the file cache keeps what the memory cache keeps."""
+    cache = SqliteCache(tmp_path / "translation.sqlite")
+    translate_clause(CACHED, cached_provider(), cache=cache)
+    provider = cached_provider()
+    result = translate_clause(CACHED, provider, cache=cache)
+    cache.close()
+    assert provider.translate_calls == []
+    assert result.sentences == tuple(CACHED_KO)

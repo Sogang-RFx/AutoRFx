@@ -128,6 +128,7 @@ def build_clause_graph(
     policy: Policy,
     cache: CacheStore | None,
     meter: UsageMeter | None = None,
+    translation_cache: CacheStore | None = None,
 ):
     """Compile the per-clause graph for one provider and one set of rules."""
 
@@ -186,7 +187,7 @@ def build_clause_graph(
             return {"analysis": analysis.model_copy(update={"translation_status": "boilerplate"})}
         if clause.lang == "ko":
             return {"analysis": analysis.model_copy(update={"translation_status": "source_ko"})}
-        result = translate_clause(clause, provider)
+        result = translate_clause(clause, provider, cache=translation_cache)
         if meter is not None:
             meter.add(result.usage)  # also for clauses that failed or were withheld: the tokens were billed
         update = {
@@ -224,11 +225,12 @@ def analyze(
     max_concurrency: int = 4,
     policy: Policy = "ambiguous_only",
     meter: UsageMeter | None = None,
+    translation_cache: CacheStore | None = None,
 ) -> tuple[ClauseAnalysis, ...]:
     """One analysis per clause, in input order. Reports the translate, route, assess and verify stages."""
     report = reporter or NullReporter()
     total = len(clauses)
-    graph = build_clause_graph(provider, ruleset, policy, cache, meter)
+    graph = build_clause_graph(provider, ruleset, policy, cache, meter, translation_cache)
     lock = threading.Lock()
     done = 0
 

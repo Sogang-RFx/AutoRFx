@@ -229,7 +229,13 @@ class MemoryCache:
 
 
 class SqliteCache:
-    """Judgements keyed by content hash. Values hold sentence numbers, never document text."""
+    """Results keyed by content hash.
+
+    Judgement values hold sentence numbers, never document text. The translation cache file
+    (``translation.sqlite``) does hold translated customer text. It stays in the git-ignored cache folder and
+    is not removed when an RFQ is re-analysed (a later run reads it) or deleted: the application has no RFQ
+    deletion, and no code removes cache files. Delete the file by hand to forget the translations.
+    """
 
     def __init__(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)

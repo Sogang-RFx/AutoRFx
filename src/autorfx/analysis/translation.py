@@ -8,14 +8,19 @@ and exception names, never clause or translation text.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
+import unicodedata
 from collections.abc import Sequence
 from typing import Literal, NamedTuple
 
 from autorfx.analysis.citation import number_signatures
+from autorfx.analysis.llm import TRANSLATION_PROMPT_VERSION
 from autorfx.analysis.providers import (
     AnalysisProvider,
+    CacheStore,
     ClauseInput,
     SentenceTranslation,
     TransientProviderError,
@@ -32,6 +37,7 @@ __all__ = [
     "batches",
     "clean",
     "translate_clause",
+    "translation_key",
 ]
 
 log = logging.getLogger(__name__)
@@ -39,6 +45,7 @@ log = logging.getLogger(__name__)
 WITHHELD = "〔번역 보류: 원문 확인〕"
 MAX_BATCH_SENTENCES = 20
 MAX_BATCH_CHARS = 4000
+CACHE_SCHEMA = 1  # shape of a cached value: a JSON list of texts in batch order
 MARKER = re.compile(r"\s*\[S\d+\]\s*")
 GAP = "\x00"  # stands where a removed marker was, until the spacing around it is settled
 GAP_RUN = re.compile(GAP + "+")
@@ -123,13 +130,65 @@ def _accept(batch: TranslationBatch, wanted: set[int], sources: Sequence[str]) -
     return got
 
 
-def _fetch(source: ClauseInput, provider: AnalysisProvider) -> Fetched:
-    """Ask for every batch, and once more for numbers a batch left out. Only transient errors are caught."""
+def translation_key(sentences: Sequence[str], lang: str, translation_id: str, terms_digest: str) -> str:
+    """Key of one cached batch: its sentences in order, not its clause or numbers, so a moved batch hits.
+
+    The rule set's digest is not part of it: a rule change does not change a translation.
+    """
+    payload = {
+        "kind": "translation",
+        "sentences": [" ".join(unicodedata.normalize("NFC", s).split()) for s in sentences],
+        "lang": lang,
+        "engine": translation_id,
+        "terms": terms_digest,
+        "prompt": TRANSLATION_PROMPT_VERSION,
+        "schema": CACHE_SCHEMA,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _stored(cache: CacheStore, key: str, size: int) -> list[str] | None:
+    """The stored texts, or None unless the value is a JSON list of exactly ``size`` non-blank strings."""
+    raw = cache.get(key)
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(value, list) or len(value) != size:
+        return None
+    if not all(isinstance(t, str) and t.strip() for t in value):
+        return None
+    return value
+
+
+def _fetch(
+    source: ClauseInput,
+    provider: AnalysisProvider,
+    cache: CacheStore | None = None,
+    terms_digest: str = "",
+) -> Fetched:
+    """Ask for every batch, and once more for numbers a batch left out. Only transient errors are caught.
+
+    A batch with a stored translation is not asked for. A batch is stored only when every one of its
+    numbers has a text after the retry.
+    """
     texts: dict[int, str] = {}
     errors: list[str] = []
     usage = Usage()
     missing = 0
+    translation_id = provider.translation_id
     for numbers in batches(source.sentences):
+        key = None
+        if cache is not None and translation_id is not None:
+            key = translation_key(
+                [source.sentences[n - 1] for n in numbers], source.lang, translation_id, terms_digest
+            )
+            stored = _stored(cache, key, len(numbers))
+            if stored is not None:
+                texts |= dict(zip(numbers, stored, strict=True))
+                continue
         try:
             reply, used = provider.translate(source, numbers)
         except TransientProviderError as exc:
@@ -149,6 +208,8 @@ def _fetch(source: ClauseInput, provider: AnalysisProvider) -> Fetched:
                 usage = usage.plus(used)
                 got |= _accept(reply, set(again), source.sentences)
                 missing += sum(1 for n in again if n not in got)
+        if cache is not None and key is not None and all(n in got for n in numbers):
+            cache.put(key, json.dumps([got[n] for n in numbers], ensure_ascii=False))
         texts |= got
     return Fetched(texts, missing, tuple(dict.fromkeys(errors)), usage)
 
@@ -186,9 +247,15 @@ def _status(outcomes: Sequence[Outcome]) -> Literal["translated", "partial", "wi
     return "failed"
 
 
-def translate_clause(clause: Clause, provider: AnalysisProvider) -> ClauseTranslation:
+def translate_clause(
+    clause: Clause,
+    provider: AnalysisProvider,
+    *,
+    cache: CacheStore | None = None,
+    terms_digest: str = "",
+) -> ClauseTranslation:
     source = ClauseInput.of(clause)
-    fetched = _fetch(source, provider)
+    fetched = _fetch(source, provider, cache, terms_digest)
     judged = _judge(source, fetched.texts)
     status = _status(judged.outcomes)
     counts = [f"extra_numbers={judged.extra_numbers}"] if judged.extra_numbers else []

@@ -145,6 +145,7 @@ def run_pipeline(
     now_ms: int,
     reporter: JobReporter | None = None,
     cache: CacheStore | None = None,
+    translation_cache: CacheStore | None = None,
     retrieval: str = RETRIEVAL_ENGINE,
 ) -> Workspace:
     """Process a package end to end and store the results in its workspace."""
@@ -162,6 +163,7 @@ def run_pipeline(
         ruleset,
         provider,
         cache=cache,
+        translation_cache=translation_cache,
         reporter=report,
         max_concurrency=settings.llm_concurrency,
         policy=settings.confirm_policy,

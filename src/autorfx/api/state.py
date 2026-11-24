@@ -77,6 +77,7 @@ class AppState:
         self.ruleset = ruleset or load_ruleset(settings.rules_dir)
         self.provider = provider or make_provider(settings, self.ruleset)
         self.cache = SqliteCache(settings.cache_dir / "analysis.sqlite")
+        self.translation_cache = SqliteCache(settings.cache_dir / "translation.sqlite")
         key = settings.openai_api_key.get_secret_value() if settings.openai_api_key else None
         self.encoder = encoder or load_encoder(
             settings.embedding_model, openai_api_key=key, cache_dir=settings.cache_dir
@@ -243,6 +244,7 @@ class AppState:
                 now_ms=started,
                 reporter=store,
                 cache=self.cache,
+                translation_cache=self.translation_cache,
                 retrieval=retrieval_engine(self.encoder),
             )
         except PipelineError as exc:
