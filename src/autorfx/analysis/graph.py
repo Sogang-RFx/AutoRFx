@@ -27,7 +27,7 @@ from typing import Literal, TypedDict
 from langgraph.graph import END, START, StateGraph
 
 from autorfx.analysis.candidates import Candidates, find_candidates
-from autorfx.analysis.citation import number_signatures, verify
+from autorfx.analysis.citation import verify
 from autorfx.analysis.llm import PROMPT_VERSION
 from autorfx.analysis.providers import (
     AnalysisProvider,
@@ -37,8 +37,9 @@ from autorfx.analysis.providers import (
     TransientProviderError,
     rule_judgement,
 )
+from autorfx.analysis.translation import translate_clause
 from autorfx.jobs import JobReporter, NullReporter
-from autorfx.models import Clause, ClauseAnalysis, Finding, Origin, RedFlag, TranslationStatus
+from autorfx.models import Clause, ClauseAnalysis, Finding, Origin, RedFlag
 from autorfx.rules import Ruleset
 
 log = logging.getLogger(__name__)
@@ -180,25 +181,13 @@ def build_clause_graph(
             return {"analysis": analysis.model_copy(update={"translation_status": "boilerplate"})}
         if clause.lang == "ko":
             return {"analysis": analysis.model_copy(update={"translation_status": "source_ko"})}
-        translation: str | None = None
-        status: TranslationStatus = "translated"
-        note = ""
-        try:
-            translation = provider.translate(ClauseInput.of(clause))
-        except TransientProviderError as exc:
-            log.warning("translation of %s failed (%s)", clause.clause_id, exc)
-            status, note = "failed", str(exc)
-        else:
-            extra = len(number_signatures(translation or "") - number_signatures(clause.text))
-            if not translation:
-                log.warning("translation of %s failed (empty)", clause.clause_id)
-                status, note, translation = "failed", "empty", None
-            # A translation is shown next to the original: a number that is not in the clause is
-            # an error of the translator, and the translation is withheld rather than shown (CITE-02).
-            elif extra:
-                log.warning("translation of %s states numbers not in the clause; withheld", clause.clause_id)
-                status, note, translation = "withheld", f"extra_numbers={extra}", None
-        update = {"translation_ko": translation, "translation_status": status, "translation_note": note}
+        result = translate_clause(clause, provider)
+        update = {
+            "translation_ko": result.text,
+            "translation_sentences": result.sentences,
+            "translation_status": result.status,
+            "translation_note": result.note,
+        }
         return {"analysis": analysis.model_copy(update=update)}
 
     graph = StateGraph(ClauseState)

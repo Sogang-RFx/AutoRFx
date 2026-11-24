@@ -14,16 +14,23 @@ import sqlite3
 import threading
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from autorfx.analysis.candidates import Candidates
+from autorfx.analysis.usage import Usage
 from autorfx.models import Clause, Lang, Locus, Model, Priority
+
+if TYPE_CHECKING:
+    from autorfx.analysis.translation import TranslationBatch
 
 MAX_EXTRACT = 3
 
 
 class TransientProviderError(RuntimeError):
-    """The provider could not answer right now (timeout, rate limit). The caller falls back to rules."""
+    """The provider could not answer right now (timeout, rate limit). The caller falls back to rules.
+
+    The message is an exception name only, never text of a clause or an answer: it is stored and logged.
+    """
 
 
 class ClauseInput(Model):
@@ -76,7 +83,7 @@ class AnalysisProvider(Protocol):
     uses_llm: bool
     translates: bool
 
-    def translate(self, clause: ClauseInput) -> str | None: ...
+    def translate(self, clause: ClauseInput, numbers: Sequence[int]) -> tuple[TranslationBatch, Usage]: ...
 
     def confirm(self, clause: ClauseInput, candidates: Candidates, feedback: str | None) -> Judgement: ...
 
@@ -105,8 +112,10 @@ class RuleOnlyProvider:
     uses_llm = False
     translates = False
 
-    def translate(self, clause: ClauseInput) -> str | None:
-        return None
+    def translate(self, clause: ClauseInput, numbers: Sequence[int]) -> tuple[TranslationBatch, Usage]:
+        from autorfx.analysis.translation import TranslationBatch
+
+        return TranslationBatch(), Usage()
 
     def confirm(self, clause: ClauseInput, candidates: Candidates, feedback: str | None) -> Judgement:
         return rule_judgement(candidates)
@@ -129,13 +138,13 @@ class ScriptedProvider:
         *,
         answers: list[Answer | Exception] | None = None,
         translation: str | None = None,
-        translations: dict[str, list[str | Exception]] | None = None,
+        translations: dict[str, list[dict[int, str] | str | TranslationBatch | Exception]] | None = None,
         provider_id: str = "scripted",
     ) -> None:
         self.id = provider_id
         self.translates = translation is not None or translations is not None
         self._translations = {key: list(value) for key, value in (translations or {}).items()}
-        self.translate_calls: list[str] = []
+        self.translate_calls: list[tuple[str, tuple[int, ...]]] = []
         self._script = {key: list(value) for key, value in (script or {}).items()}
         self._answers = list(answers or [])
         self._translation = translation
@@ -143,14 +152,25 @@ class ScriptedProvider:
         self.confirm_calls: list[tuple[str, str | None]] = []
         self.answer_calls: list[tuple[str, tuple[str, ...], str | None]] = []
 
-    def translate(self, clause: ClauseInput) -> str | None:
+    def translate(self, clause: ClauseInput, numbers: Sequence[int]) -> tuple[TranslationBatch, Usage]:
+        """A queued dict or batch is returned as it is (requested or not); a text answers every number."""
+        from autorfx.analysis.translation import SentenceTranslation, TranslationBatch
+
         with self._lock:
-            self.translate_calls.append(clause.clause_id)
+            self.translate_calls.append((clause.clause_id, tuple(numbers)))
             queue = self._translations.get(clause.clause_id)
             item = (queue.pop(0) if len(queue) > 1 else queue[0]) if queue else self._translation
         if isinstance(item, Exception):
             raise item
-        return item
+        if isinstance(item, TranslationBatch):
+            return item, Usage()
+        if isinstance(item, dict):
+            return TranslationBatch(
+                items=tuple(SentenceTranslation(n=n, text=t) for n, t in item.items())
+            ), Usage()
+        if item is None:
+            return TranslationBatch(), Usage()
+        return TranslationBatch(items=tuple(SentenceTranslation(n=n, text=item) for n in numbers)), Usage()
 
     def confirm(self, clause: ClauseInput, candidates: Candidates, feedback: str | None) -> Judgement:
         with self._lock:

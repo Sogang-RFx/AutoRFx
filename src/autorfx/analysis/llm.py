@@ -12,7 +12,7 @@ without a network.
 
 from __future__ import annotations
 
-import re
+import json
 from collections.abc import Callable, Sequence
 from typing import TypeVar
 
@@ -26,7 +26,8 @@ from autorfx.analysis.providers import (
     Judgement,
     TransientProviderError,
 )
-from autorfx.models import Model
+from autorfx.analysis.translation import TranslationBatch
+from autorfx.analysis.usage import Usage
 from autorfx.rules import Ruleset
 
 PROMPT_VERSION = "2026-11-18.1"
@@ -40,13 +41,6 @@ SYSTEM = (
     "Cite only by the sentence numbers you are given ([S1], [S2], ...). Never state page or position. "
     "Never state a number that the cited sentences do not contain. Answer in Korean where prose is asked for."
 )
-
-
-class Translation(Model):
-    text: str
-
-
-SENTENCE_MARK = re.compile(r"\s*\[S\d+\]\s*")
 
 
 def numbered(sentences: Sequence[str]) -> str:
@@ -124,16 +118,16 @@ class OpenAIProvider:
         except Exception as exc:  # any client, network or schema failure is handled by falling back to rules
             raise TransientProviderError(type(exc).__name__) from exc
 
-    def translate(self, clause: ClauseInput) -> str | None:
-        # No sentence markers here: a translation has no citations, and a model that copies "[S1]" into
-        # its answer adds digits that the number check (CITE-02) then reads as invented numbers and
-        # withholds the whole translation (59 of 62 clauses in the 11/24 rehearsal).
+    def translate(self, clause: ClauseInput, numbers: Sequence[int]) -> tuple[TranslationBatch, Usage]:
+        # No "[S1]" markers: a translation has no citations, and a model that copies one adds a digit that
+        # the number check (CITE-02) reads as an invented number. Sentences travel as data, by number.
+        items = [{"n": n, "text": clause.sentences[n - 1]} for n in numbers]
         user = (
-            "Translate the clause into Korean. "
-            "Keep every number, unit, part number and standard as written.\n\n" + "\n".join(clause.sentences)
+            "Translate each item into Korean. Keep every number, unit, part number, date and standard "
+            "as written. Return one item per input item with the same n; never merge or split items.\n\n"
+            + json.dumps(items, ensure_ascii=False)
         )
-        text = SENTENCE_MARK.sub(" ", self._ask(user, Translation).text).strip()
-        return text or None
+        return self._ask(user, TranslationBatch), Usage()
 
     def confirm(self, clause: ClauseInput, candidates: Candidates, feedback: str | None) -> Judgement:
         return self._ask(clause_prompt(clause, candidates, self._ruleset, feedback), Judgement)

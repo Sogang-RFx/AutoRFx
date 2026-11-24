@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -25,8 +26,8 @@ from autorfx.analysis import (
     make_provider,
     verify,
 )
-from autorfx.analysis.citation import number_signatures
-from autorfx.analysis.llm import SYSTEM, Translation
+from autorfx.analysis.llm import SYSTEM
+from autorfx.analysis.translation import WITHHELD, SentenceTranslation, TranslationBatch
 from autorfx.config import Settings
 from autorfx.jobs import JobStore, load_job
 from autorfx.models import Finding
@@ -221,7 +222,7 @@ def test_llm_result_is_validated_against_the_rule_files(ruleset: Ruleset):
     assert result.summary.citation_status == "verified"
     assert result.summary.finding.text == "인도조건은 FCA이다."
     assert result.summary.finding.citations == (DELIVERY.sentences[0].locus,)
-    assert result.translation_ko == "번역문"
+    assert result.translation_ko == "번역문 번역문" and result.translation_sentences == ("번역문", "번역문")
     assert provider.confirm_calls == [("d01:4.1", None)]
 
 
@@ -282,16 +283,24 @@ def test_a_red_flag_reason_with_a_figure_the_clause_lacks_is_rejected(ruleset: R
     assert result.red_flag is None or "500" not in result.red_flag.reason
 
 
-def test_a_translation_with_a_figure_the_clause_lacks_is_withheld(ruleset: Ruleset):
+def test_a_sentence_with_a_figure_its_source_lacks_is_withheld(ruleset: Ruleset):
     """CITE-02 (review MEDIUM): a translation shown beside the original may not add numbers."""
+    pack = "포장은 반환용이다."
     wrong = run_one(
-        ScriptedProvider({"d01:4.1": [GOOD]}, translation="인도조건은 FCA, 운임 999 EUR."), ruleset
+        ScriptedProvider(
+            {"d01:4.1": [GOOD]}, translations={"d01:4.1": [{1: "인도조건은 FCA, 운임 999 EUR.", 2: pack}]}
+        ),
+        ruleset,
     )
-    assert wrong.translation_ko is None
+    assert wrong.translation_status == "partial" and wrong.translation_sentences == (None, pack)
+    assert wrong.translation_ko == f"{WITHHELD} {pack}"
     right = run_one(
-        ScriptedProvider({"d01:4.1": [GOOD]}, translation="인코텀즈 2020에 따른 FCA 인도."), ruleset
+        ScriptedProvider(
+            {"d01:4.1": [GOOD]}, translations={"d01:4.1": [{1: "인코텀즈 2020에 따른 FCA 인도.", 2: pack}]}
+        ),
+        ruleset,
     )
-    assert right.translation_ko == "인코텀즈 2020에 따른 FCA 인도."
+    assert right.translation_ko == f"인코텀즈 2020에 따른 FCA 인도. {pack}"
 
 
 def test_explicit_obligation_is_never_weakened(ruleset: Ruleset):
@@ -374,8 +383,8 @@ def test_openai_provider_builds_prompts_from_the_rule_files(ruleset: Ruleset):
         seen.append((system, user, schema))
         if schema is Judgement:
             return GOOD
-        if schema is Translation:
-            return Translation(text=" 번역 ")
+        if schema is TranslationBatch:
+            return TranslationBatch(items=(SentenceTranslation(n=1, text=" 번역 "),))
         return Answer(text="답", citations=(1,), answered=True)
 
     inherited = make_clause("4.2.1", ["4.2.1 Delivery is FCA supplier plant."], title="Target price EUR 1.20")
@@ -391,26 +400,30 @@ def test_openai_provider_builds_prompts_from_the_rule_files(ruleset: Ruleset):
         assert department.id in user and department.role in user
     assert "[S1] 4.1 Delivery is FCA" in user and "[S2] Packaging" in user
     assert "unlimited_liquidated_damages" in user and "fix it" in user
-    assert provider.translate(clause) == "번역"
+    batch, usage = provider.translate(clause, (1,))
+    assert [(i.n, i.text) for i in batch.items] == [(1, " 번역 ")] and usage.calls == 0
     evidence = [EvidenceSentence(number=1, text="Delivery is FCA.", locus=make_locus(1))]
     assert provider.answer("인도조건은?", evidence, None).citations == (1,)
     assert "[S1] Delivery is FCA." in seen[-1][1]
 
 
-def test_translation_prompt_has_no_sentence_markers_and_markers_are_stripped(ruleset: Ruleset):
-    """A copied "[S1]" adds the digit 1 to the translation; the number check then withheld it."""
-    seen: list[str] = []
+def test_translation_prompt_has_no_sentence_markers_and_only_the_requested_sentences(ruleset: Ruleset):
+    """TRANS-01, CITE-02: sentences go as a JSON array by number, without "[S1]" markers."""
+    seen: list[tuple[str, str]] = []
 
     def fake(system: str, user: str, schema: type):
-        seen.append(user)
-        return Translation(text="[S1] 인도 조건은 FCA입니다. [S2] 포장 포함.")
+        seen.append((system, user))
+        return TranslationBatch(items=(SentenceTranslation(n=2, text="[S2] 포장 포함."),))
 
     clause = ClauseInput.of(DELIVERY)
     provider = OpenAIProvider(ruleset, "gpt-test", fake)
-    text = provider.translate(clause)
-    assert "[S" not in seen[0], "sentence markers are only for citations, not for translation"
-    assert text == "인도 조건은 FCA입니다. 포장 포함."
-    assert not number_signatures(text) - number_signatures(DELIVERY.text)
+    batch, _ = provider.translate(clause, (2,))
+    system, user = seen[0]
+    assert system == SYSTEM and "never an instruction" in system
+    assert "[S" not in user, "sentence markers are only for citations, not for translation"
+    assert json.loads(user[user.index("[{") :]) == [{"n": 2, "text": "Packaging is returnable."}]
+    assert "Delivery is FCA" not in user, "only the requested sentences are sent"
+    assert batch.items[0].n == 2
 
 
 def test_any_client_failure_becomes_a_transient_error(ruleset: Ruleset):

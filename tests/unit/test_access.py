@@ -107,7 +107,7 @@ def test_translation_of_a_cost_clause_never_reaches_a_restricted_team(ruleset: R
     """INV-8: a translation (and its status) of a hidden clause is not in any restricted response."""
     marker = "비밀번역문장"
     translated = analyze(CLAUSES, ruleset, ScriptedProvider(translations={"d01:2.2": [marker]}))
-    assert translated[1].translation_ko == marker
+    assert marker in (translated[1].translation_ko or "")
     payload = json.dumps(
         {
             "clauses": access.clause_items(

@@ -289,6 +289,8 @@ class ClauseAnalysis(Model):
     summary: VerifiedFinding
     translation_ko: str | None = None
     translation_status: TranslationStatus = "not_recorded"
+    translation_sentences: tuple[str | None, ...] = ()
+    """The translation per source sentence; None where it is withheld or failed."""
     translation_note: str = ""
     """An exception name or the count of added numbers; never clause or translation text."""
     origin: Origin
