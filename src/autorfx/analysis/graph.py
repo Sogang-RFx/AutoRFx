@@ -19,6 +19,7 @@ import json
 import logging
 import threading
 import unicodedata
+from collections import Counter
 from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Literal, TypedDict
@@ -37,7 +38,7 @@ from autorfx.analysis.providers import (
     rule_judgement,
 )
 from autorfx.jobs import JobReporter, NullReporter
-from autorfx.models import Clause, ClauseAnalysis, Finding, Origin, RedFlag
+from autorfx.models import Clause, ClauseAnalysis, Finding, Origin, RedFlag, TranslationStatus
 from autorfx.rules import Ruleset
 
 log = logging.getLogger(__name__)
@@ -173,18 +174,32 @@ def build_clause_graph(
         clause, analysis = state["clause"], state["analysis"]
         if state["origin"] == "llm" and analysis.summary.citation_status == "verified" and cache is not None:
             cache.put(cache_key(clause, provider.id, ruleset.digest), state["judgement"].model_dump_json())
-        if provider.translates and not clause.is_boilerplate:
-            try:
-                translation = provider.translate(ClauseInput.of(clause))
-            except TransientProviderError:
-                translation = None
+        if not provider.translates:
+            return {"analysis": analysis.model_copy(update={"translation_status": "no_provider"})}
+        if clause.is_boilerplate:
+            return {"analysis": analysis.model_copy(update={"translation_status": "boilerplate"})}
+        if clause.lang == "ko":
+            return {"analysis": analysis.model_copy(update={"translation_status": "source_ko"})}
+        translation: str | None = None
+        status: TranslationStatus = "translated"
+        note = ""
+        try:
+            translation = provider.translate(ClauseInput.of(clause))
+        except TransientProviderError as exc:
+            log.warning("translation of %s failed (%s)", clause.clause_id, exc)
+            status, note = "failed", str(exc)
+        else:
+            extra = len(number_signatures(translation or "") - number_signatures(clause.text))
+            if not translation:
+                log.warning("translation of %s failed (empty)", clause.clause_id)
+                status, note, translation = "failed", "empty", None
             # A translation is shown next to the original: a number that is not in the clause is
             # an error of the translator, and the translation is withheld rather than shown (CITE-02).
-            if translation and number_signatures(translation) - number_signatures(clause.text):
+            elif extra:
                 log.warning("translation of %s states numbers not in the clause; withheld", clause.clause_id)
-                translation = None
-            analysis = analysis.model_copy(update={"translation_ko": translation})
-        return {"analysis": analysis}
+                status, note, translation = "withheld", f"extra_numbers={extra}", None
+        update = {"translation_ko": translation, "translation_status": status, "translation_note": note}
+        return {"analysis": analysis.model_copy(update=update)}
 
     graph = StateGraph(ClauseState)
     graph.add_node("candidates", candidates_node)
@@ -246,8 +261,14 @@ def analyze(
 
     verified = sum(r.summary.citation_status == "verified" for r in results)
     if provider.translates:
-        translated = sum(r.translation_ko is not None for r in results)
-        report.update("translate", "done", f"{translated}/{total} 조항 번역")
+        count = Counter(r.translation_status for r in results)
+        excluded = count["boilerplate"] + count["source_ko"]
+        report.update(
+            "translate",
+            "done",
+            f"번역 {count['translated']} · 일부 {count['partial']} · 보류 {count['withheld']}"
+            f" · 실패 {count['failed']} · 제외 {excluded}",
+        )
     report.update("route", "done", f"{total}개 조항 분류")
     must = sum(r.priority == "must" for r in results)
     flags = sum(r.red_flag is not None for r in results)

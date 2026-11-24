@@ -273,6 +273,11 @@ class VerifiedFinding(Model):
     failed_citations: tuple[Locus, ...] = ()
 
 
+TranslationStatus = Literal[
+    "not_recorded", "no_provider", "boilerplate", "source_ko", "translated", "partial", "withheld", "failed"
+]
+
+
 class ClauseAnalysis(Model):
     """The judgement on one clause. The lead department comes first (ROUTE-01)."""
 
@@ -283,6 +288,9 @@ class ClauseAnalysis(Model):
     red_flag: RedFlag | None = None
     summary: VerifiedFinding
     translation_ko: str | None = None
+    translation_status: TranslationStatus = "not_recorded"
+    translation_note: str = ""
+    """An exception name or the count of added numbers; never clause or translation text."""
     origin: Origin
 
 

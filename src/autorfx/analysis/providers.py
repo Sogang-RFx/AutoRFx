@@ -129,10 +129,13 @@ class ScriptedProvider:
         *,
         answers: list[Answer | Exception] | None = None,
         translation: str | None = None,
+        translations: dict[str, list[str | Exception]] | None = None,
         provider_id: str = "scripted",
     ) -> None:
         self.id = provider_id
-        self.translates = translation is not None
+        self.translates = translation is not None or translations is not None
+        self._translations = {key: list(value) for key, value in (translations or {}).items()}
+        self.translate_calls: list[str] = []
         self._script = {key: list(value) for key, value in (script or {}).items()}
         self._answers = list(answers or [])
         self._translation = translation
@@ -141,7 +144,13 @@ class ScriptedProvider:
         self.answer_calls: list[tuple[str, tuple[str, ...], str | None]] = []
 
     def translate(self, clause: ClauseInput) -> str | None:
-        return self._translation
+        with self._lock:
+            self.translate_calls.append(clause.clause_id)
+            queue = self._translations.get(clause.clause_id)
+            item = (queue.pop(0) if len(queue) > 1 else queue[0]) if queue else self._translation
+        if isinstance(item, Exception):
+            raise item
+        return item
 
     def confirm(self, clause: ClauseInput, candidates: Candidates, feedback: str | None) -> Judgement:
         with self._lock:

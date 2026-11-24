@@ -11,7 +11,7 @@ import pytest
 from openpyxl import load_workbook
 
 from autorfx import access
-from autorfx.analysis import RuleOnlyProvider, analyze
+from autorfx.analysis import RuleOnlyProvider, ScriptedProvider, analyze
 from autorfx.chunker import build_clauses
 from autorfx.export import MASKED_TEXT, rtm_workbook
 from autorfx.models import ConsistencyIssue, IssueEvidence
@@ -101,6 +101,24 @@ def test_cost_visible_team_sees_everything(ruleset: Ruleset, analyses):
     assert price["primary_department"] == "costing" and SECRET in price["excerpt"][0]["text"]
     assert price["summary"]["finding"]["departments"][0] == "costing"
     assert price["origin"] == "rule" and price["translation_ko"] is None
+
+
+def test_translation_of_a_cost_clause_never_reaches_a_restricted_team(ruleset: Ruleset):
+    """INV-8: a translation (and its status) of a hidden clause is not in any restricted response."""
+    marker = "비밀번역문장"
+    translated = analyze(CLAUSES, ruleset, ScriptedProvider(translations={"d01:2.2": [marker]}))
+    assert translated[1].translation_ko == marker
+    payload = json.dumps(
+        {
+            "clauses": access.clause_items(
+                CLAUSES, translated, group="cost_restricted", department=None, ruleset=ruleset
+            ),
+            "rtm": access.rtm_rows(CLAUSES, translated, group="cost_restricted", ruleset=ruleset),
+        },
+        ensure_ascii=False,
+    )
+    assert marker not in payload
+    assert "translation_status" not in payload and "translation_note" not in payload
 
 
 def test_masked_clause_carries_identity_only(ruleset: Ruleset, analyses):
