@@ -265,3 +265,37 @@ def test_derived_folders_follow_the_data_dir(tmp_path: Path):
     assert settings.work_dir == tmp_path / "work"
     assert settings.samples_dir == tmp_path / "raw" / "dev"
     assert not guard.is_held_out(settings.samples_dir.relative_to(tmp_path))
+
+
+@pytest.fixture(autouse=True)
+def _no_embedding_env(monkeypatch: pytest.MonkeyPatch):
+    """These tests read the defaults, so a shell that exports EMBEDDING_* must not change them."""
+    monkeypatch.delenv("EMBEDDING_MODEL", raising=False)
+    monkeypatch.delenv("EMBEDDING_MIN_SCORE", raising=False)
+
+
+def test_embedding_defaults_to_openai_3_large_with_its_own_gate():
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.embedding_model == "openai:text-embedding-3-large"
+    assert settings.embedding_min_score is None
+    assert settings.min_score_for(settings.embedding_model) == 0.30
+
+
+def test_the_gate_follows_the_model_because_the_scales_differ():
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    assert settings.min_score_for("BAAI/bge-m3") == 0.55
+    assert settings.min_score_for("openai:text-embedding-3-small") == 0.45
+    assert settings.min_score_for("some/other-model") == 0.55
+    assert settings.min_score_for(None) == 0.55
+
+
+def test_a_configured_gate_beats_the_model_default():
+    settings = Settings(_env_file=None, EMBEDDING_MIN_SCORE="0.4")  # type: ignore[call-arg]
+    assert settings.min_score_for("openai:text-embedding-3-large") == 0.4
+    assert settings.min_score_for("BAAI/bge-m3") == 0.4
+
+
+def test_blank_embedding_settings_mean_off_and_default_gate():
+    settings = Settings(_env_file=None, EMBEDDING_MODEL=" ", EMBEDDING_MIN_SCORE="")  # type: ignore[call-arg]
+    assert settings.embedding_model is None
+    assert settings.embedding_min_score is None

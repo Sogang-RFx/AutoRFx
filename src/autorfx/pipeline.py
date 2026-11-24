@@ -45,6 +45,7 @@ PIPELINE_VERSION = "2026-11-25.2"
 re-computed, like after a rules change. .2: page-level masking, index runs, body-less leaf clauses.
 .3: page-level masking spares the lines of visible sentences.
 .4: positions in no clause count as cost-sensitive in mentions and issues.
+2026-11-24: translations are asked without sentence markers; ones withheld before are re-made.
 2026-11-25.2: spreadsheet header cells keep their sheet columns (empty columns no longer shift them)."""
 MASK_FAILED = "가림 처리에 실패했습니다. 금액 열람 권한이 없는 팀에는 이 파일의 원문을 제공하지 않습니다."
 CATEGORY_LABEL = {
@@ -211,6 +212,7 @@ def load_rfq(
     cost_inputs = workspace.read_json(workspace.cost_inputs_path)
     if not isinstance(cost_inputs, dict):
         raise PipelineError("원가 입력 후보가 손상됐습니다. RFQ를 다시 올려 주세요.")
+    dense = _dense(clauses, encoder, min_score)
     return RfqData(
         workspace=workspace,
         manifest=manifest,
@@ -222,14 +224,20 @@ def load_rfq(
         cost_inputs=cost_inputs,
         # Retrieval runs when a question is asked, with the encoder loaded now, not the one recorded at
         # analysis time; the served engines say which (rule 6: no result shown as another engine's).
-        engines={**run["engines"], "retrieval": retrieval_engine(encoder)},
-        index=SearchIndex(clauses, ruleset, dense=_dense(clauses, encoder, min_score)),
+        engines={**run["engines"], "retrieval": retrieval_engine(encoder if dense is not None else None)},
+        index=SearchIndex(clauses, ruleset, dense=dense),
     )
 
 
 def _dense(clauses: Sequence[Clause], encoder: Encoder | None, min_score: float | None) -> DenseIndex | None:
     if encoder is None:
         return None
-    if min_score is None:
-        return DenseIndex(clauses, encoder)
-    return DenseIndex(clauses, encoder, min_score=min_score)
+    try:
+        if min_score is None:
+            return DenseIndex(clauses, encoder)
+        return DenseIndex(clauses, encoder, min_score=min_score)
+    except Exception:
+        # Offline, an expired key, a rate limit or an oversized batch: the screens keep working on
+        # keyword search, and the engine id says so (INV-12, no result shown as another engine's).
+        log.exception("embedding failed, answering with keyword search only")
+        return None

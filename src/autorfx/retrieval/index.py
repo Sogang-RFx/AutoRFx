@@ -25,6 +25,7 @@ as a full one.
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 from collections import defaultdict
@@ -35,6 +36,9 @@ from autorfx.chunker import mentions_cost
 from autorfx.models import Clause, Group, ParsedSentence
 from autorfx.retrieval.dense import DenseIndex
 from autorfx.rules import GlossaryEntry, Ruleset
+
+log = logging.getLogger(__name__)
+
 
 WORD = re.compile(r"[^\W_]+(?:[.,][^\W_]+)*")
 HANGUL = re.compile(r"[가-힣]")
@@ -242,12 +246,20 @@ class SearchIndex:
 
     def search(self, question: str, *, group: Group, limit: int = 8, mode: str | None = None) -> SearchResult:
         """``mode``: "bm25", "dense" or "hybrid"; by default hybrid when a dense index is attached."""
+        explicit = mode is not None
         mode = mode or ("hybrid" if self.dense is not None else "bm25")
         if mode == "bm25":
             return self.search_bm25(question, group=group, limit=limit)
         if self.dense is None:
             raise ValueError("임베딩 모델이 설정되지 않았습니다 (EMBEDDING_MODEL).")
-        dense = self.dense.search(question, group=group, limit=limit)
+        try:
+            dense = self.dense.search(question, group=group, limit=limit)
+        except Exception:
+            if explicit:
+                raise
+            # The question could not be embedded (network, key, rate limit): keyword search answers.
+            log.exception("embedding search failed, answering with keyword search only")
+            return self.search_bm25(question, group=group, limit=limit)
         if mode == "dense":
             hits = tuple(Hit(h.sentence, h.clause_id, rank) for rank, h in enumerate(dense, start=1))
             return SearchResult(hits, (), (), bool(hits))

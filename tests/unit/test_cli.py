@@ -142,7 +142,11 @@ def test_score_search_explains_a_malformed_question_file(
 
 
 def test_score_search_explains_what_is_missing(
-    data_dir: Path, score_files, fake_encoder, capsys: pytest.CaptureFixture[str]
+    data_dir: Path,
+    score_files,
+    fake_encoder,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
 ):
     questions, key = score_files
     base = ["score-search", "--model", "fake", "--questions", str(questions)]
@@ -150,8 +154,12 @@ def test_score_search_explains_what_is_missing(
     assert "정답 표가 없습니다" in capsys.readouterr().err
     assert main([*base, "--gates", "0.5,abc"]) == 2
     assert "--gates" in capsys.readouterr().err
+    monkeypatch.setenv("EMBEDDING_MODEL", "")  # embedding search switched off on purpose
+    get_settings.cache_clear()
     assert main(["score-search", "--questions", str(questions)]) == 2  # no model configured
     assert "임베딩 모델" in capsys.readouterr().err
+    monkeypatch.delenv("EMBEDDING_MODEL")
+    get_settings.cache_clear()
 
     key.write_text(key.read_text(encoding="utf-8") + "  other-rfq:\n    Q01: none\n", encoding="utf-8")
     assert main(base) == 2
@@ -171,3 +179,87 @@ def test_score_search_refuses_the_evaluation_set(
         main(["score-search", "--model", "fake", "--questions", str(questions), "--key", str(held_out)]) == 2
     )
     assert "평가용(eval)" in capsys.readouterr().err
+
+
+@pytest.fixture
+def compare_questions(data_dir: Path) -> Path:
+    path = data_dir / "questions.yaml"
+    path.write_text('questions:\n  - {id: Q01, text: "보증 기간은 얼마인가요?"}\n', encoding="utf-8")
+    return path
+
+
+def test_compare_search_leaves_stored_results_alone(data_dir: Path, compare_questions: Path, fake_encoder):
+    """Like score-search: a comparison run never replaces the served analysis of the same files."""
+    assert main(["analyze", "--sample", "synthetic-sample"]) == 0
+    stored = {p: p.read_bytes() for p in (data_dir / "work").glob("rfq-*/*.json")}
+    assert stored
+    argv = ["compare-search", "--sample", "synthetic-sample", "--model", "fake"]
+    assert main([*argv, "--questions", str(compare_questions)]) == 0
+    assert {p: p.read_bytes() for p in (data_dir / "work").glob("rfq-*/*.json")} == stored
+    assert list((data_dir / "work" / "_compare").glob("*.md"))
+
+
+def test_compare_search_never_builds_an_llm_provider(
+    data_dir: Path,
+    compare_questions: Path,
+    fake_encoder,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Comparing searches spends no API calls, even with a key set."""
+    import autorfx.cli as cli
+
+    def fail(*args, **kwargs):
+        raise AssertionError("compare-search must not build an LLM provider")
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-a-real-key")
+    get_settings.cache_clear()
+    monkeypatch.setattr(cli, "make_provider", fail)
+    argv = ["compare-search", "--sample", "synthetic-sample", "--model", "fake"]
+    assert main([*argv, "--questions", str(compare_questions)]) == 0
+
+
+def test_compare_search_checks_the_questions_before_any_work(
+    data_dir: Path,
+    compare_questions: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """A missing, malformed or held-out (INV-11) questions file stops the run before parsing and embedding."""
+    import autorfx.cli as cli
+
+    monkeypatch.setattr(cli, "run_pipeline", lambda *a, **k: pytest.fail("the pipeline ran"))
+    monkeypatch.setattr(cli, "load_encoder", lambda *a, **k: pytest.fail("the model was loaded"))
+    argv = ["compare-search", "--sample", "synthetic-sample", "--model", "fake", "--questions"]
+    assert main([*argv, str(data_dir / "missing.yaml")]) == 2
+    malformed = data_dir / "bad.yaml"
+    malformed.write_text("questions: [", encoding="utf-8")
+    assert main([*argv, str(malformed)]) == 2
+    held_out = data_dir / "eval" / "questions.yaml"
+    held_out.parent.mkdir()
+    held_out.write_text(compare_questions.read_text(encoding="utf-8"), encoding="utf-8")
+    assert main([*argv, str(held_out)]) == 2
+    assert capsys.readouterr().err.strip()
+
+
+def test_compare_search_uses_the_gate_measured_for_the_model(
+    data_dir: Path, score_files, fake_encoder, capsys: pytest.CaptureFixture[str]
+):
+    """Without --min-score the gate is the model's own (3-large 0.30, BGE-M3 0.55), not one for all."""
+    questions, _ = score_files
+    base = ["compare-search", "--sample", "synthetic-sample", "--questions", str(questions)]
+    for model, gate in (("openai:text-embedding-3-large", "0.3"), ("BAAI/bge-m3", "0.55")):
+        assert main([*base, "--model", model]) == 0
+        report = next((data_dir / "work" / "_compare").glob("*.md"))
+        assert f"{gate}" in report.read_text(encoding="utf-8")
+        report.unlink()
+    assert main([*base, "--min-score", "1.5"]) != 0
+    assert "-1에서 1 사이" in capsys.readouterr().err
+
+
+def test_a_bad_min_score_is_refused_before_any_work(data_dir: Path, monkeypatch: pytest.MonkeyPatch, capsys):
+    import autorfx.cli as cli
+
+    monkeypatch.setattr(cli, "run_pipeline", lambda *a, **k: pytest.fail("the pipeline ran"))
+    monkeypatch.setattr(cli, "load_encoder", lambda *a, **k: pytest.fail("the model was loaded"))
+    assert main(["compare-search", "--sample", "synthetic-sample", "--model", "x", "--min-score", "7"]) == 2
+    assert "-1에서 1 사이" in capsys.readouterr().err
