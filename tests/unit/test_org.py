@@ -26,7 +26,7 @@ Org = tuple[TestClient, str, Settings]
 @pytest.fixture(scope="module")
 def org(tmp_path_factory: pytest.TempPathFactory, ruleset: Ruleset) -> Iterator[Org]:
     root = tmp_path_factory.mktemp("org")
-    settings = Settings(_env_file=None, data_dir=root / "data")
+    settings = Settings(_env_file=None, data_dir=root / "data", embedding_model=None)
     sources = make_package(root / "upload")
     with TestClient(create_app(settings, ruleset=ruleset, provider=RuleOnlyProvider())) as client:
         files = [("files", (p.name, p.read_bytes(), PDF)) for p in sources]

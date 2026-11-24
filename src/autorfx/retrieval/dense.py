@@ -1,7 +1,7 @@
 """Dense (embedding) retrieval over sentences (RAG-01, INV-4).
 
 BM25 finds a sentence only when it shares a word, or a glossary wording, with the
-question. A multilingual embedding model (BGE-M3 by default) also finds a German
+question. A multilingual embedding model (OpenAI text-embedding-3-large by default) also finds a German
 or English sentence for a Korean question that the glossary does not cover
 ("견적서를 언제까지 내야 하나요?" → "Quotations must be received by ...").
 
@@ -16,9 +16,13 @@ on the development RFQs (``autorfx compare-search``) before relying on it.
 
 Model choice (``EMBEDDING_MODEL``):
 
+  * ``openai:text-embedding-3-large`` (the default; ``-small`` also works): needs ``OPENAI_API_KEY``.
+    Computed by the API, so no model download and no CPU wait on the first upload.
   * ``BAAI/bge-m3`` or any other sentence-transformers model id: runs locally.
     Needs ``uv sync --extra embedding`` (sentence-transformers, torch).
-  * ``openai:text-embedding-3-small`` (or ``-large``): needs ``OPENAI_API_KEY``.
+
+The evidence gate differs per model (``Settings.min_score_for``): text-embedding-3-large scores lower
+than BGE-M3 and finds almost nothing at the BGE-M3 gate of 0.55.
 """
 
 from __future__ import annotations
@@ -38,9 +42,8 @@ log = logging.getLogger(__name__)
 
 OPENAI_PREFIX = "openai:"
 DEFAULT_MIN_SCORE = 0.55
-"""Not calibrated: there is no answer key yet. With BAAI/bge-m3 on the development RFQs (10 questions,
-hand-judged, top 3) the hybrid search refused nothing at 0.45; at 0.55 it refused most questions the
-RFQs cannot answer but also dropped some correct sentences. Re-measure once an answer key exists."""
+"""Gate for a model with no measured value (the measured ones are in ``autorfx.config.MODEL_MIN_SCORE``).
+For BAAI/bge-m3 on the development RFQs, 0.55 was the best hybrid gate (71/123 on the 11/24 answer key)."""
 BATCH = 32
 
 

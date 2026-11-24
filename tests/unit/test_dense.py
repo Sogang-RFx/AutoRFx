@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from autorfx.analysis import RuleOnlyProvider
+from autorfx.pipeline import _dense
 from autorfx.retrieval import SearchIndex, answer_question, compare
 from autorfx.retrieval.dense import CachedEncoder, DenseIndex, load_encoder
 from autorfx.rules import Ruleset
@@ -117,3 +118,29 @@ def test_default_questions_file_loads():
         Path(__file__).resolve().parents[2] / "data/questions/retrieval_ko.yaml"
     )
     assert len(questions) == 10 and len({q.id for q in questions}) == 10
+
+
+class _Offline(TopicEncoder):
+    """Embeds nothing: the network, the key or the rate limit fails."""
+
+    def __init__(self, fail_after: int = 0) -> None:
+        super().__init__()
+        self.fail_after = fail_after
+
+    def encode(self, texts):
+        if self.calls >= self.fail_after:
+            raise ConnectionError("offline")
+        return super().encode(texts)
+
+
+def test_embedding_failure_while_loading_falls_back_to_keyword_search():
+    """INV-12: an RFQ stays readable when the corpus cannot be embedded."""
+    assert _dense(CLAUSES, _Offline(), None) is None
+
+
+def test_embedding_failure_on_a_question_falls_back_to_keyword_search(ruleset: Ruleset):
+    index = SearchIndex(CLAUSES, ruleset, dense=DenseIndex(CLAUSES, _Offline(fail_after=1), min_score=0.5))
+    question = "IATF certification"
+    assert index.search(question, group="cost_visible") == index.search_bm25(question, group="cost_visible")
+    with pytest.raises(ConnectionError):
+        index.search(question, group="cost_visible", mode="dense")  # a comparison asks for dense on purpose
