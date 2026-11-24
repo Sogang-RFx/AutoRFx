@@ -61,7 +61,9 @@ uv run autorfx compare-search --sample <id> --model openai:text-embedding-3-smal
 
 ```bash
 uv run autorfx score-search --model BAAI/bge-m3          # BM25 · 임베딩 · 하이브리드 × 근거 기준 0.45~0.65
-``` 결과(`.md`, 채점용 `.csv`)는 `data/work/_compare/`에 생기며 RFQ 원문이 들어 있으니 커밋하지 않습니다.
+```
+
+`compare-search`의 결과(`.md`, 채점용 `.csv`)는 `data/work/_compare/`에 생기며 RFQ 원문이 들어 있으니 커밋하지 않습니다. `score-search`는 원문 없이 점수표 `data/work/_compare/score-*.md` 하나만 만듭니다. 정답 표에 있는 RFQ가 `data/raw/dev`에 하나라도 없으면 멈추고(일부만 보려면 `--allow-missing`), 분석은 API 키가 있어도 규칙으로만 해서 LLM을 부르지 않습니다.
 
 개발용 RFQ는 저장소에 없습니다. 팀 공유 폴더에서 받아 `data/raw/dev/<RFQ 이름>/`에 폴더째 둡니다. 평가용 세트는 개발에 쓰지 않으며, 코드가 `eval`로 시작하는 경로를 읽지 않습니다.
 
