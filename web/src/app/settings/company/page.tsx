@@ -116,6 +116,9 @@ export default function CompanySettingsPage() {
         AutoRFx
       </Link>
       <h1 className="text-heading font-semibold text-ink">사전원가 기본 설정</h1>
+      <Link href="/settings/price-sheet" className="text-label text-accent hover:underline" data-testid="sheet-words-link">
+        가격표 사전
+      </Link>
       <button type="button" onClick={() => history.back()} className="ml-auto text-label text-ink-muted hover:text-ink">
         ← 돌아가기
       </button>

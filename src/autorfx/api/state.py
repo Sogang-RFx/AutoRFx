@@ -31,6 +31,7 @@ from autorfx.pipeline import (
     run_pipeline,
 )
 from autorfx.precost import CompanyStore
+from autorfx.precost.sheet_store import PriceSheetStore
 from autorfx.retrieval.dense import Encoder, load_encoder
 from autorfx.rules import Ruleset, load_ruleset
 from autorfx.workspace import RFQ_ID, Workspace
@@ -91,6 +92,7 @@ class AppState:
         """Loaded once: a local model such as BGE-M3 takes seconds to load."""
         self.org = OrgStore(settings.work_dir, self.ruleset)
         self.company = CompanyStore(settings.work_dir, self.ruleset)
+        self.price_sheets = PriceSheetStore(settings.work_dir)
         self._jobs: dict[str, JobStore] = {}
         self._data: dict[str, tuple[int, RfqData]] = {}
         """Loaded results per RFQ, with the start time of the job that produced them."""

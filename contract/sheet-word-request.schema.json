@@ -1,0 +1,40 @@
+{
+  "$id": "https://autorfx.local/contract/sheet-word-request.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "role": {
+      "type": "string",
+      "enum": [
+        "no",
+        "part",
+        "description",
+        "spec",
+        "quantity",
+        "unit",
+        "months",
+        "price",
+        "total"
+      ]
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "action": {
+      "type": "string",
+      "enum": [
+        "approve",
+        "reject",
+        "remove"
+      ]
+    }
+  },
+  "required": [
+    "role",
+    "text",
+    "action"
+  ],
+  "additionalProperties": false
+}
