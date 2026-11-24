@@ -28,8 +28,8 @@ MODEL_MIN_SCORE = {
     "baai/bge-m3": 0.55,
 }
 """Evidence gate per model (lower-case id). The scales differ: text-embedding-3-large scores lower than
-BGE-M3 and finds almost nothing at 0.45. Values are the best of the answer-key runs; the 3-large value was
-the lowest gate tried, so re-measure below it."""
+BGE-M3 and finds almost nothing at 0.45. Values are the best hybrid gate of the 11/24 answer-key runs
+(30 questions x 5 RFQs). For 3-large the sweep 0.10-0.70 peaked at 0.30 (82/123; 0.25: 79, 0.35: 76)."""
 
 
 class Settings(BaseSettings):
