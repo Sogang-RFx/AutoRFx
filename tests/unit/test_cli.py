@@ -208,3 +208,26 @@ def test_compare_search_never_builds_an_llm_provider(
     monkeypatch.setattr(cli, "make_provider", fail)
     argv = ["compare-search", "--sample", "synthetic-sample", "--model", "fake"]
     assert main([*argv, "--questions", str(compare_questions)]) == 0
+
+
+def test_compare_search_checks_the_questions_before_any_work(
+    data_dir: Path,
+    compare_questions: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+):
+    """A missing, malformed or held-out (INV-11) questions file stops the run before parsing and embedding."""
+    import autorfx.cli as cli
+
+    monkeypatch.setattr(cli, "run_pipeline", lambda *a, **k: pytest.fail("the pipeline ran"))
+    monkeypatch.setattr(cli, "load_encoder", lambda *a, **k: pytest.fail("the model was loaded"))
+    argv = ["compare-search", "--sample", "synthetic-sample", "--model", "fake", "--questions"]
+    assert main([*argv, str(data_dir / "missing.yaml")]) == 2
+    malformed = data_dir / "bad.yaml"
+    malformed.write_text("questions: [", encoding="utf-8")
+    assert main([*argv, str(malformed)]) == 2
+    held_out = data_dir / "eval" / "questions.yaml"
+    held_out.parent.mkdir()
+    held_out.write_text(compare_questions.read_text(encoding="utf-8"), encoding="utf-8")
+    assert main([*argv, str(held_out)]) == 2
+    assert capsys.readouterr().err.strip()

@@ -85,6 +85,14 @@ def _compare_search(args: argparse.Namespace) -> int:
     """BM25 vs embedding vs hybrid on one RFQ, for a list of questions (report under data/work)."""
     settings = get_settings()
     ruleset = load_ruleset(settings.rules_dir)
+    # The questions are checked first, like in score-search: a missing or malformed file, or one from
+    # the held-out evaluation set (INV-11), must not be found only after parsing and embedding.
+    try:
+        assert_not_held_out(Path(args.questions))
+        questions = compare.load_questions(Path(args.questions))
+    except (GuardError, ValueError, OSError, yaml.YAMLError) as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 2
     model = args.model or settings.embedding_model
     if not model:
         sys.stderr.write("임베딩 모델을 정해 주세요: --model BAAI/bge-m3 또는 .env의 EMBEDDING_MODEL\n")
@@ -115,7 +123,6 @@ def _compare_search(args: argparse.Namespace) -> int:
             retrieval=retrieval_engine(encoder),
         )
         data = load_rfq(workspace, ruleset, encoder=encoder, min_score=gate)
-        questions = compare.load_questions(Path(args.questions))
         rows = compare.run(data.index, questions, top=args.top)
     out = settings.work_dir / "_compare"
     out.mkdir(parents=True, exist_ok=True)
