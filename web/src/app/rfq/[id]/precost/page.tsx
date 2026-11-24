@@ -141,9 +141,10 @@ type LineRow = {
   included: boolean;
 };
 const AWARD_RFQ: Record<string, string> = {
-  split: "품목별 낙찰",
-  all_or_none: "일괄 낙찰",
-  either: "발주처가 선택 → 품목별로 판정",
+  // The same words as the RFQ's award label above (cost_model.yaml, EITHER_LABEL in calc.py).
+  split: "품목별 낙찰 가능",
+  all_or_none: "일괄 낙찰만 가능",
+  either: "품목별 낙찰 가능 (일괄 낙찰도 가능, 발주처가 선택)",
   none: "명시 없음 → 일괄로 가정",
 };
 type AwardChoice = "rfq" | "split" | "all_or_none";
@@ -672,7 +673,7 @@ function Workbench({ setup, company, team, rfqId }: { setup: Setup; company: Com
               >
                 <select className={input} value={award} data-testid="input-award" onChange={(e) => setAward(e.target.value as AwardChoice)}>
                   <option value="rfq">
-                    RFQ대로 ({AWARD_RFQ[setup.award.mode ?? "none"]})
+                    RFQ대로: {AWARD_RFQ[setup.award.mode ?? "none"]}
                   </option>
                   <option value="split">품목별 낙찰</option>
                   <option value="all_or_none">일괄 낙찰</option>

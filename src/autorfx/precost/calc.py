@@ -654,7 +654,10 @@ def evaluate(
 
 # ── line items ──────────────────────────────────────────────────────────────
 AWARD_LABEL = {"split": "품목별 낙찰", "all_or_none": "일괄 낙찰"}
-EITHER = "일괄·품목별 중 발주처가 선택 → 품목별로 판정"
+EITHER_LABEL = "품목별 낙찰 가능 (일괄 낙찰도 가능, 발주처가 선택)"
+"""How the RFQ's award reads when the customer chooses after the bids; the same words as the
+split label of cost_model.yaml come first, since every line is then judged on its own."""
+EITHER = f"{EITHER_LABEL} → 품목별로 판정"
 BIDDABLE = {"go", "conditional", "baseline_undefined"}
 
 
