@@ -11,7 +11,7 @@ import type { ChatResponse, Locus } from "@/lib/rfq/contract";
 type ChatData = ChatResponse["data"];
 
 const MODE_NOTE: Record<ChatData["mode"], string> = {
-  extractive: "원문 문장 그대로 · LLM 미연결로 요약하지 않음",
+  extractive: "원문 문장 그대로",
   generative: "LLM이 원문을 근거로 쓴 답",
   stored: "분석 단계에서 저장된 결과",
 };

@@ -105,7 +105,7 @@ def _states(fact: Figure, date: Parts) -> bool:
     """Every part the answer gives belongs to one date of the source; the source may give more."""
     year, month, day = date
     if year is not None and month is None and fact.digits:
-        return fact.text == str(year)
+        return fact.text == str(year) and compatible("year", fact.unit)
     if year is None and day is None:
         return date in fact.dates  # "12월" says less than any date of §3.2: only a copy of it passes
     return any(
@@ -118,7 +118,9 @@ def _same_number(claim: Figure, fact: Figure) -> bool:
     if fact.values is not None:
         return fact.values == {korean_value(claim.text)}
     if fact.dates and not fact.written:
-        return any(claim.text == str(year) for year, _, _ in fact.dates if year is not None)
+        return compatible("year", claim.unit) and any(
+            claim.text == str(year) for year, _, _ in fact.dates if year is not None
+        )
     if claim.digits != fact.digits or not fact.digits or not compatible(claim.unit, fact.unit):
         return False
     # The digits alone would let "1.67" support "16,7". A common value is needed, or, for what has

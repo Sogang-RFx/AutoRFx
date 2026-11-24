@@ -150,7 +150,7 @@ def _no_evidence(request: _Request, mode: str, message: str = MESSAGES["no_evide
 
 def _guide(request: _Request) -> dict:
     topics = [t.label for t in request.context.topics if t.intent != "guide"]
-    suggestions = [*topics, *request.context.index.suggestions(request.group)]
+    suggestions = list(dict.fromkeys([*topics, *request.context.index.suggestions(request.group)]))
     return _reply("guide", "stored", MESSAGES["guide"], suggestions=suggestions)
 
 

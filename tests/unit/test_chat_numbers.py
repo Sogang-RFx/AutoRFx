@@ -143,6 +143,11 @@ def test_the_offending_number_is_returned_as_written(text: str, expected: tuple[
         ("2026년 4월 12일입니다.", ("bis 04.12.2026",)),
         # March is not May
         ("2029년 3월입니다.", ("15. Mai 2029",)),
+        # bare year vs incompatible unit (INV-3)
+        ("2028년입니다.", ("2028 EUR",)),
+        ("2028년입니다.", ("2028 Tage",)),
+        ("2028 EUR입니다.", ("am 4. März 2028",)),
+        ("2028개월입니다.", ("am 4. März 2028",)),
     ],
 )
 def test_a_date_no_cited_sentence_states_is_refused(text: str, sources: tuple[str, ...]):
