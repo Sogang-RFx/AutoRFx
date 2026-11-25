@@ -24,7 +24,9 @@ export default function StartPage() {
   return (
     <div className="mx-auto flex min-h-dvh max-w-288 flex-col px-4 md:px-8">
       <header className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-line py-3">
-        <p className="font-serif text-heading font-semibold text-ink">AutoRFx</p>
+        <p data-particle-target="text" className="font-serif text-heading font-semibold text-ink">
+          AutoRFx
+        </p>
         {engines && <EngineBadge engines={engines} />}
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <AccountBar />
@@ -34,6 +36,7 @@ export default function StartPage() {
         <section aria-labelledby="hero-title" className="flex min-w-0 flex-col justify-center gap-6">
           <h1
             id="hero-title"
+            data-particle-target="text"
             className="font-serif text-ink"
             style={{ fontSize: "calc(clamp(28px, 5vw, 40px) + var(--bump))", lineHeight: 1.15 }}
           >
@@ -41,7 +44,7 @@ export default function StartPage() {
             <br />
             <span className="italic">부서별 판단과 원문 근거</span>로.
           </h1>
-          <p className="max-w-144 text-body text-ink-muted">
+          <p data-particle-target="text" data-particle-tone="muted" className="max-w-144 text-body text-ink-muted">
             요청서, 사양서, 물량표를 한 패키지로 읽어 조항을 주관·참조 부서로 나누고, 요건 강도와 독소조항을 표시하고, 파일
             사이에 어긋나는 값을 찾습니다. 모든 결과는 원문 문장에 연결됩니다.
           </p>

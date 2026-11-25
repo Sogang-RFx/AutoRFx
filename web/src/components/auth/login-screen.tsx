@@ -46,8 +46,12 @@ export function LoginScreen({ reason }: { reason: AnonymousReason }) {
   return (
     <AuthFrame>
       <div className="flex flex-col gap-1">
-        <h1 className="text-title font-semibold text-ink">로그인</h1>
-        <p className="text-body text-ink-muted">부서 계정으로 들어오세요. 볼 수 있는 범위는 계정이 정합니다.</p>
+        <h1 data-particle-target="text" className="text-title font-semibold text-ink">
+          로그인
+        </h1>
+        <p data-particle-target="text" data-particle-tone="muted" className="text-body text-ink-muted">
+          부서 계정으로 들어오세요. 볼 수 있는 범위는 계정이 정합니다.
+        </p>
       </div>
       {!error && <FormMessage tone="info">{reason && REASON[reason]}</FormMessage>}
       <form onSubmit={submit} className="flex flex-col gap-4" data-testid="login-form">

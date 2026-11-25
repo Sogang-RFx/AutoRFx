@@ -18,7 +18,7 @@ const ROWS: Array<{ section: string; lines: number[] | null }> = [
 
 function ScopeSheet() {
   return (
-    <div aria-hidden="true" className="relative max-w-112">
+    <div aria-hidden="true" data-particle-target="box" className="relative max-w-112">
       <div className="absolute inset-x-3 top-2 -bottom-2 rounded-panel border border-line bg-canvas" />
       <ol className="relative flex flex-col rounded-panel border border-line bg-surface px-6 py-4">
         {ROWS.map((r) => (
@@ -50,19 +50,19 @@ export function AuthFrame({ children }: { children: ReactNode }) {
   return (
     <div className="grid min-h-dvh lg:grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)]">
       <aside className="hidden flex-col justify-center gap-8 border-r border-line bg-surface-source px-12 py-12 lg:flex xl:px-16">
-        <p className="font-serif text-title text-ink">
+        <p data-particle-target="text" className="font-serif text-title text-ink">
           같은 RFQ를,
           <br />
           <span className="italic">부서마다 맡은 만큼</span> 봅니다.
         </p>
         <ScopeSheet />
-        <p className="max-w-112 text-body text-ink-muted">
+        <p data-particle-target="text" data-particle-tone="muted" className="max-w-112 text-body text-ink-muted">
           내 부서가 주관하거나 참조하는 조항이 열리고, 나머지는 번호와 자물쇠만 남습니다.
         </p>
       </aside>
       <main className="flex flex-col justify-center px-4 py-12 md:px-8">
         <div className="mx-auto flex w-full max-w-96 flex-col gap-6">
-          <p className="font-serif text-heading font-semibold text-ink">
+          <p data-particle-target="text" className="font-serif text-heading font-semibold text-ink">
             AutoRFx <span className="font-sans text-label font-medium text-ink-muted">자동차 부품 RFQ 분석</span>
           </p>
           {children}

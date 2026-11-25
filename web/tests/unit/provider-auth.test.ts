@@ -77,6 +77,9 @@ function everyCall(): Record<keyof Provider["rfqApi"], () => Promise<unknown>> {
     saveCompany: () => rfqApi.saveCompany(company),
     precost: () => rfqApi.precost(precost),
     chat: () => rfqApi.chat("r1", "납기"),
+    chatStream: () => rfqApi.chatStream("r1", "납기"),
+    transcribe: () => rfqApi.transcribe(new Blob(["x"], { type: "audio/webm" })),
+    speak: () => rfqApi.speak("문장"),
     evaluation: () => rfqApi.evaluation("r1"),
   };
 }

@@ -831,6 +831,13 @@ export const MetaResponse = envelope(
     /** Packages already on the server that can be opened without an upload. */
     samples: z.array(z.object({ id: z.string(), label: z.string(), file_count: z.int().min(1) })),
     upload: z.object({ max_files: z.int().min(1), max_file_mb: z.int().min(1), accept: z.array(z.string()) }),
+    /** Voice features; both false when the server has no speech provider. */
+    voice: z.object({
+      transcribe: z.boolean(),
+      speak: z.boolean(),
+      max_seconds: z.int().min(1),
+      max_speech_chars: z.int().min(1),
+    }),
   }),
 );
 export type MetaResponse = z.infer<typeof MetaResponse>;
@@ -1018,6 +1025,44 @@ export type OkResponse = z.infer<typeof OkResponse>;
 export const ErrorResponse = z.object({ error: z.object({ code: z.string(), message: z.string() }) });
 export type ErrorResponse = z.infer<typeof ErrorResponse>;
 
+// ── Chat stream (`POST /rfqs/{id}/chat/stream`, text/event-stream) ──────────
+export const CHAT_STAGES = ["plan", "search", "write", "verify", "rewrite"] as const;
+export const ChatStage = z.enum(CHAT_STAGES);
+export type ChatStage = z.infer<typeof ChatStage>;
+
+/**
+ * One `data: <JSON>` line of the stream. The first event is always
+ * `stage: plan`; `done` or `error` is last. No event before `done` carries
+ * answer text: the verified answer arrives once, in `done.response`.
+ */
+export const ChatStreamEvent = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("stage"),
+    stage: ChatStage,
+    /** Sent with `write`: how many evidence sentences the writer was given. */
+    evidence: z.int().min(0).optional(),
+  }),
+  /** Statements written so far; it restarts at 0 after a `rewrite`. */
+  z.object({ type: z.literal("progress"), drafted: z.int().min(0) }),
+  /** Same body as `POST /chat` for the same input. */
+  z.object({ type: z.literal("done"), response: ChatResponse }),
+  /** A failure after the stream was opened. Earlier failures use plain HTTP errors. */
+  z.object({ type: z.literal("error"), error: ErrorResponse.shape.error }),
+]);
+export type ChatStreamEvent = z.infer<typeof ChatStreamEvent>;
+
+// ── Voice (`/voice/*`) ──────────────────────────────────────────────────────
+/** Longest text the server reads aloud in one request. */
+export const MAX_SPEECH_CHARS = 1200;
+
+/** Provenance part is `chat`: speech goes to the chat LLM's provider. */
+export const VoiceTranscriptionResponse = envelope(z.object({ text: z.string() }));
+export type VoiceTranscriptionResponse = z.infer<typeof VoiceTranscriptionResponse>;
+
+/** JSON body of `POST /voice/speech`; the reply is `audio/mpeg`. */
+export const VoiceSpeechRequest = z.object({ text: z.string().min(1).max(MAX_SPEECH_CHARS) });
+export type VoiceSpeechRequest = z.infer<typeof VoiceSpeechRequest>;
+
 /** Every schema that is emitted to /contract. Keys become file names. */
 export const CONTRACT_SCHEMAS = {
   locus: Locus,
@@ -1060,4 +1105,7 @@ export const CONTRACT_SCHEMAS = {
   "upload-request": UploadRequest,
   upload: UploadResponse,
   error: ErrorResponse,
+  "chat-stream-event": ChatStreamEvent,
+  "voice-transcription": VoiceTranscriptionResponse,
+  "voice-speech-request": VoiceSpeechRequest,
 } as const;

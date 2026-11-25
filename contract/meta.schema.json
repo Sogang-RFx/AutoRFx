@@ -118,6 +118,34 @@
             "accept"
           ],
           "additionalProperties": false
+        },
+        "voice": {
+          "type": "object",
+          "properties": {
+            "transcribe": {
+              "type": "boolean"
+            },
+            "speak": {
+              "type": "boolean"
+            },
+            "max_seconds": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "max_speech_chars": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "transcribe",
+            "speak",
+            "max_seconds",
+            "max_speech_chars"
+          ],
+          "additionalProperties": false
         }
       },
       "required": [
@@ -125,7 +153,8 @@
         "assumption_note",
         "engines",
         "samples",
-        "upload"
+        "upload",
+        "voice"
       ],
       "additionalProperties": false
     },

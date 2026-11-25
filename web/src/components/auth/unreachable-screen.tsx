@@ -17,7 +17,7 @@ export function UnreachableScreen({ error, onRetry }: { error: string; onRetry: 
   return (
     <AuthFrame>
       <div role="alert" className="flex flex-col gap-2" data-testid="unreachable">
-        <h1 className="flex items-center gap-2 text-title font-semibold text-ink">
+        <h1 data-particle-target="text" className="flex items-center gap-2 text-title font-semibold text-ink">
           <IconWarn size={20} className="shrink-0 text-danger" />
           백엔드에 연결하지 못했습니다
         </h1>

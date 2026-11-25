@@ -6,7 +6,10 @@ positions and checks every figure. Calls are injected, so tests need no network.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import logging
+import time
+import warnings
+from collections.abc import Callable, Sequence
 from itertools import groupby
 from typing import Protocol, TypeVar
 
@@ -15,9 +18,15 @@ from pydantic import BaseModel
 from autorfx.analysis.llm import SYSTEM, StructuredCall
 from autorfx.analysis.providers import TransientProviderError
 from autorfx.chat.models import Draft, Evidence, Plan, Turn
+from autorfx.chat.progress import StatementCounter
 from autorfx.config import Settings
 
+log = logging.getLogger(__name__)
+
 T = TypeVar("T", bound=BaseModel)
+StreamCall = Callable[[str, str, type[T], Callable[[str], None]], T]
+"""A structured call that hands the model's output to the last argument piece by piece."""
+Progress = Callable[[int], None]
 PLAN_TIMEOUT, ANSWER_TIMEOUT = 20.0, 45.0
 MAX_TURNS = 6
 MAX_TURN_ANSWER = 600
@@ -33,8 +42,16 @@ class ChatModel(Protocol):
     def plan(self, question: str, history: Sequence[Turn], languages: Sequence[str]) -> Plan: ...
 
     def answer(
-        self, question: str, evidence: Sequence[Evidence], *, overview: bool, feedback: str | None
-    ) -> Draft: ...
+        self,
+        question: str,
+        evidence: Sequence[Evidence],
+        *,
+        overview: bool,
+        feedback: str | None,
+        on_progress: Progress | None = None,
+    ) -> Draft:
+        """``on_progress`` hears how many statements are written so far; it only watches."""
+        ...
 
 
 # ── prompts ─────────────────────────────────────────────────────────────────
@@ -151,38 +168,203 @@ def sampling(model: str, effort: str | None) -> dict[str, object]:
     return {"temperature": 0}
 
 
+def _chat_openai(model: str, key: str, *, timeout: float, effort: str | None, **extra: object):  # type: ignore[no-untyped-def]
+    from langchain_openai import ChatOpenAI
+
+    return ChatOpenAI(
+        model=model,
+        api_key=key,  # type: ignore[arg-type]
+        timeout=timeout,
+        max_retries=MAX_RETRIES,
+        **sampling(model, effort),  # type: ignore[arg-type]
+        **extra,  # type: ignore[arg-type]
+    )
+
+
 def chat_call(model: str, key: str, *, timeout: float, effort: str | None) -> StructuredCall:
     """The real model call. Imported lazily so the package works without a key or a network."""
 
     def call(system: str, user: str, schema: type[T]) -> T:
-        from langchain_openai import ChatOpenAI
-
-        chat = ChatOpenAI(
-            model=model,
-            api_key=key,  # type: ignore[arg-type]
-            timeout=timeout,
-            max_retries=MAX_RETRIES,
-            **sampling(model, effort),  # type: ignore[arg-type]
-        )
+        chat = _chat_openai(model, key, timeout=timeout, effort=effort)
         return chat.with_structured_output(schema).invoke([("system", system), ("human", user)])  # type: ignore[return-value]
 
     return call
 
 
+class StreamDeadlineError(TimeoutError):
+    """A streamed answer ran longer than the plain call is allowed to. It is a timeout like any other."""
+
+
+DRAFT_WARNING = r"(?s)Pydantic serializer warnings:.*field_name='parsed'"
+"""The one warning the streaming path raises, and the one place it quotes a draft from (see below)."""
+
+
+def _keep_drafts_out_of_warnings() -> None:
+    """The SDK's streamed events carry the parsed draft; ``langchain_openai`` dumps them and Pydantic warns
+    about the type, quoting the end of the draft, which is unverified document text. A warning goes to stderr
+    and from there to logs. The filter is set when the call is built, once per process in practice (setting
+    it again changes nothing): ``catch_warnings`` per call would swap process-wide state and is not safe with
+    several answers running in threads."""
+    warnings.filterwarnings("ignore", message=DRAFT_WARNING, category=UserWarning)
+
+
+def chat_stream_call(
+    model: str,
+    key: str,
+    *,
+    timeout: float,
+    effort: str | None,
+    clock: Callable[[], float] = time.monotonic,
+    **client: object,
+) -> StreamCall:
+    """The same call as :func:`chat_call`, with the model's output handed on as it is written.
+
+    With ``streaming=True`` the structured-output call goes through the streaming API; the callback gets the
+    pieces of the JSON document, and the call still returns the parsed object (read from the langchain-openai
+    source: the last chunk carries ``parsed`` and an empty text, so nothing is counted twice).
+
+    ``timeout`` limits every read, so a stream that keeps trickling never trips it; it is also the wall-clock
+    limit of the whole answer, checked when a piece arrives (the read limit covers a stream that goes quiet).
+    ``client`` is passed on to the model's client (tests give it an HTTP transport).
+    """
+    _keep_drafts_out_of_warnings()
+
+    def call(system: str, user: str, schema: type[T], on_token: Callable[[str], None]) -> T:
+        from langchain_core.callbacks import BaseCallbackHandler
+
+        deadline = clock() + timeout
+
+        class Tokens(BaseCallbackHandler):
+            # A callback's exception is logged and dropped unless the handler asks for it to be raised
+            # (langchain_core.callbacks.manager.handle_event). Only the deadline is raised, below.
+            raise_error = True
+
+            def on_llm_new_token(self, token: str, **kwargs: object) -> None:
+                try:
+                    on_token(token)
+                except Exception as exc:  # the listener only watches: it cannot change the answer
+                    log.warning("chat stream listener failed (%s)", type(exc).__name__)
+                if clock() > deadline:
+                    raise StreamDeadlineError("streamed answer took too long")
+
+        chat = _chat_openai(model, key, timeout=timeout, effort=effort, streaming=True, **client)
+        messages = [("system", system), ("human", user)]
+        return chat.with_structured_output(schema).invoke(messages, config={"callbacks": [Tokens()]})  # type: ignore[return-value]
+
+    return call
+
+
+def is_outage(exc: BaseException) -> bool:
+    """The provider cannot be reached or is too slow: asking again within the same answer would only wait."""
+    if isinstance(exc, TimeoutError | ConnectionError):
+        return True
+    try:
+        import httpx
+        import openai
+    except ImportError:  # the clients are not installed: only the built-in kinds exist
+        return False
+    return isinstance(exc, httpx.TimeoutException | httpx.NetworkError | openai.APIConnectionError)
+
+
+def worth_asking_without_streaming(exc: BaseException) -> bool:
+    """Whether the plain call may still succeed after the streaming call failed with ``exc``.
+
+    Only when the failure came from our side of the streaming path: parsing the reply, a callback, a library
+    that cannot stream. When the provider could not be reached, was too slow, answered with an error (the SDK
+    has already retried once) or refused or cut its answer short, the plain call would meet the same thing
+    and only double the wait.
+    """
+    return not (is_outage(exc) or _provider_answered(exc))
+
+
+def _provider_answered(exc: BaseException) -> bool:
+    """An error status, a refusal or a cut-off answer: the provider's own word, not a failure of ours."""
+    try:
+        import httpx
+        import openai
+        from langchain_core.exceptions import ModelRefusalError
+    except ImportError:  # without the clients there is no streaming call to fail
+        return False
+    provider = (
+        openai.APIError,
+        openai.LengthFinishReasonError,
+        openai.ContentFilterFinishReasonError,
+        ModelRefusalError,
+        httpx.HTTPError,
+    )
+    return isinstance(exc, provider)
+
+
 class OpenAIChatModel:
-    def __init__(self, model: str, *, plan_call: StructuredCall, answer_call: StructuredCall) -> None:
+    def __init__(
+        self,
+        model: str,
+        *,
+        plan_call: StructuredCall,
+        answer_call: StructuredCall,
+        answer_stream_call: StreamCall | None = None,
+    ) -> None:
         self.id = f"openai:{model}"
         self._plan_call = plan_call
         self._answer_call = answer_call
+        self._answer_stream_call = answer_stream_call
 
     def plan(self, question: str, history: Sequence[Turn], languages: Sequence[str]) -> Plan:
         return _ask(self._plan_call, plan_prompt(question, history, languages), Plan)
 
     def answer(
-        self, question: str, evidence: Sequence[Evidence], *, overview: bool, feedback: str | None
+        self,
+        question: str,
+        evidence: Sequence[Evidence],
+        *,
+        overview: bool,
+        feedback: str | None,
+        on_progress: Progress | None = None,
     ) -> Draft:
         user = answer_prompt(question, evidence, overview=overview, feedback=feedback)
+        if on_progress is None or self._answer_stream_call is None:
+            return _ask(self._answer_call, user, Draft)
+        try:
+            return _ask_streaming(self._answer_stream_call, user, on_progress)
+        except _StreamFailed as failure:
+            # Streaming is an extra: a failure of ours (not the provider's) must not cost the answer.
+            log.warning("chat streaming failed (%s); asking without streaming", failure.kind)
         return _ask(self._answer_call, user, Draft)
+
+
+class _StreamFailed(Exception):
+    """The streaming call failed on our side; the plain call may not share the failure."""
+
+    def __init__(self, kind: str) -> None:
+        super().__init__(kind)
+        self.kind = kind
+
+
+def _ask_streaming(call: StreamCall, user: str, on_progress: Progress) -> Draft:
+    counter = StatementCounter()
+    reported = 0
+
+    def report(count: int) -> None:
+        nonlocal reported
+        if count <= reported:
+            return
+        reported = count
+        try:
+            on_progress(count)
+        except Exception as exc:  # a failing listener does not touch the answer
+            log.warning("chat progress listener failed (%s)", type(exc).__name__)
+
+    try:
+        reply = call(SYSTEM, user, Draft, lambda piece: report(counter.feed(piece)))
+    except Exception as exc:
+        if worth_asking_without_streaming(exc):
+            raise _StreamFailed(type(exc).__name__) from exc
+        raise TransientProviderError(type(exc).__name__) from exc
+    if not isinstance(reply, Draft):  # a refusal parses to nothing, and the plain call would be refused too
+        raise TransientProviderError("no structured reply")
+    for count in range(reported + 1, len(reply.statements) + 1):
+        report(count)  # a stream that gave no pieces still ends on the true count
+    return reply
 
 
 def _ask(call: StructuredCall, user: str, schema: type[T]) -> T:
@@ -215,10 +397,20 @@ class ScriptedChatModel:
         return _replay(self._plans.pop(0))
 
     def answer(
-        self, question: str, evidence: Sequence[Evidence], *, overview: bool, feedback: str | None
+        self,
+        question: str,
+        evidence: Sequence[Evidence],
+        *,
+        overview: bool,
+        feedback: str | None,
+        on_progress: Progress | None = None,
     ) -> Draft:
         self.answer_calls.append((question, tuple(evidence), overview, feedback))
-        return _replay(self._drafts.pop(0))
+        draft = _replay(self._drafts.pop(0))
+        if on_progress is not None:
+            for count in range(1, len(draft.statements) + 1):
+                on_progress(count)
+        return draft
 
 
 def _replay(item: T | Exception) -> T:
@@ -236,6 +428,9 @@ def make_chat_model(settings: Settings) -> ChatModel | None:
         settings.openai_model,
         plan_call=chat_call(settings.openai_model, key, timeout=PLAN_TIMEOUT, effort=None),
         answer_call=chat_call(
+            settings.openai_model, key, timeout=ANSWER_TIMEOUT, effort=settings.chat_reasoning_effort
+        ),
+        answer_stream_call=chat_stream_call(
             settings.openai_model, key, timeout=ANSWER_TIMEOUT, effort=settings.chat_reasoning_effort
         ),
     )

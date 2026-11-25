@@ -2,7 +2,9 @@
 
 A question is planned, answered from stored results or from gathered evidence, and every statement
 is verified on its own before it is shown. Without an LLM the answer is original sentences that pass
-the strict evidence gate. At most three LLM calls are made per question.
+the strict evidence gate. A question makes at most three LLM calls: the plan, a draft and one rewrite. A draft
+whose streaming failed on our side (not the provider's) is asked once more without streaming, so the ceiling
+is five requests; an error, refusal or timeout of the provider is never asked again within the same answer.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from autorfx.analysis.citation import verify
 from autorfx.analysis.providers import TransientProviderError
 from autorfx.auth.policy import Scope
 from autorfx.chat.checks import Outcome, checked
+from autorfx.chat.events import Events, Observer
 from autorfx.chat.gather import MAX_QUERIES, gather
 from autorfx.chat.model import MAX_TURNS, ChatModel
 from autorfx.chat.models import ChatContext, CitedText, Draft, Evidence, Plan, Turn
@@ -55,6 +58,17 @@ class _Request:
     context: ChatContext
     scope: Scope
     plan: Plan
+    events: Events
+
+
+def clean_question(question: str) -> str:
+    """The question as it is answered, or ``ValueError`` with a message for the user."""
+    question = question.strip()
+    if not question:
+        raise ValueError("질문을 입력해 주세요.")
+    if len(question) > MAX_QUESTION:
+        raise ValueError(f"질문은 {MAX_QUESTION}자 이내로 입력해 주세요.")
+    return question
 
 
 def answer_question(
@@ -64,20 +78,23 @@ def answer_question(
     scope: Scope,
     model: ChatModel | None,
     history: Sequence[Turn] = (),
+    observer: Observer | None = None,
 ) -> dict:
-    """The ``data`` object of ``contract/chat.schema.json``."""
-    question = question.strip()
-    if not question:
-        raise ValueError("질문을 입력해 주세요.")
-    if len(question) > MAX_QUESTION:
-        raise ValueError(f"질문은 {MAX_QUESTION}자 이내로 입력해 주세요.")
+    """The ``data`` object of ``contract/chat.schema.json``.
+
+    ``observer`` is told which stage the answer is in and how many statements are written; it only watches
+    (docs/design/immersive-ui.md §5.2), so the answer is the same with or without it.
+    """
+    question = clean_question(question)
+    events = Events(observer)
+    events.stage("plan")
     if _is_refused(question, context, scope):
         return _restricted(context)
     plan = _plan(question, history, context, model)
     # "그럼 그건 얼마야?" names no price; the question it stands for does (RAG-04).
     if _is_refused(plan.question, context, scope):
         return _restricted(context)
-    request = _Request(context, scope, plan)
+    request = _Request(context, scope, plan, events)
     if plan.intent == "guide":
         return _guide(request)
     if plan.intent in ("red_flags", "conflicts"):
@@ -162,9 +179,15 @@ def _answered(
     message: str,
     *,
     with_conflicts: bool = True,
+    announce: bool = True,
 ) -> dict:
-    """An answer whose every position is one this scope may be shown (INV-3, INV-8)."""
+    """An answer whose every position is one this scope may be shown (INV-3, INV-8).
+
+    ``announce`` is off for a written answer: its draft was already announced as being verified.
+    """
     context, scope = request.context, request.scope
+    if announce:
+        request.events.stage("verify")
     loci = tuple({c.key(): c for s in statements for c in s.citations}.values())
     finding = Finding(kind="answer", text="\n".join(s.text for s in statements), citations=loci)
     answer = verify(finding, context.clauses, allowed=citable_keys(context, scope))
@@ -187,6 +210,7 @@ def _stored(request: _Request) -> dict:
 
 def _extract(request: _Request, message: str) -> dict:
     """Original sentences, word for word, behind the strict gate (RAG-03)."""
+    request.events.stage("search")
     result = request.context.index.search(request.plan.question)
     if not result.passed:
         return _no_evidence(request, "extractive")
@@ -204,6 +228,7 @@ def _extract(request: _Request, message: str) -> dict:
 # ── generated answers ───────────────────────────────────────────────────────
 def _generate(request: _Request, model: ChatModel) -> dict:
     plan, context, scope = request.plan, request.context, request.scope
+    request.events.stage("search")
     evidence = gather(
         plan.question, plan.queries, context=context, scope=scope, overview=plan.intent == "overview"
     )
@@ -225,7 +250,7 @@ def _generate(request: _Request, model: ChatModel) -> dict:
     if not outcome.complete:
         notes.append(MESSAGES["incomplete"])
     shown = outcome.statements[: MAX_STATEMENTS.get(plan.intent, MAX_STATEMENTS["lookup"])]
-    return _answered(request, "generative", shown, " ".join(notes))
+    return _answered(request, "generative", shown, " ".join(notes), announce=False)
 
 
 def _write(request: _Request, model: ChatModel, evidence: Sequence[Evidence]) -> Outcome:
@@ -233,6 +258,7 @@ def _write(request: _Request, model: ChatModel, evidence: Sequence[Evidence]) ->
     first = _draft(request, model, evidence, None)
     if first is None:
         return Outcome(failed=True)
+    request.events.stage("verify")
     outcome, problems = checked(first, evidence)
     if not problems or not outcome.answered:
         return outcome
@@ -241,6 +267,7 @@ def _write(request: _Request, model: ChatModel, evidence: Sequence[Evidence]) ->
     second = _draft(request, model, evidence, "\n".join(problems))
     if second is None:
         return outcome
+    request.events.stage("verify")
     retried = checked(second, evidence)[0]
     # A retry that went worse does not lose what was verified; a judgement that nothing answers stands.
     worse = retried.answered and len(retried.statements) < len(outcome.statements)
@@ -251,8 +278,15 @@ def _draft(
     request: _Request, model: ChatModel, evidence: Sequence[Evidence], feedback: str | None
 ) -> Draft | None:
     overview = request.plan.intent == "overview"
+    events = request.events
+    if feedback is None:
+        events.stage("write", evidence=len(evidence))
+    else:
+        events.stage("rewrite")
+    # Without a listener the model is called exactly as before: a model may not know ``on_progress``.
+    options = {"on_progress": events.progress} if events.watched else {}
     try:
-        return model.answer(request.plan.question, evidence, overview=overview, feedback=feedback)
+        return model.answer(request.plan.question, evidence, overview=overview, feedback=feedback, **options)
     except TransientProviderError as exc:
         log.warning("chat answer failed (%s)", _failure(exc))
         return None

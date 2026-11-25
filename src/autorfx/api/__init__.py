@@ -14,13 +14,14 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
 from autorfx.analysis import AnalysisProvider
-from autorfx.api import auth_routes, routes
+from autorfx.api import auth_routes, chat_stream, routes, voice_routes
 from autorfx.api.security import AuthGate, ResponseHeaders, error_response, protect
 from autorfx.api.state import ApiError, AppState
 from autorfx.auth import AuthError, PolicyError
 from autorfx.chat.model import ChatModel
 from autorfx.config import Settings, get_settings
 from autorfx.rules import Ruleset
+from autorfx.voice import SpeechProvider
 
 __all__ = ["ApiError", "AppState", "create_app"]
 
@@ -33,13 +34,14 @@ def create_app(
     ruleset: Ruleset | None = None,
     provider: AnalysisProvider | None = None,
     chat_model: ChatModel | None = None,
+    speech: SpeechProvider | None = None,
 ) -> FastAPI:
-    """The application. ``ruleset``, ``provider`` and ``chat_model`` are injected by tests."""
+    """The application. ``ruleset``, ``provider``, ``chat_model`` and ``speech`` are injected by tests."""
     settings = settings or get_settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        state = AppState(settings, ruleset=ruleset, provider=provider, chat_model=chat_model)
+        state = AppState(settings, ruleset=ruleset, provider=provider, chat_model=chat_model, speech=speech)
         app.state.autorfx = state
         log.info("engines: %s", state.engines)
         try:
@@ -108,6 +110,8 @@ def create_app(
         auth_routes.router,
         auth_routes.admin_router,
         routes.router,
+        chat_stream.router,
+        voice_routes.router,
     ):
         app.include_router(router)
     return app

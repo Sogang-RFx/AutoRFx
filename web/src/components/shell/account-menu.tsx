@@ -10,6 +10,7 @@ import { describeError } from "@/lib/rfq/provider";
 import { isCostVisible, scopeName } from "@/lib/rfq/scope";
 import { useSession, useViewer } from "@/lib/rfq/session";
 import { PasswordDialog } from "../auth/password-screens";
+import { FxSettings } from "../fx/fx-settings";
 import { IconUser } from "../ui/icons";
 import { Button, FormMessage } from "../ui/primitives";
 
@@ -117,6 +118,7 @@ export function AccountMenu() {
               {isBusy ? "로그아웃 중…" : "로그아웃"}
             </Button>
           </div>
+          <FxSettings onReplay={() => setIsOpen(false)} />
           <FormMessage tone={notice?.tone ?? "ok"}>{notice?.text}</FormMessage>
         </section>
       )}

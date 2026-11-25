@@ -7,6 +7,7 @@ import {
   MAX_ANSWER_CHARS,
   MAX_HISTORY_TURNS,
   MAX_QUESTION_CHARS,
+  NO_PROGRESS,
   buildHistory,
   firstCitation,
   shownStatements,
@@ -67,6 +68,7 @@ const turn = (question: string, res: ChatResponse | null, error: string | null =
   response: res,
   error,
   startedAt: 0,
+  progress: NO_PROGRESS,
 });
 
 describe("buildHistory", () => {

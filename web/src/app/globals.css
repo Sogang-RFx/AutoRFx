@@ -69,6 +69,16 @@
   --line: #dedad0;
   --dur-fast: 180ms;
   --dur-panel: 280ms;
+  /* Screen effects (docs/design/immersive-ui.md §2). Keep in step with src/lib/fx/motion.ts: a test checks it. */
+  --dur-fx-flight-min: 520ms;
+  --dur-fx-flight-max: 900ms;
+  --dur-fx-jitter: 180ms;
+  --dur-fx-reveal: 460ms;
+  --dur-fx-cover: 480ms;
+  /* Below every element of the page, above the page colour on body. */
+  --z-fx-ambient: -1;
+  --z-fx-cover: 70;
+  --z-fx-layer: 80;
   color-scheme: light;
 }
 
@@ -146,6 +156,60 @@
 
 @utility pulse-soft {
   animation: pulse-soft 1.4s var(--ease-soft) infinite;
+}
+
+/* The background dot field: behind the content (panels and bars are opaque and cover it), never catches a click.
+   The page colour stays on body, which paints the canvas of the page, so a z-index below zero is still above it. */
+@utility fx-ambient {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: var(--z-fx-ambient);
+  pointer-events: none;
+}
+
+/* The dot layer: above everything, never catches a click. Sized by CSS; lib/fx reads its box. */
+@utility fx-layer {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: var(--z-fx-layer);
+  pointer-events: none;
+}
+
+/* A sheet in the page colour that hides the screen while an intro plays; `data-fx="out"` lifts it. */
+@utility fx-cover {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-fx-cover);
+  background: var(--color-canvas);
+  transition: opacity var(--dur-fx-cover) var(--ease-soft);
+
+  &[data-fx="out"] {
+    opacity: 0;
+    pointer-events: none;
+  }
+}
+
+@keyframes fx-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* An element waits at opacity 0 (keeping its box) while dots fly to it, then fades in over them. */
+@media (prefers-reduced-motion: no-preference) {
+  [data-fx="wait"] {
+    opacity: 0;
+  }
+  [data-fx="in"] {
+    animation: fx-in var(--dur-fx-reveal) var(--ease-soft) both;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
