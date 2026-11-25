@@ -5,12 +5,13 @@
  */
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { IconArrowRight, IconCheck, IconSpinner, IconWarn } from "@/components/ui/icons";
 import { ErrorState, Panel, Skeleton, cx } from "@/components/ui/primitives";
 import type { JobResponse, JobStage, PackageFile } from "@/lib/rfq/contract";
 import { fileTag, usePackageFiles } from "@/lib/rfq/package-context";
 import { describeError, rfqApi } from "@/lib/rfq/provider";
+import { StageFlow } from "./stage-flow";
 
 /** A real analysis takes seconds to minutes. */
 const POLL_MS = 1500;
@@ -22,29 +23,29 @@ function StageIcon({ status }: { status: JobStage["status"] }) {
   const common = "flex size-7 shrink-0 items-center justify-center rounded-full border";
   if (status === "done")
     return (
-      <span className={cx(common, "border-ok bg-ok-tint text-ok")}>
+      <span data-stage-icon className={cx(common, "border-ok bg-ok-tint text-ok")}>
         <IconCheck size={14} />
       </span>
     );
   if (status === "running")
     return (
-      <span className={cx(common, "border-accent bg-accent-tint text-accent")}>
+      <span data-stage-icon className={cx(common, "border-accent bg-accent-tint text-accent")}>
         <IconSpinner size={14} className="spin" />
       </span>
     );
   if (status === "error")
     return (
-      <span className={cx(common, "border-danger bg-danger-tint text-danger")}>
+      <span data-stage-icon className={cx(common, "border-danger bg-danger-tint text-danger")}>
         <IconWarn size={14} />
       </span>
     );
   if (status === "skipped")
     return (
-      <span className={cx(common, "border-dashed border-line-control bg-surface text-ink-muted")} aria-hidden="true">
+      <span data-stage-icon className={cx(common, "border-dashed border-line-control bg-surface text-ink-muted")} aria-hidden="true">
         –
       </span>
     );
-  return <span className={cx(common, "border-line bg-surface text-ink-muted")} />;
+  return <span data-stage-icon className={cx(common, "border-line bg-surface text-ink-muted")} />;
 }
 
 const STATUS_LABEL: Record<JobStage["status"], string> = {
@@ -117,7 +118,8 @@ export default function ProcessingPage() {
     };
   }, [rfqId]);
 
-  const stages = job?.data.stages ?? [];
+  const stages = useMemo(() => job?.data.stages ?? [], [job]);
+  const statuses = useMemo(() => stages.map((s) => s.status), [stages]);
   const doneCount = stages.filter(finished).length;
   const halted = stages.find((s) => s.status === "error");
   const progress = stages.length ? Math.round((doneCount / stages.length) * 100) : 0;
@@ -152,45 +154,49 @@ export default function ProcessingPage() {
         {error && <ErrorState message={error} />}
         {!job && !error && <Skeleton lines={7} />}
         {job && (
-          <ol className="flex flex-col px-4 py-4" data-testid="stages">
-            {stages.map((stage, i) => (
-              <li key={stage.id} className="relative flex gap-4 pb-5 last:pb-0" data-status={stage.status}>
-                {i < stages.length - 1 && (
-                  <span
-                    aria-hidden="true"
-                    className={cx(
-                      "absolute left-3.5 top-7 bottom-0 w-px",
-                      finished(stage) ? "bg-ok" : "bg-line",
-                    )}
-                  />
-                )}
-                <StageIcon status={stage.status} />
-                <div className="flex min-w-0 flex-1 flex-col gap-0.5 pt-0.5">
-                  <div className="flex flex-wrap items-center gap-2">
+          <div className="relative">
+            {/* Before the rows in the DOM, so the icons paint over the dots. */}
+            <StageFlow statuses={statuses} />
+            <ol className="flex flex-col px-4 py-4" data-testid="stages">
+              {stages.map((stage, i) => (
+                <li key={stage.id} className="relative flex gap-4 pb-5 last:pb-0" data-status={stage.status}>
+                  {i < stages.length - 1 && (
                     <span
+                      aria-hidden="true"
                       className={cx(
-                        "text-body font-semibold",
-                        stage.status === "pending" || stage.status === "skipped" ? "text-ink-muted" : "text-ink",
+                        "absolute left-3.5 top-7 bottom-0 w-px",
+                        finished(stage) ? "bg-ok" : "bg-line",
                       )}
-                    >
-                      {stage.label}
-                    </span>
-                    <span
-                      className={cx("text-label", stage.status === "error" ? "font-semibold text-danger" : "text-ink-muted")}
-                    >
-                      {STATUS_LABEL[stage.status]}
-                    </span>
-                  </div>
-                  {/* Outside the full scope the server sends the stage and its state only. */}
-                  {stage.detail && (
-                    <p className={cx("text-dense", stage.status === "error" ? "text-danger" : "text-ink-muted")}>
-                      {stage.detail}
-                    </p>
+                    />
                   )}
-                </div>
-              </li>
-            ))}
-          </ol>
+                  <StageIcon status={stage.status} />
+                  <div className="flex min-w-0 flex-1 flex-col gap-0.5 pt-0.5">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span
+                        className={cx(
+                          "text-body font-semibold",
+                          stage.status === "pending" || stage.status === "skipped" ? "text-ink-muted" : "text-ink",
+                        )}
+                      >
+                        {stage.label}
+                      </span>
+                      <span
+                        className={cx("text-label", stage.status === "error" ? "font-semibold text-danger" : "text-ink-muted")}
+                      >
+                        {STATUS_LABEL[stage.status]}
+                      </span>
+                    </div>
+                    {/* Outside the full scope the server sends the stage and its state only. */}
+                    {stage.detail && (
+                      <p className={cx("text-dense", stage.status === "error" ? "text-danger" : "text-ink-muted")}>
+                        {stage.detail}
+                      </p>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </div>
         )}
       </Panel>
 

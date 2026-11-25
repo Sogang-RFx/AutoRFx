@@ -72,7 +72,10 @@ export function UploadCard() {
       {/* paper stack: the source document sits behind the interpretation card */}
       <div aria-hidden="true" className="absolute inset-x-6 -top-3 h-full rounded-panel border border-line bg-surface-source" />
       <div aria-hidden="true" className="absolute inset-x-3 -top-1.5 h-full rounded-panel border border-line bg-surface-source" />
-      <div className="relative flex flex-col gap-5 rounded-panel border border-line bg-surface p-6 shadow-float">
+      <div
+        data-particle-target="box"
+        className="relative flex flex-col gap-5 rounded-panel border border-line bg-surface p-6 shadow-float"
+      >
         <h2 id="upload-title" className="text-heading font-semibold text-ink">
           RFQ 패키지 올리기
         </h2>

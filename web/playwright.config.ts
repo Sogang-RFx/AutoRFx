@@ -28,6 +28,8 @@ export default defineConfig({
     baseURL: `http://localhost:${PORT}`,
     trace: "retain-on-failure",
     viewport: { width: 1440, height: 900 },
+    // Screen effects (intro, dots) are off under reduced motion, so they never hold up a click or a wait.
+    reducedMotion: "reduce",
   },
   webServer: HAS_INPUT
     ? [

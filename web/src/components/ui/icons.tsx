@@ -144,3 +144,56 @@ export const IconKey = (p: IconProps) => (
     <path d="m10.5 12.5 8-8M15.5 7.5l2.5 2.5" />
   </Svg>
 );
+export const IconMic = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="9" y="3" width="6" height="11" rx="3" />
+    <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M9 21h6" />
+  </Svg>
+);
+/** Microphone with a slash: not listening. */
+export const IconMicOff = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M9 9V6a3 3 0 0 1 5.7-1.3M15 10.5V11a3 3 0 0 1-4.6 2.5" />
+    <path d="M5.5 11a6.5 6.5 0 0 0 10.2 5.3M18.5 11a6.4 6.4 0 0 1-.5 2.5M12 17.5V21M9 21h6M4 4l16 16" />
+  </Svg>
+);
+export const IconSpeaker = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4Z" />
+    <path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" />
+  </Svg>
+);
+/** A filled-outline square: stop. */
+export const IconStop = (p: IconProps) => (
+  <Svg {...p}>
+    <rect x="6" y="6" width="12" height="12" rx="1.5" />
+  </Svg>
+);
+/** Screen effects: a four-point sparkle. */
+export const IconSparkle = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 3.5c.7 4.6 2.9 6.8 7.5 7.5-4.6.7-6.8 2.9-7.5 7.5-.7-4.6-2.9-6.8-7.5-7.5 4.6-.7 6.8-2.9 7.5-7.5Z" />
+    <path d="M19 3v3M17.5 4.5h3" />
+  </Svg>
+);
+/** Play again: an arrow running back round. */
+export const IconReplay = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M4.5 12a7.5 7.5 0 1 0 2.4-5.5M4.5 4.5v4h4" />
+  </Svg>
+);
+/** Three connected nodes: the RFQ flow view. */
+export const IconTopology = (p: IconProps) => (
+  <Svg {...p}>
+    <circle cx="6" cy="7" r="2.2" />
+    <circle cx="18" cy="7" r="2.2" />
+    <circle cx="12" cy="18" r="2.2" />
+    <path d="M8.2 7h7.6M7.2 8.9l3.7 7M16.8 8.9l-3.7 7" />
+  </Svg>
+);
+export const IconList = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M9 6h11M9 12h11M9 18h11" />
+    <path d="M4.5 6h.1M4.5 12h.1M4.5 18h.1" />
+  </Svg>
+);

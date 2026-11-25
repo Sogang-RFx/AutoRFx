@@ -14,7 +14,7 @@ export function ForcedPasswordScreen({ viewer }: { viewer: Viewer }) {
   return (
     <AuthFrame>
       <div className="flex flex-col gap-1">
-        <h1 className="text-title font-semibold text-ink">비밀번호를 먼저 바꿔 주세요</h1>
+        <h1 data-particle-target="text" className="text-title font-semibold text-ink">비밀번호를 먼저 바꿔 주세요</h1>
         <p className="text-body text-ink-muted">
           <strong className="font-semibold text-ink">{viewer.display_name}</strong> 계정은 관리자가 정한 임시 비밀번호를
           쓰고 있습니다. 새 비밀번호를 정하면 바로 이어서 쓸 수 있습니다.

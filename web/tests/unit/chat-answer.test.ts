@@ -7,6 +7,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { Answer } from "@/components/chat/answer";
+import { createDraftTrace } from "@/components/chat/draft-trace";
 import type { ChatResponse, Locus } from "@/lib/rfq/contract";
 
 const locus = (page: number): Locus => ({
@@ -48,7 +49,7 @@ function render(data: Partial<Data>): string {
     },
     provenance: { chat: "real" },
   };
-  return renderToStaticMarkup(createElement(Answer, { response, target: null, onCite: () => {} }));
+  return renderToStaticMarkup(createElement(Answer, { response, turnId: 1, trace: createDraftTrace(), target: null, onCite: () => {} }));
 }
 
 /** Every text in `parts` appears, in this order. */

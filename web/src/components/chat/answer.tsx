@@ -3,10 +3,13 @@
  * One chat answer (DESIGN §7.5): every sentence with its own citations (INV-3), how it was
  * made (INV-12), and the conflicts between documents that touch it.
  */
+import { useRef } from "react";
 import { IconLock, IconWarn } from "@/components/ui/icons";
 import { CitationChip, ProvenanceBadge, cx, locusKey, sameLocus } from "@/components/ui/primitives";
-import { shownStatements } from "@/lib/rfq/chat-history";
+import { shownStatements, type ShownStatement } from "@/lib/rfq/chat-history";
 import type { ChatResponse, Locus } from "@/lib/rfq/contract";
+import type { DraftTrace } from "./draft-trace";
+import { useAnswerReveal } from "./use-answer-reveal";
 
 type ChatData = ChatResponse["data"];
 
@@ -76,10 +79,11 @@ function Notice({ status, message }: Pick<ChatData, "status" | "message">) {
   );
 }
 
-type AnswerProps = CiteProps & { response: ChatResponse };
+type RevealProps = { turnId: number; trace: DraftTrace };
+type AnswerProps = CiteProps & RevealProps & { response: ChatResponse };
 
-export function Answer({ response, target, onCite }: AnswerProps) {
-  const { status, answer, message, mode, conflicts } = response.data;
+export function Answer({ response, turnId, trace, target, onCite }: AnswerProps) {
+  const { status, answer, message, conflicts } = response.data;
   const statements = shownStatements(response.data);
   if (!answer || statements.length === 0) {
     return (
@@ -92,15 +96,41 @@ export function Answer({ response, target, onCite }: AnswerProps) {
   const verified = answer.citation_status === "verified";
   return (
     <>
+      <Statements
+        response={response}
+        statements={statements}
+        verified={verified}
+        turnId={turnId}
+        trace={trace}
+        target={target}
+        onCite={onCite}
+      />
+      <Conflicts conflicts={conflicts} target={target} onCite={onCite} />
+    </>
+  );
+}
+
+type StatementsProps = CiteProps &
+  RevealProps & { response: ChatResponse; statements: ShownStatement[]; verified: boolean };
+
+/** The verified statements. They come out of dots one after another when the answer first appears. */
+function Statements({ response, statements, verified, turnId, trace, target, onCite }: StatementsProps) {
+  const { mode, message } = response.data;
+  const list = useRef<HTMLUListElement>(null);
+  useAnswerReveal(list, turnId, trace);
+  return (
       <div
         className="flex max-w-[85%] flex-col gap-2 rounded-panel border border-line bg-surface px-3 py-2"
         data-testid="chat-answered"
         data-mode={mode}
       >
-        <ul className="flex flex-col gap-3">
+        <ul ref={list} className="flex flex-col gap-3">
           {statements.map((s, i) => (
-            <li key={i} className="flex flex-col gap-1" data-testid="chat-statement">
-              <p className={cx("whitespace-pre-line text-ink", mode === "extractive" ? "font-serif text-source" : "text-body")}>
+            <li key={i} className="flex flex-col gap-1" data-testid="chat-statement" data-statement="">
+              <p
+                data-particle-target="text"
+                className={cx("whitespace-pre-line text-ink", mode === "extractive" ? "font-serif text-source" : "text-body")}
+              >
                 {s.text}
               </p>
               <Citations loci={s.citations} verified={verified} target={target} onCite={onCite} />
@@ -115,7 +145,5 @@ export function Answer({ response, target, onCite }: AnswerProps) {
           </p>
         </div>
       </div>
-      <Conflicts conflicts={conflicts} target={target} onCite={onCite} />
-    </>
   );
 }

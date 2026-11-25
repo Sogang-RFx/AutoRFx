@@ -32,10 +32,12 @@ import {
   SheetWordsResponse,
   UploadResponse,
   ViewerResponse,
+  VoiceTranscriptionResponse,
   type AdminPasswordRequest,
   type AdminUserCreateRequest,
   type AdminUserPatchRequest,
   type ChatRequest,
+  type ChatStreamEvent,
   type ChatTurn,
   type CompanyRequest,
   type LoginRequest,
@@ -44,7 +46,9 @@ import {
   type SheetColumnsRequest,
   type SheetSuggestRequest,
   type SheetWordRequest,
+  type VoiceSpeechRequest,
 } from "./contract";
+import { ChatStreamContractError, readChatStream } from "./chat-stream";
 
 export class ApiError extends Error {
   constructor(
@@ -159,6 +163,72 @@ const XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 const account = (id: string, action = "") => endpoint("admin", `/admin/users/${encodeURIComponent(id)}${action}`);
 const rfq = (id: string) => `/rfqs/${encodeURIComponent(id)}`;
 const file = (id: string, fileId: string) => `${rfq(id)}/files/${encodeURIComponent(fileId)}`;
+
+/** What `chatStream` tells its caller while the answer is made. */
+export interface ChatStreamOptions {
+  signal?: AbortSignal;
+  /** Every event of the stream, in order (stage, progress). `done` and `error` are also sent here. */
+  onEvent?: (event: ChatStreamEvent) => void;
+  /** The stream gave no answer and the plain request is asked instead: drop what the events showed. */
+  onRestart?: () => void;
+}
+
+const EVENT_STREAM = "text/event-stream";
+/** The route is missing on this server: the answer comes through `/chat` instead. */
+const NO_STREAM_ROUTE = new Set([404, 405]);
+
+const isAbort = (e: unknown): boolean => e instanceof DOMException && e.name === "AbortError";
+
+function chat(id: string, question: string, history: ChatTurn[] = [], signal?: AbortSignal) {
+  return request(
+    "chat",
+    ChatResponse,
+    endpoint("chat", `${rfq(id)}/chat`),
+    post({ question, history } satisfies ChatRequest, signal),
+  );
+}
+
+/**
+ * The answer through the stream; the body is read until `done`. Anything that stops the stream from
+ * delivering one (it ends early, an event breaks the contract, no such route) is asked once more
+ * through `chat`. An abort is never retried, and an `error` event or an HTTP error is an error.
+ */
+async function chatStream(
+  id: string,
+  question: string,
+  history: ChatTurn[] = [],
+  { signal, onEvent = () => undefined, onRestart = () => undefined }: ChatStreamOptions = {},
+): Promise<ChatResponse> {
+  const askAgain = () => {
+    onRestart();
+    return chat(id, question, history, signal);
+  };
+  const url = endpoint("chat", `${rfq(id)}/chat/stream`);
+  const init = post({ question, history } satisfies ChatRequest, signal);
+  let last: ChatStreamEvent | null;
+  try {
+    const res = await send("chat", url, { ...init, headers: { ...init.headers, accept: EVENT_STREAM } });
+    if (!res.body || !(res.headers.get("content-type") ?? "").startsWith(EVENT_STREAM)) return askAgain();
+    last = await readChatStream(res.body, onEvent, signal);
+  } catch (e) {
+    if (isAbort(e) || signal?.aborted) throw e;
+    if (e instanceof ApiError && !NO_STREAM_ROUTE.has(e.status)) throw e;
+    if (e instanceof ApiError || e instanceof ChatStreamContractError || e instanceof TypeError) return askAgain();
+    throw e;
+  }
+  if (last?.type === "error") throw new ApiError("chat", 200, last.error.code, last.error.message);
+  if (last?.type !== "done") return askAgain();
+  if (!isRealData(last.response)) {
+    throw new ApiError("chat", 200, "not_real_data", "백엔드가 실제 데이터가 아닌 응답을 보냈습니다. 보여주지 않습니다.");
+  }
+  return last.response;
+}
+
+/** File name the server sees for a recording; it reads the format from the content type, not from this. */
+function audioName(type: string): string {
+  const kind = type.split(";")[0].split("/")[1] ?? "webm";
+  return `question.${kind === "mpeg" ? "mp3" : kind}`;
+}
 
 /** What to analyse: files picked by the user. */
 export type UploadSource = { kind: "files"; files: File[] };
@@ -293,13 +363,32 @@ export const rfqApi = {
     request("precost", PrecostResponse, endpoint("precost", "/precost"), post(body)),
 
   /** `history`: earlier turns of this conversation, only so the backend can tell what the question refers to. */
-  chat: (id: string, question: string, history: ChatTurn[] = [], signal?: AbortSignal) =>
-    request(
+  chat,
+
+  /** The same answer as `chat`, with the stages of its making reported to `onEvent` (docs/design/immersive-ui.md §5). */
+  chatStream,
+
+  /** Speech to text (multipart field `audio`). The text is a transcript, to be sent as the question. */
+  transcribe: (audio: Blob, signal?: AbortSignal) => {
+    const form = new FormData();
+    form.append("audio", audio, audioName(audio.type));
+    return request("chat", VoiceTranscriptionResponse, endpoint("chat", "/voice/transcriptions"), {
+      method: "POST",
+      body: form,
+      signal,
+    });
+  },
+
+  /** The MP3 bytes of `text` read aloud. Send only verified answer text. */
+  speak: async (text: string, signal?: AbortSignal): Promise<Uint8Array<ArrayBuffer>> => {
+    const res = await requestFile(
       "chat",
-      ChatResponse,
-      endpoint("chat", `${rfq(id)}/chat`),
-      post({ question, history } satisfies ChatRequest, signal),
-    ),
+      "audio/mpeg",
+      endpoint("chat", "/voice/speech"),
+      post({ text } satisfies VoiceSpeechRequest, signal),
+    );
+    return new Uint8Array(await res.arrayBuffer());
+  },
 
   /** Rows about clauses outside the account's scope are left out by the server (INV-8). */
   evaluation: (id: string, signal?: AbortSignal) =>

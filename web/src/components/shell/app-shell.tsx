@@ -22,6 +22,7 @@ import {
   IconGauge,
   IconPresent,
   IconTable,
+  IconTopology,
   IconTimeline,
 } from "../ui/icons";
 import { EngineBadge, cx } from "../ui/primitives";
@@ -45,6 +46,7 @@ export function AppShell({ rfqId, children }: { rfqId: string; children: ReactNo
     { href: `${base}/clauses`, label: "조항", icon: <IconDoc size={20} /> },
     { href: `${base}/rtm`, label: "RTM", icon: <IconTable size={20} /> },
     { href: `${base}/consistency`, label: "정합성", icon: <IconCompare size={20} /> },
+    { href: `${base}/topology`, label: "흐름도", icon: <IconTopology size={20} /> },
     { href: `${base}/precost`, label: "사전원가", icon: <IconCalc size={20} />, costOnly: true },
     { href: `${base}/chat`, label: "챗봇", icon: <IconChat size={20} /> },
     { href: `${base}/evaluation`, label: "평가", icon: <IconGauge size={20} /> },
