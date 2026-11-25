@@ -40,6 +40,7 @@ from autorfx.precost import CompanyStore
 from autorfx.precost.sheet_store import PriceSheetStore
 from autorfx.retrieval.dense import Encoder, load_encoder
 from autorfx.rules import Ruleset, load_ruleset
+from autorfx.voice import SpeechProvider, make_speech, recognition_hint
 from autorfx.workspace import RFQ_ID, Workspace
 
 log = logging.getLogger(__name__)
@@ -83,12 +84,16 @@ class AppState:
         provider: AnalysisProvider | None = None,
         encoder: Encoder | None = None,
         chat_model: ChatModel | None = None,
+        speech: SpeechProvider | None = None,
     ) -> None:
         self.settings = settings
         self.ruleset = ruleset or load_ruleset(settings.rules_dir)
         self.provider = provider or make_provider(settings, self.ruleset)
         # An injected provider replaces the configured engine, so the key must not bring the LLM back.
         self.chat_model = chat_model or (make_chat_model(settings) if provider is None else None)
+        # As for the chat model: an injected provider means a test or a keyless run; the key stays out.
+        self.speech = speech or (make_speech(settings) if provider is None else None)
+        self.speech_hint = recognition_hint(self.ruleset)
         self.chat_topics = load_topics(settings.chat_topics_path)
         # Read now, so a missing price file stops the start and not a job half way.
         self.prices = load_prices(settings.translation_prices_path) if settings.llm_connected else None
@@ -119,6 +124,11 @@ class AppState:
         self._passwords = ThreadPoolExecutor(
             max_workers=MAX_CONCURRENT, thread_name_prefix="autorfx-password"
         )
+        self.stream_executor = ThreadPoolExecutor(
+            max_workers=settings.chat_stream_workers, thread_name_prefix="autorfx-chat-stream"
+        )
+        """Streamed answers only: one that nobody reads any more still runs to its end and must not hold
+        the threads other work shares."""
         settings.work_dir.mkdir(parents=True, exist_ok=True)
         discard(self.upload_root)
         for folder in sorted(settings.work_dir.iterdir()):
@@ -137,6 +147,7 @@ class AppState:
     def close(self) -> None:
         self._worker.shutdown(wait=True, cancel_futures=True)
         self._passwords.shutdown(wait=True, cancel_futures=True)
+        self.stream_executor.shutdown(wait=True, cancel_futures=True)
         # After the worker: a running job still reads and writes both.
         self.cache.close()
         if self.translation_cache is not None:

@@ -20,6 +20,8 @@ from fastapi.responses import FileResponse, Response
 from pydantic import Field
 
 from autorfx import access, scoring
+from autorfx.api.bounded import bounded
+from autorfx.api.chat_context import ChatBody, chat_context
 from autorfx.api.scoping import CurrentRfq, RfqView, job_view, rfq_data, rfq_list
 from autorfx.api.security import (
     AdminViewer,
@@ -32,7 +34,6 @@ from autorfx.api.security import (
 )
 from autorfx.api.state import ApiError, AppState, discard, now_ms
 from autorfx.auth import Scope, can_manage
-from autorfx.chat.models import ChatContext, Turn
 from autorfx.chat.service import answer_question
 from autorfx.export import rtm_workbook
 from autorfx.ingest import ACCEPT, IngestError
@@ -55,6 +56,7 @@ from autorfx.precost.lines import LAYOUT_SCAN, find_grid, header_roles, signatur
 from autorfx.precost.sheet_store import PriceSheetError, check_columns, header_label
 from autorfx.precost.sheet_suggest import SuggestError, suggest_columns
 from autorfx.scoped_pdf import scoped_pdf
+from autorfx.voice import voice_meta
 
 open_router = APIRouter()
 router = APIRouter(dependencies=[Depends(current_viewer)])
@@ -77,16 +79,6 @@ class CompanyBody(Model):
     settings: dict
     profile: dict
     prices: list[dict] = Field(max_length=400)
-
-
-class ChatTurn(Model):
-    question: str = Field(min_length=1, max_length=500)
-    answer: str = Field(max_length=4000)
-
-
-class ChatBody(Model):
-    question: str
-    history: tuple[ChatTurn, ...] = Field(default=(), max_length=6)
 
 
 Department = Annotated[str | None, Query(max_length=64)]
@@ -140,31 +132,9 @@ def meta(state: State) -> dict:
             "max_file_mb": settings.max_file_mb,
             "accept": list(ACCEPT),
         },
+        "voice": voice_meta(state.speech),
     }
     return envelope(data, document="real")
-
-
-def _bounded(request: Request, limit: int, message: str) -> Request:
-    """The same request, whose body is refused with 413 once it grows past ``limit`` bytes.
-
-    ``request.form()`` spools every part before the per-file check can run, so the
-    whole body is counted as it arrives; a chunked upload has no length to check first.
-    """
-    declared = request.headers.get("content-length", "")
-    if declared.isdigit() and int(declared) > limit:
-        raise ApiError(413, "too_large", message)
-    received = 0
-
-    async def receive() -> dict:
-        nonlocal received
-        event = await request.receive()
-        if event["type"] == "http.request":
-            received += len(event.get("body", b""))
-            if received > limit:
-                raise ApiError(413, "too_large", message)
-        return event
-
-    return Request(request.scope, receive)
 
 
 async def _save_uploads(request: Request, state: AppState) -> tuple[list[Path], Path]:
@@ -175,7 +145,7 @@ async def _save_uploads(request: Request, state: AppState) -> tuple[list[Path], 
         f"올린 파일이 너무 큽니다. 한 번에 {settings.max_files}개, "
         f"파일당 {settings.max_file_mb}MB까지 받습니다."
     )
-    request = _bounded(request, total, too_big)
+    request = bounded(request, total, too_big)
     form = await request.form(max_files=settings.max_files, max_fields=settings.max_files + 8)
     uploads = [item for item in form.getlist("files") if hasattr(item, "filename")]
     if not uploads:
@@ -576,20 +546,10 @@ def _answer(value: str) -> Answer:
 # ── chat and evaluation ─────────────────────────────────────────────────────
 @router.post("/rfqs/{rfq_id}/chat")
 def chat(body: ChatBody, rfq: CurrentRfq, state: State) -> dict:
-    data, scope, visible = rfq.data, rfq.scope, rfq.visible
-    visible_ids = frozenset(c.clause_id for c in visible)
-    context = ChatContext(
-        index=data.index.scoped(visible_ids),
-        clauses=visible,
-        analyses=tuple(a for a in data.analyses if a.clause_id in visible_ids),
-        issues=access.visible_issues(data.consistency.issues, scope=scope, visible=visible),
-        files=access.package_view(data.manifest, visible, scope=scope).files,
-        topics=state.chat_topics,
-    )
-    history = tuple(Turn(question=t.question, answer=t.answer) for t in body.history)
+    context = chat_context(rfq, state)
     try:
         answer = answer_question(
-            body.question, context=context, scope=scope, model=state.chat_model, history=history
+            body.question, context=context, scope=rfq.scope, model=state.chat_model, history=body.turns()
         )
     except ValueError as exc:
         raise ApiError(422, "invalid_request", str(exc)) from exc

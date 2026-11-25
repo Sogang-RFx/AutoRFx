@@ -1,0 +1,50 @@
+{
+  "$id": "https://autorfx.local/contract/voice-transcription.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "properties": {
+    "data": {
+      "type": "object",
+      "properties": {
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "text"
+      ],
+      "additionalProperties": false
+    },
+    "provenance": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "enum": [
+          "document",
+          "parsing",
+          "analysis",
+          "citation",
+          "translation",
+          "source",
+          "consistency",
+          "cost_inputs",
+          "precost",
+          "chat",
+          "evaluation"
+        ]
+      },
+      "additionalProperties": {
+        "type": "string",
+        "enum": [
+          "mock",
+          "real"
+        ]
+      }
+    }
+  },
+  "required": [
+    "data",
+    "provenance"
+  ],
+  "additionalProperties": false
+}

@@ -18,6 +18,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 ConfirmPolicy = Literal["always", "ambiguous_only", "never"]
 
 
+DEFAULT_STT_MODEL = "gpt-transcribe"
+DEFAULT_TTS_MODEL = "gpt-4o-mini-tts"
+DEFAULT_TTS_VOICE = "alloy"
+"""Not run against the live API from here: read from the installed openai SDK and the current OpenAI docs."""
 DEFAULT_EMBEDDING_MODEL = "openai:text-embedding-3-large"
 """Chosen on 11/24 with the 30-question x 5-RFQ answer key (123 judged cells): hybrid search found 64 of
 87 answers with it against 49 with BAAI/bge-m3, and overall accuracy was 82/123 against 71/123."""
@@ -67,6 +71,16 @@ class Settings(BaseSettings):
     chat_reasoning_effort: str | None = Field(default="low", validation_alias="OPENAI_CHAT_EFFORT")
     """How long a reasoning model thinks before it answers a question. Empty: not sent."""
 
+    voice_enabled: bool = Field(default=False, validation_alias="VOICE_ENABLED")
+    """Voice questions and spoken answers send recordings and answers to the OpenAI audio API. They are
+    offered only when this is true and a key is set; the team has not yet agreed to send recordings out."""
+    openai_stt_model: str = Field(default=DEFAULT_STT_MODEL, validation_alias="OPENAI_STT_MODEL")
+    openai_tts_model: str = Field(default=DEFAULT_TTS_MODEL, validation_alias="OPENAI_TTS_MODEL")
+    openai_tts_voice: str = Field(default=DEFAULT_TTS_VOICE, validation_alias="OPENAI_TTS_VOICE")
+
+    chat_stream_workers: int = Field(default=8, ge=1, le=64, validation_alias="AUTORFX_CHAT_STREAM_WORKERS")
+    """Threads that make streamed chat answers. Streams beyond this wait their turn."""
+
     confirm_policy: ConfirmPolicy = Field(default="ambiguous_only", validation_alias="AUTORFX_CONFIRM_POLICY")
     llm_concurrency: int = Field(default=4, ge=1, le=16, validation_alias="AUTORFX_LLM_CONCURRENCY")
 
@@ -83,6 +97,14 @@ class Settings(BaseSettings):
     """Send the session cookie over HTTPS only. Must be true where the API is served over HTTPS."""
     max_files: int = Field(default=30, ge=1, validation_alias="AUTORFX_MAX_FILES")
     max_file_mb: int = Field(default=50, ge=1, validation_alias="AUTORFX_MAX_FILE_MB")
+
+    @field_validator("voice_enabled", mode="before")
+    @classmethod
+    def _blank_is_off(cls, value: object) -> object:
+        """``VOICE_ENABLED=`` left empty in ``.env`` is off, as the other empty settings are not set."""
+        if isinstance(value, str) and not value.strip():
+            return False
+        return value
 
     @field_validator("openai_api_key", "deepl_api_key", mode="before")
     @classmethod
@@ -105,6 +127,19 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return value.strip() or None
         return value
+
+    @field_validator("openai_stt_model", "openai_tts_model", "openai_tts_voice", mode="before")
+    @classmethod
+    def _blank_is_default(cls, value: object, info: ValidationInfo) -> object:
+        """An empty variable in ``.env`` means "use the default", not an empty model name."""
+        if isinstance(value, str) and not value.strip():
+            defaults = {
+                "openai_stt_model": DEFAULT_STT_MODEL,
+                "openai_tts_model": DEFAULT_TTS_MODEL,
+                "openai_tts_voice": DEFAULT_TTS_VOICE,
+            }
+            return defaults[info.field_name or ""]
+        return value.strip() if isinstance(value, str) else value
 
     def min_score_for(self, model: str | None) -> float:
         """The evidence gate for ``model``: the configured value, else the one measured for that model."""
